@@ -1,14 +1,30 @@
 import express from 'express';
+import userRoutes from './user.routes.js';
+import courseRoutes from './course.routes.js';
+import batchRoutes from './batch.routes.js';
+import registrationRoutes from './registration.routes.js';
+import paymentRoutes from './payment.routes.js';
+import documentRoutes from './document.routes.js';
+import bookingRoutes from './booking.routes.js';
+import examQuestionRoutes from './examQuestion.routes.js';
+import examResultRoutes from './examResult.routes.js';
+import notificationRoutes from './notification.routes.js';
+import bannerRoutes from './banner.routes.js';
 
 const router = express.Router();
 
-// Import các routes khác
-// import userRoutes from './user.routes.js';
-// import productRoutes from './product.routes.js';
-
 // Sử dụng routes
-// router.use('/users', userRoutes);
-// router.use('/products', productRoutes);
+router.use('/users', userRoutes);
+router.use('/courses', courseRoutes);
+router.use('/batches', batchRoutes);
+router.use('/registrations', registrationRoutes);
+router.use('/payments', paymentRoutes);
+router.use('/documents', documentRoutes);
+router.use('/bookings', bookingRoutes);
+router.use('/exam-questions', examQuestionRoutes);
+router.use('/exam-results', examResultRoutes);
+router.use('/notifications', notificationRoutes);
+router.use('/banners', bannerRoutes);
 
 export default router;
 
