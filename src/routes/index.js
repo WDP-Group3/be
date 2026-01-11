@@ -1,5 +1,7 @@
 import express from 'express';
+import authRoutes from './auth.routes.js';
 import userRoutes from './user.routes.js';
+import adminRoutes from './admin.routes.js';
 import courseRoutes from './course.routes.js';
 import batchRoutes from './batch.routes.js';
 import registrationRoutes from './registration.routes.js';
@@ -12,6 +14,12 @@ import notificationRoutes from './notification.routes.js';
 import bannerRoutes from './banner.routes.js';
 
 const router = express.Router();
+
+// Auth routes (no prefix)
+router.use('/auth', authRoutes);
+
+// Admin routes (protected, ADMIN role required)
+router.use('/admin', adminRoutes);
 
 // Sử dụng routes
 router.use('/users', userRoutes);

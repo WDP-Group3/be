@@ -19,6 +19,8 @@ cp .env.example .env
    - `DB_NAME`: Tên database
    - `PORT`: Port cho server (mặc định: 3000)
    - `NODE_ENV`: Môi trường (development/production)
+   - **Email SMTP** (tùy chọn, xem `README_EMAIL.md` để biết thêm chi tiết)
+   - **Gmail**: Xem `HUONG_DAN_GMAIL.md` để biết cách cấu hình Gmail (cần App Password)
 
 ## Chạy server
 

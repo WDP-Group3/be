@@ -11,6 +11,14 @@ const DB_NAME = process.env.DB_NAME || 'banglaixe';
  */
 export async function connectDB() {
   try {
+    // Kiểm tra MONGODB_URI
+    if (!MONGODB_URI || MONGODB_URI.trim() === '') {
+      console.error('❌ Lỗi: MONGODB_URI chưa được cấu hình!');
+      console.error('📝 Vui lòng tạo file .env và thiết lập MONGODB_URI');
+      console.error('💡 Xem file .env.example để biết cách cấu hình');
+      process.exit(1);
+    }
+
     // Kiểm tra xem đã kết nối chưa
     if (mongoose.connection.readyState === 1) {
       console.log('✅ MongoDB đã được kết nối');

@@ -1,5 +1,19 @@
 import User from '../models/User.js';
 
+// Helper function to format user response (remove password)
+const formatUserResponse = (user) => {
+  if (Array.isArray(user)) {
+    return user.map(u => {
+      const userObj = u.toObject ? u.toObject() : u;
+      const { password, ...userWithoutPassword } = userObj;
+      return userWithoutPassword;
+    });
+  }
+  const userObj = user.toObject ? user.toObject() : user;
+  const { password, ...userWithoutPassword } = userObj;
+  return userWithoutPassword;
+};
+
 // Lấy tất cả users
 export const getAllUsers = async (req, res) => {
   try {
@@ -12,7 +26,7 @@ export const getAllUsers = async (req, res) => {
     const users = await User.find(filter).sort({ createdAt: -1 });
     res.json({
       status: 'success',
-      data: users,
+      data: formatUserResponse(users),
       count: users.length,
     });
   } catch (error) {
@@ -38,7 +52,7 @@ export const getUserById = async (req, res) => {
     
     res.json({
       status: 'success',
-      data: user,
+      data: formatUserResponse(user),
     });
   } catch (error) {
     res.status(500).json({

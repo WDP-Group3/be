@@ -16,6 +16,12 @@ const userSchema = new mongoose.Schema({
     required: true,
     trim: true,
     lowercase: true,
+    unique: true,
+  },
+  password: {
+    type: String,
+    required: false,
+    trim: true,
   },
   role: {
     type: String,
@@ -30,6 +36,14 @@ const userSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now,
+  },
+  resetPasswordToken: {
+    type: String,
+    default: null,
+  },
+  resetPasswordExpires: {
+    type: Date,
+    default: null,
   },
 }, {
   timestamps: false,
