@@ -6,6 +6,10 @@ const examResultSchema = new mongoose.Schema({
     ref: 'User',
     required: true,
   },
+  category: {
+    type: String,
+    default: 'Ngẫu nhiên',
+  },
   questions: [{
     questionNumber: {
       type: Number,

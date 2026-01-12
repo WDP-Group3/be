@@ -23,9 +23,9 @@ export const getRandomExam = async (req, res) => {
   try {
     const { count = 35, category } = req.query;
     const limit = parseInt(count);
-    
+
     let categorySlug = category;
-    
+
     // Nếu có category, verify topic exists
     if (category) {
       const topic = getTopicBySlug(category);
@@ -33,25 +33,32 @@ export const getRandomExam = async (req, res) => {
         categorySlug = topic.slug;
       }
     }
-    
+
     // Lấy câu hỏi ngẫu nhiên từ API external
     const questions = await getRandomQuestions(limit, categorySlug);
-    
+
     // Loại bỏ đáp án đúng để tránh gian lận
-    const questionsWithoutAnswer = questions.map(q => ({
-      _id: q._id,
-      number: q.number,
-      content: q.content,
-      question: q.question,
-      image: q.image,
-      category: q.category,
-      options: q.options,
-    }));
-    
+    // Loại bỏ đáp án đúng để tránh gian lận -> Giờ sẽ trả về đáp án đúng
+    const questionsWithAnswer = questions.map(q => {
+      const labels = ['A', 'B', 'C', 'D'];
+      const correctAnswer = q.correctAnswerIndex !== -1 ? labels[q.correctAnswerIndex] : null;
+
+      return {
+        _id: q._id,
+        number: q.number,
+        content: q.content,
+        question: q.question,
+        image: q.image,
+        category: q.category,
+        options: q.options,
+        correctAnswer: correctAnswer
+      };
+    });
+
     res.json({
       status: 'success',
-      data: questionsWithoutAnswer,
-      count: questionsWithoutAnswer.length,
+      data: questionsWithAnswer,
+      count: questionsWithAnswer.length,
     });
   } catch (error) {
     res.status(500).json({
@@ -66,16 +73,16 @@ export const getExamQuestionById = async (req, res) => {
   try {
     const { id } = req.params;
     const number = parseInt(id);
-    
+
     if (isNaN(number) || number < 1 || number > 600) {
       return res.status(400).json({
         status: 'error',
         message: 'Invalid question number. Must be between 1 and 600',
       });
     }
-    
+
     const question = await getQuestionByNumber(number);
-    
+
     // Chuyển đổi format
     const labels = ['A', 'B', 'C', 'D'];
     const correctIndex = question.answers.findIndex(a => a.correct);
@@ -85,7 +92,7 @@ export const getExamQuestionById = async (req, res) => {
         options[labels[index]] = answer.text;
       }
     });
-    
+
     const formattedQuestion = {
       _id: question.number.toString(),
       number: question.number,
@@ -97,7 +104,7 @@ export const getExamQuestionById = async (req, res) => {
       options,
       correctAnswer: correctIndex !== -1 ? labels[correctIndex] : null,
     };
-    
+
     res.json({
       status: 'success',
       data: formattedQuestion,
