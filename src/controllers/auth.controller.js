@@ -214,7 +214,7 @@ export const forgotPassword = async (req, res) => {
     }
 
     const user = await User.findOne({ email: email.toLowerCase() });
-    
+
     // Don't reveal if email exists for security - always return success
     if (!user) {
       return res.json({
@@ -239,7 +239,7 @@ export const forgotPassword = async (req, res) => {
     try {
       // Send password reset email
       await sendPasswordResetEmail(user.email, resetToken, resetUrl);
-      
+
       res.json({
         status: 'success',
         message: 'Chúng tôi đã gửi link đặt lại mật khẩu đến email của bạn. Vui lòng kiểm tra hộp thư.',
@@ -258,6 +258,26 @@ export const forgotPassword = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Có lỗi xảy ra. Vui lòng thử lại sau.',
+    });
+  }
+};
+
+// Logout
+export const logout = async (req, res) => {
+  try {
+    // In a stateless JWT setup, the client simply deletes the token.
+    // If we were using cookies, we would clear the cookie here.
+    // We can also blacklist the token in Redis if we want to be strict.
+    // For now, simple success response is enough for the client to proceed clearing local storage.
+
+    res.json({
+      status: 'success',
+      message: 'Logged out successfully'
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      message: error.message
     });
   }
 };
