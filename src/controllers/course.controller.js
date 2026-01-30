@@ -1,17 +1,17 @@
-import Course from '../models/Course.js';
+import Course from "../models/Course.js";
 
 // Lấy tất cả courses
 export const getAllCourses = async (req, res) => {
   try {
     const courses = await Course.find().sort({ code: 1 });
     res.json({
-      status: 'success',
+      status: "success",
       data: courses,
       count: courses.length,
     });
   } catch (error) {
     res.status(500).json({
-      status: 'error',
+      status: "error",
       message: error.message,
     });
   }
@@ -25,51 +25,69 @@ export const getCourseById = async (req, res) => {
 
     if (!course) {
       return res.status(404).json({
-        status: 'error',
-        message: 'Course not found',
+        status: "error",
+        message: "Course not found",
       });
     }
 
     res.json({
-      status: 'success',
+      status: "success",
       data: course,
     });
   } catch (error) {
     res.status(500).json({
-      status: 'error',
+      status: "error",
       message: error.message,
     });
   }
 };
 
-
+// Tạo course mới
 // Tạo course mới
 export const createCourse = async (req, res) => {
   try {
-    const { code, name, price, description, image } = req.body;
+    const {
+      code,
+      name,
+      price,
+      estimatedCost,
+      description,
+      image,
+      feePayments,
+      estimatedDuration,
+      location,
+      note
+    } = req.body;
 
     if (!code || !name) {
-      return res.status(400).json({ status: 'error', message: 'Mã và Tên khoá học là bắt buộc' });
+      return res
+        .status(400)
+        .json({ status: "error", message: "Mã và Tên khoá học là bắt buộc" });
     }
 
     const newCourse = new Course({
       code,
       name,
-      price,
+      estimatedCost: estimatedCost || price, 
       description,
-      image,
-      status: 'Active'
+      feePayments: feePayments || [],
+      estimatedDuration,
+      location: location || [],
+      note,
+      status: "Active", 
     });
+
+    console.log('Creating new course:', newCourse);
 
     await newCourse.save();
 
     res.status(201).json({
-      status: 'success',
+      status: "success",
       data: newCourse,
-      message: 'Tạo khoá học thành công'
+      message: "Tạo khoá học thành công",
     });
   } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
+    res.status(500).json({ status: "error", message: error.message });
   }
 };
 
@@ -80,18 +98,20 @@ export const updateCourse = async (req, res) => {
     const updates = req.body;
 
     const course = await Course.findByIdAndUpdate(id, updates, { new: true });
-
+    console.log('Updated course:', course);
     if (!course) {
-      return res.status(404).json({ status: 'error', message: 'Course not found' });
+      return res
+        .status(404)
+        .json({ status: "error", message: "Course not found" });
     }
 
     res.json({
-      status: 'success',
+      status: "success",
       data: course,
-      message: 'Cập nhật khoá học thành công'
+      message: "Cập nhật khoá học thành công",
     });
   } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
+    res.status(500).json({ status: "error", message: error.message });
   }
 };
 
@@ -107,14 +127,16 @@ export const deleteCourse = async (req, res) => {
     const course = await Course.findByIdAndDelete(id);
 
     if (!course) {
-      return res.status(404).json({ status: 'error', message: 'Course not found' });
+      return res
+        .status(404)
+        .json({ status: "error", message: "Course not found" });
     }
 
     res.json({
-      status: 'success',
-      message: 'Xoá khoá học thành công'
+      status: "success",
+      message: "Xoá khoá học thành công",
     });
   } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
+    res.status(500).json({ status: "error", message: error.message });
   }
 };
