@@ -1,32 +1,75 @@
-import Course from "../models/Course.js";
+import mongoose from 'mongoose';
+import Course from '../models/Course.js';
 
-// Lấy tất cả courses
+/**
+ * @desc    Lấy danh sách courses (Hỗ trợ phân trang, tìm kiếm, lọc)
+ * @route   GET /api/courses
+ * @access  Public
+ */
 export const getAllCourses = async (req, res) => {
   try {
-    const courses = await Course.find().sort({ code: 1 });
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const search = req.query.search || '';
+    const status = req.query.status;
+
+    const query = {};
+
+    // Tìm kiếm theo tên hoặc mã
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { code: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    // Lọc status
+    if (status) {
+      query.status = status;
+    }
+
+    const skip = (page - 1) * limit;
+
+    const [courses, total] = await Promise.all([
+      Course.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      Course.countDocuments(query)
+    ]);
+
     res.json({
       status: "success",
       data: courses,
       count: courses.length,
     });
+
   } catch (error) {
     res.status(500).json({
-      status: "error",
-      message: error.message,
+      status: 'error',
+      message: 'Lỗi server khi lấy danh sách khoá học',
+      error: error.message,
     });
   }
 };
 
-// Lấy course theo ID
+/**
+ * @desc    Lấy chi tiết course theo ID
+ * @route   GET /api/courses/:id
+ * @access  Public
+ */
 export const getCourseById = async (req, res) => {
   try {
     const { id } = req.params;
+
+    // Tìm theo _id của MongoDB hoặc field code (tuỳ logic của bạn)
+    // Ở đây dùng findById (tìm theo _id)
     const course = await Course.findById(id);
 
     if (!course) {
       return res.status(404).json({
-        status: "error",
-        message: "Course not found",
+        status: 'error',
+        message: `Không tìm thấy khoá học với ID: ${id}`,
       });
     }
 
@@ -34,47 +77,60 @@ export const getCourseById = async (req, res) => {
       status: "success",
       data: course,
     });
+
   } catch (error) {
-    res.status(500).json({
-      status: "error",
-      message: error.message,
-    });
+    res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
-// Tạo course mới
-// Tạo course mới
+/**
+ * @desc    Tạo course mới
+ * @route   POST /api/courses
+ * @access  Private (Admin/Staff)
+ */
 export const createCourse = async (req, res) => {
   try {
+    // 1. Dùng đúng tên estimatedCost thay vì price
     const {
       code,
       name,
-      price,
-      estimatedCost,
+      estimatedCost, 
       description,
       image,
-      feePayments,
+      status,
       estimatedDuration,
       location,
       note
     } = req.body;
 
     if (!code || !name) {
-      return res
-        .status(400)
-        .json({ status: "error", message: "Mã và Tên khoá học là bắt buộc" });
+      return res.status(400).json({
+        status: 'error',
+        message: 'Vui lòng cung cấp đầy đủ Mã (code) và Tên (name) khoá học'
+      });
     }
 
+    const existingCourse = await Course.findOne({ code });
+    if (existingCourse) {
+      return res.status(409).json({
+        status: 'error',
+        message: `Mã khoá học "${code}" đã tồn tại.`
+      });
+    }
+
+    // 2. Tạo object khớp hoàn toàn với Schema
     const newCourse = new Course({
       code,
       name,
-      estimatedCost: estimatedCost || price, 
-      description,
+      estimatedCost: estimatedCost,
       feePayments: feePayments || [],
       estimatedDuration,
       location: location || [],
-      note,
       status: "Active", 
+      description,
+      image,
+      location: location || [],
+      note,
     });
 
     console.log('Creating new course:', newCourse);
@@ -82,19 +138,26 @@ export const createCourse = async (req, res) => {
     await newCourse.save();
 
     res.status(201).json({
-      status: "success",
+      status: 'success',
+      message: 'Tạo khoá học thành công',
       data: newCourse,
-      message: "Tạo khoá học thành công",
     });
+
   } catch (error) {
     res.status(500).json({ status: "error", message: error.message });
   }
 };
 
-// Cập nhật course
+/**
+ * @desc    Cập nhật course
+ * @route   PUT /api/courses/:id
+ * @access  Private (Admin)
+ */
 export const updateCourse = async (req, res) => {
   try {
     const { id } = req.params;
+
+    // 3. Lấy đúng field estimatedCost từ request
     const updates = req.body;
 
     const course = await Course.findByIdAndUpdate(id, updates, { new: true });
@@ -110,20 +173,20 @@ export const updateCourse = async (req, res) => {
       data: course,
       message: "Cập nhật khoá học thành công",
     });
+
   } catch (error) {
     res.status(500).json({ status: "error", message: error.message });
   }
 };
 
-// Xoá course
+/**
+ * @desc    Xoá course
+ * @route   DELETE /api/courses/:id
+ * @access  Private (Admin)
+ */
 export const deleteCourse = async (req, res) => {
   try {
     const { id } = req.params;
-
-    // Check business rule: Cannot delete if has active learners (Mock check)
-    // const hasLearners = await checkLearners(id);
-    // if (hasLearners) return res.status(403).json({...})
-
     const course = await Course.findByIdAndDelete(id);
 
     if (!course) {
@@ -136,6 +199,7 @@ export const deleteCourse = async (req, res) => {
       status: "success",
       message: "Xoá khoá học thành công",
     });
+
   } catch (error) {
     res.status(500).json({ status: "error", message: error.message });
   }

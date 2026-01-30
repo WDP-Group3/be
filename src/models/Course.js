@@ -36,10 +36,13 @@ const courseSchema = new mongoose.Schema(
       },
     ],
     estimatedDuration: {
-      type: Number, // Số tháng hoặc số giờ
+      type: String, // Sửa thành String để lưu được "3 tháng" như trong ảnh
     },
     estimatedCost: {
-      type: Number,
+      type: Number, // Tương ứng với price trong controller
+    },
+    image: {
+      type: String, // Thêm trường này vì controller có gửi lên
     },
     location: {
       type: [String],
@@ -49,14 +52,20 @@ const courseSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    status: {
+      type: String,
+      enum: ["Active", "Inactive"],
+      default: "Active",
+    },
   },
   {
-    timestamps: false,
+    timestamps: true, // Nên để true
   },
 );
 
 // Indexes
 courseSchema.index({ code: 1 });
+courseSchema.index({ name: "text", code: "text" }); // Index tìm kiếm text
 
 const Course = mongoose.model("Course", courseSchema);
 
