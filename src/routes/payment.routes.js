@@ -1,10 +1,10 @@
 import express from 'express';
-import { getAllPayments, getPaymentById } from '../controllers/payment.controller.js';
+import { createQR, checkStatus } from '../controllers/transaction.controller.js';
 
 const router = express.Router();
 
-router.get('/', getAllPayments);
-router.get('/:id', getPaymentById);
+router.post('/create-qr', createQR);
+router.get('/check-payment', checkStatus);
 
 export default router;
 

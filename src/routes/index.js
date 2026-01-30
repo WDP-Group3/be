@@ -12,6 +12,7 @@ import examQuestionRoutes from './examQuestion.routes.js';
 import examResultRoutes from './examResult.routes.js';
 import notificationRoutes from './notification.routes.js';
 import bannerRoutes from './banner.routes.js';
+import leadRoutes from './lead.routes.js';
 
 const router = express.Router();
 
@@ -33,6 +34,7 @@ router.use('/exam-questions', examQuestionRoutes);
 router.use('/exam-results', examResultRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/banners', bannerRoutes);
+router.use('/leads', leadRoutes);
 
 export default router;
 
