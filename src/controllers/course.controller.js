@@ -39,13 +39,7 @@ export const getAllCourses = async (req, res) => {
     ]);
 
     res.json({
-      status: 'success',
-      pagination: {
-        totalItems: total,
-        totalPages: Math.ceil(total / limit),
-        currentPage: page,
-        itemsPerPage: limit
-      },
+      status: "success",
       data: courses,
       count: courses.length,
     });
@@ -80,7 +74,7 @@ export const getCourseById = async (req, res) => {
     }
 
     res.json({
-      status: 'success',
+      status: "success",
       data: course,
     });
 
@@ -100,7 +94,7 @@ export const createCourse = async (req, res) => {
     const {
       code,
       name,
-      estimatedCost, // <-- Đã sửa ở đây
+      estimatedCost, 
       description,
       image,
       status,
@@ -128,14 +122,18 @@ export const createCourse = async (req, res) => {
     const newCourse = new Course({
       code,
       name,
-      estimatedCost: estimatedCost || 0, // <-- Lưu thẳng vào model
-      description,
-      image,
+      estimatedCost: estimatedCost,
+      feePayments: feePayments || [],
       estimatedDuration,
       location: location || [],
+      status: "Active", 
+      description,
+      image,
+      location: location || [],
       note,
-      status
     });
+
+    console.log('Creating new course:', newCourse);
 
     await newCourse.save();
 
@@ -146,14 +144,7 @@ export const createCourse = async (req, res) => {
     });
 
   } catch (error) {
-    if (error.name === 'ValidationError') {
-      const messages = Object.values(error.errors).map(val => val.message);
-      return res.status(400).json({ status: 'error', message: messages });
-    }
-    if (error.code === 11000) {
-      return res.status(409).json({ status: 'error', message: 'Dữ liệu bị trùng lặp (Mã khoá học)' });
-    }
-    res.status(500).json({ status: 'error', message: error.message });
+    res.status(500).json({ status: "error", message: error.message });
   }
 };
 
@@ -169,46 +160,22 @@ export const updateCourse = async (req, res) => {
     // 3. Lấy đúng field estimatedCost từ request
     const updates = req.body;
 
-    // Kiểm tra trùng code nếu user có ý định sửa code
-    if (updates.code) {
-      const duplicateCheck = await Course.findOne({ code: updates.code, _id: { $ne: id } });
-      if (duplicateCheck) {
-        return res.status(409).json({
-          status: 'error',
-          message: `Mã khoá học "${updates.code}" đã được sử dụng.`
-        });
-      }
-    }
-
-    // Xử lý status đặc biệt (vì Frontend cũ có thể gửi mảng)
-    if (updates.status && Array.isArray(updates.status)) {
-      updates.status = updates.status[0];
-    }
-
-    // Nếu Client gửi field tên là "price", ta cần đổi nó thành "estimatedCost"
-    // (Đoạn này để phòng hờ React vẫn gửi "price", nếu React đã sửa thì bỏ qua)
-    if (updates.price !== undefined) {
-      updates.estimatedCost = updates.price;
-      delete updates.price;
-    }
-
-    const course = await Course.findByIdAndUpdate(id, updates, {
-      new: true,
-      runValidators: true
-    });
-
+    const course = await Course.findByIdAndUpdate(id, updates, { new: true });
+    console.log('Updated course:', course);
     if (!course) {
-      return res.status(404).json({ status: 'error', message: 'Không tìm thấy khoá học để cập nhật' });
+      return res
+        .status(404)
+        .json({ status: "error", message: "Course not found" });
     }
 
     res.json({
-      status: 'success',
-      message: 'Cập nhật khoá học thành công',
+      status: "success",
       data: course,
+      message: "Cập nhật khoá học thành công",
     });
 
   } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
+    res.status(500).json({ status: "error", message: error.message });
   }
 };
 
@@ -223,16 +190,17 @@ export const deleteCourse = async (req, res) => {
     const course = await Course.findByIdAndDelete(id);
 
     if (!course) {
-      return res.status(404).json({ status: 'error', message: 'Không tìm thấy khoá học để xoá' });
+      return res
+        .status(404)
+        .json({ status: "error", message: "Course not found" });
     }
 
     res.json({
-      status: 'success',
-      message: 'Đã xoá khoá học vĩnh viễn',
-      deletedId: id
+      status: "success",
+      message: "Xoá khoá học thành công",
     });
 
   } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
+    res.status(500).json({ status: "error", message: error.message });
   }
 };
