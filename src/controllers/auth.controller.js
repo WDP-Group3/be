@@ -162,7 +162,7 @@ export const getProfile = async (req, res) => {
 export const updateProfile = async (req, res) => {
   try {
     const userId = req.userId || req.params.id;
-    const { name, email, phone, address, dateOfBirth, gender } = req.body;
+    const { name, email, phone, address, dateOfBirth, gender, avatar } = req.body;
 
     const user = await User.findById(userId);
     if (!user) {
@@ -179,6 +179,7 @@ export const updateProfile = async (req, res) => {
     if (address !== undefined) user.address = address;
     if (dateOfBirth !== undefined) user.dateOfBirth = dateOfBirth;
     if (gender !== undefined) user.gender = gender;
+    if (avatar !== undefined) user.avatar = avatar;
 
     await user.save();
 

@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { connectDB } from './config/db.js';
 import apiRoutes from './routes/index.js';
+import { initCloudinary, isCloudinaryConfigured, pingCloudinary } from './services/cloudinary.service.js';
 
 // Load environment variables
 dotenv.config();
@@ -18,6 +19,14 @@ app.use(express.urlencoded({ extended: true }));
 // Kết nối MongoDB
 connectDB();
 
+// Cloudinary (optional)
+initCloudinary();
+if (isCloudinaryConfigured()) {
+  console.log('☁️  Cloudinary: CLOUDINARY_URL is set');
+} else {
+  console.log('☁️  Cloudinary: not configured (CLOUDINARY_URL is missing)');
+}
+
 // Routes
 app.get('/', (req, res) => {
   res.json({
@@ -31,8 +40,32 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'OK',
     database: 'connected',
+    cloudinaryConfigured: isCloudinaryConfigured(),
     timestamp: new Date().toISOString(),
   });
+});
+
+// Cloudinary health check (pings Cloudinary API)
+app.get('/health/cloudinary', async (req, res) => {
+  try {
+    if (!isCloudinaryConfigured()) {
+      return res.status(503).json({
+        status: 'error',
+        message: 'Cloudinary is not configured (missing CLOUDINARY_URL)',
+      });
+    }
+
+    const result = await pingCloudinary();
+    return res.json({
+      status: 'success',
+      data: result,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      status: 'error',
+      message: err?.message || 'Cloudinary ping failed',
+    });
+  }
 });
 
 // API Routes
