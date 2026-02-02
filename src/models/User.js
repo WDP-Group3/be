@@ -25,8 +25,18 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['ADMIN', 'STUDENT', 'INSTRUCTOR', 'CONSULTANT'],
+    enum: ['ADMIN', 'STUDENT', 'INSTRUCTOR', 'CONSULTANT', 'GUEST'],
     required: true,
+  },
+  requestedRole: {
+    type: String,
+    enum: ['INSTRUCTOR', 'CONSULTANT', 'STUDENT'],
+    default: null,
+  },
+  approvalStatus: {
+    type: String,
+    enum: ['PENDING', 'APPROVED', 'REJECTED'],
+    default: 'APPROVED',
   },
   status: {
     type: String,
