@@ -2,6 +2,11 @@ import mongoose from "mongoose";
 
 const courseSchema = new mongoose.Schema(
   {
+    _id: {
+      type: String,
+      required: true,
+      trim: true,
+    },
     code: {
       type: String,
       required: true,
