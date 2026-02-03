@@ -29,16 +29,6 @@ const userSchema = new mongoose.Schema(
       enum: ["ADMIN", "STUDENT", "INSTRUCTOR", "CONSULTANT", "GUEST"],
       required: true,
     },
-    requestedRole: {
-      type: String,
-      enum: ["INSTRUCTOR", "CONSULTANT", "STUDENT"],
-      default: null,
-    },
-    approvalStatus: {
-      type: String,
-      enum: ["PENDING", "APPROVED", "REJECTED"],
-      default: "APPROVED",
-    },
     status: {
       type: String,
       enum: ["ACTIVE", "INACTIVE"],
@@ -59,11 +49,10 @@ const userSchema = new mongoose.Schema(
   },
   {
     timestamps: false,
-  },
+  }
 );
-mps: (false,
-  // Indexes
-  userSchema.index({ email: 1 }));
+
+// Indexes (email index is created automatically by unique: true)
 userSchema.index({ phone: 1 });
 userSchema.index({ role: 1 });
 userSchema.index({ status: 1 });
@@ -71,3 +60,4 @@ userSchema.index({ status: 1 });
 const User = mongoose.model("User", userSchema);
 
 export default User;
+
