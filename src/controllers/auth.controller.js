@@ -162,7 +162,7 @@ export const getProfile = async (req, res) => {
 export const updateProfile = async (req, res) => {
   try {
     const userId = req.userId || req.params.id;
-    const { name, email, phone, address, dateOfBirth, gender } = req.body;
+    const { name, email, phone, address, dateOfBirth, gender, avatar } = req.body;
 
     const user = await User.findById(userId);
     if (!user) {
@@ -179,6 +179,7 @@ export const updateProfile = async (req, res) => {
     if (address !== undefined) user.address = address;
     if (dateOfBirth !== undefined) user.dateOfBirth = dateOfBirth;
     if (gender !== undefined) user.gender = gender;
+    if (avatar !== undefined) user.avatar = avatar;
 
     await user.save();
 
@@ -239,8 +240,8 @@ export const forgotPassword = async (req, res) => {
     await user.save();
 
     try {
-      // Send new password email
-      await sendNewPasswordEmail(user.email, newPassword);
+      // Send password reset email
+      await sendPasswordResetEmail(user.email, resetToken, resetUrl);
 
       res.json({
         status: 'success',
@@ -261,6 +262,26 @@ export const forgotPassword = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Có lỗi xảy ra. Vui lòng thử lại sau.',
+    });
+  }
+};
+
+// Logout
+export const logout = async (req, res) => {
+  try {
+    // In a stateless JWT setup, the client simply deletes the token.
+    // If we were using cookies, we would clear the cookie here.
+    // We can also blacklist the token in Redis if we want to be strict.
+    // For now, simple success response is enough for the client to proceed clearing local storage.
+
+    res.json({
+      status: 'success',
+      message: 'Logged out successfully'
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      message: error.message
     });
   }
 };

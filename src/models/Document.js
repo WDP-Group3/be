@@ -18,6 +18,10 @@ const documentSchema = new mongoose.Schema({
     type: String, // URL hoặc path đến file
     trim: true,
   },
+  cccdNumber: {
+    type: String,
+    trim: true,
+  },
   status: {
     type: String,
     enum: ['PENDING', 'APPROVED', 'REJECTED'],

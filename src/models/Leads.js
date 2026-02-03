@@ -9,6 +9,9 @@ const leadsSchema = new mongoose.Schema({
         type: String,
         required: true,
     },
+    note: {
+        type: String,
+    },
     course: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Course',

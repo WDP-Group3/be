@@ -3,12 +3,13 @@ import User from '../models/User.js';
 
 export const createLead = async (req, res) => {
     try {
-        const { name, phone, course } = req.body;
+        const { name, phone, course, timeToCall, note } = req.body;
         const lead = new Leads({
             name,
             phone,
             course,
-            timeToCall: new Date(),
+            note,
+            timeToCall,
             status: 'pending',
         });
         await lead.save();
@@ -85,6 +86,28 @@ export const assignLead = async (req, res) => {
         return res.status(200).json(lead);
     } catch (error) {
         console.error('Error assigning lead:', error);
+        return res.status(500).json({ message: 'Internal Server Error', error: error.message });
+    }
+}
+
+export const updateLeadStatus = async (req, res) => {
+    try {
+        const { leadId } = req.params;
+        const { status } = req.body;
+
+        const lead = await Leads.findByIdAndUpdate(
+            leadId,
+            { status },
+            { new: true }
+        ).populate('course', 'name').populate('assignTo', 'fullName email');
+
+        if (!lead) {
+            return res.status(404).json({ message: 'Lead not found' });
+        }
+
+        return res.status(200).json(lead);
+    } catch (error) {
+        console.error('Error updating lead status:', error);
         return res.status(500).json({ message: 'Internal Server Error', error: error.message });
     }
 }
