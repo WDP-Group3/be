@@ -1,5 +1,4 @@
 import User from '../models/User.js';
-import { sendApprovalEmail, sendRejectionEmail } from '../services/email.service.js';
 
 // Helper function to format user response (remove password)
 const formatUserResponse = (user) => {
@@ -19,19 +18,13 @@ const formatUserResponse = (user) => {
 export const getUserStats = async (req, res) => {
   try {
     const totalUsers = await User.countDocuments({
-      role: { $in: ['STUDENT', 'INSTRUCTOR', 'CONSULTANT'] },
-      approvalStatus: 'APPROVED'
-    });
-
-    const pendingUsers = await User.countDocuments({
-      approvalStatus: 'PENDING'
+      role: { $in: ['STUDENT', 'INSTRUCTOR', 'CONSULTANT', 'GUEST'] }
     });
 
     res.json({
       status: 'success',
       data: {
-        totalUsers,
-        pendingUsers
+        totalUsers
       }
     });
   } catch (error) {
@@ -42,12 +35,11 @@ export const getUserStats = async (req, res) => {
 // Lấy tất cả users
 export const getAllUsers = async (req, res) => {
   try {
-    const { role, status, approvalStatus, search } = req.query;
+    const { role, status, search } = req.query;
     const filter = {};
 
     if (role) filter.role = role;
     if (status) filter.status = status;
-    if (approvalStatus) filter.approvalStatus = approvalStatus;
 
     // Search by name or email
     if (search) {
@@ -182,81 +174,56 @@ export const deactivateUser = async (req, res) => {
   }
 };
 
-// Approve User Role Request
-export const approveUser = async (req, res) => {
+// Change User Role (Admin)
+export const changeUserRole = async (req, res) => {
   try {
     const { id } = req.params;
-    const user = await User.findById(id);
+    const { role } = req.body;
+
+    if (!role) {
+      return res.status(400).json({ status: 'error', message: 'Role is required' });
+    }
+
+    // Validate role
+    const validRoles = ['ADMIN', 'STUDENT', 'INSTRUCTOR', 'CONSULTANT', 'GUEST'];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({ status: 'error', message: 'Invalid role' });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      id,
+      { role },
+      { new: true }
+    );
 
     if (!user) {
       return res.status(404).json({ status: 'error', message: 'User not found' });
     }
 
-    if (user.approvalStatus !== 'PENDING' || !user.requestedRole) {
-      return res.status(400).json({ status: 'error', message: 'User does not have a pending role request' });
-    }
-
-    const startRole = user.role;
-    const newRole = user.requestedRole;
-
-    user.role = newRole;
-    user.approvalStatus = 'APPROVED';
-    // user.requestedRole = null; // Optional: Clear it or keep for history. Let's keep for now or clear? 
-    // Usually good to keep until next request? But simplicity says just set it. 
-    // Let's NOT clear it so we know what they asked for recently, or detailed logs. 
-    // Actually, to prevent re-approving, we should check status PENDING.
-
-    await user.save();
-
-    // Send email
-    try {
-      // Need to import these functions at the top
-      await sendApprovalEmail(user.email, newRole);
-    } catch (emailErr) {
-      console.error('Failed to send approval email', emailErr);
-    }
-
     res.json({
       status: 'success',
       data: formatUserResponse(user),
-      message: `Đã duyệt user lên quyền ${newRole}`
+      message: `Đã thay đổi quyền thành ${role}`
     });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
-// Reject User Role Request
-export const rejectUser = async (req, res) => {
+// Restore User (Admin) - Unlock account
+export const restoreUser = async (req, res) => {
   try {
     const { id } = req.params;
-    const user = await User.findById(id);
+    const user = await User.findByIdAndUpdate(id, { status: 'ACTIVE' }, { new: true });
 
     if (!user) {
       return res.status(404).json({ status: 'error', message: 'User not found' });
     }
 
-    if (user.approvalStatus !== 'PENDING') {
-      return res.status(400).json({ status: 'error', message: 'User is not pending approval' });
-    }
-
-    const requestedRole = user.requestedRole;
-    user.approvalStatus = 'REJECTED';
-    // user.requestedRole = null; // Clear request?
-
-    await user.save();
-
-    // Send email
-    try {
-      await sendRejectionEmail(user.email, requestedRole);
-    } catch (emailErr) {
-      console.error('Failed to send rejection email', emailErr);
-    }
-
     res.json({
       status: 'success',
       data: formatUserResponse(user),
-      message: 'Đã từ chối yêu cầu nâng quyền'
+      message: 'Đã khôi phục tài khoản user'
     });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
