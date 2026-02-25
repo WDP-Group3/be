@@ -31,8 +31,36 @@ const userSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["ACTIVE", "INACTIVE"],
-      default: "ACTIVE",
+      enum: ['ACTIVE', 'INACTIVE'],
+      default: 'ACTIVE',
+    },
+    
+    // --- [MỚI] Khu vực hoạt động (Dành cho Giáo viên) ---
+    workingLocation: {
+      type: String,
+      trim: true,
+      default: null, 
+    },
+    // ----------------------------------------------------
+
+    // Thông tin hồ sơ cá nhân
+    address: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    dateOfBirth: {
+      type: String,
+      default: '',
+    },
+    gender: {
+      type: String,
+      enum: ['MALE', 'FEMALE', 'OTHER', ''],
+      default: '',
+    },
+    avatar: {
+      type: String, // URL ảnh Cloudinary
+      default: null,
     },
     createdAt: {
       type: Date,
@@ -57,7 +85,9 @@ userSchema.index({ phone: 1 });
 userSchema.index({ role: 1 });
 userSchema.index({ status: 1 });
 
+// [QUAN TRỌNG] Index cho workingLocation để chức năng lọc chạy nhanh
+userSchema.index({ workingLocation: 1 });
+
 const User = mongoose.model("User", userSchema);
 
 export default User;
-
