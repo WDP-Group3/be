@@ -14,6 +14,7 @@ import notificationRoutes from './notification.routes.js';
 import bannerRoutes from './banner.routes.js';
 import reportRoutes from './report.routes.js';
 import feedbackRoutes from './feedback.routes.js';
+import scheduleRoutes from './schedule.routes.js';
 
 const router = express.Router();
 
@@ -37,6 +38,7 @@ router.use('/notifications', notificationRoutes);
 router.use('/banners', bannerRoutes);
 router.use('/reports', reportRoutes);
 router.use('/feedbacks', feedbackRoutes);
+router.use('/schedule', scheduleRoutes);
 
 export default router;
 
