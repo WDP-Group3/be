@@ -103,7 +103,7 @@ export const register = async (req, res) => {
       email: email.toLowerCase(),
       phone,
       password: hashedPassword,
-      role: "GUEST",
+      role: "STUDENT",
       status: "ACTIVE",
     });
 

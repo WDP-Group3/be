@@ -1,4 +1,5 @@
 import User from '../models/User.js';
+import bcrypt from 'bcryptjs';
 
 // Helper function to format user response (remove password)
 const formatUserResponse = (user) => {
@@ -21,7 +22,7 @@ const formatUserResponse = (user) => {
 export const getUserStats = async (req, res) => {
   try {
     const totalUsers = await User.countDocuments({
-      role: { $in: ['STUDENT', 'INSTRUCTOR', 'CONSULTANT', 'GUEST'] }
+      role: { $in: ['STUDENT', 'INSTRUCTOR', 'CONSULTANT'] }
     });
 
     res.json({
@@ -105,12 +106,18 @@ export const createUser = async (req, res) => {
       return res.status(400).json({ status: 'error', message: 'Email hoặc số điện thoại đã tồn tại' });
     }
 
-    const finalPassword = password || '123456';
+    // Default password '11111111@' per requirements if not provided
+    const finalPassword = password || '11111111@';
+    const hashedPassword = await bcrypt.hash(finalPassword, 10);
+
+    // Auto-fill required fields if missing (since Admin form only asks for Email)
+    const finalFullName = fullName || "New User";
+    const finalPhone = phone || "0000000000";
 
     const newUser = new User({
-      fullName,
+      fullName: finalFullName,
       email: email.toLowerCase(),
-      phone,
+      phone: finalPhone,
       role,
       password: finalPassword, // Nên hash password ở đây hoặc trong pre-save hook của Model
       status: 'ACTIVE',
@@ -214,7 +221,7 @@ export const changeUserRole = async (req, res) => {
     }
 
     // Validate role
-    const validRoles = ['ADMIN', 'STUDENT', 'INSTRUCTOR', 'CONSULTANT', 'GUEST'];
+    const validRoles = ['ADMIN', 'STUDENT', 'INSTRUCTOR', 'CONSULTANT'];
     if (!validRoles.includes(role)) {
       return res.status(400).json({ status: 'error', message: 'Invalid role' });
     }
