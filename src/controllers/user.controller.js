@@ -17,7 +17,25 @@ const formatUserResponse = (user) => {
   return userWithoutPassword;
 };
 
-// 1. Lấy tất cả users (Có hỗ trợ Search và Filter)
+// Get user stats
+export const getUserStats = async (req, res) => {
+  try {
+    const totalUsers = await User.countDocuments({
+      role: { $in: ['STUDENT', 'INSTRUCTOR', 'CONSULTANT', 'GUEST'] }
+    });
+
+    res.json({
+      status: 'success',
+      data: {
+        totalUsers
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// Lấy tất cả users
 export const getAllUsers = async (req, res) => {
   try {
     const { role, status, search } = req.query;
@@ -32,6 +50,14 @@ export const getAllUsers = async (req, res) => {
         { fullName: { $regex: search, $options: 'i' } },
         { email: { $regex: search, $options: 'i' } },
         { phone: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    // Search by name or email
+    if (search) {
+      filter.$or = [
+        { fullName: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } }
       ];
     }
 
@@ -172,10 +198,47 @@ export const getLocations = async (req, res) => {
     }).distinct('workingLocation');
     
     res.json({ status: 'success', data: locations });
-  } catch (error) {
+
+    } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
+// Change User Role (Admin)
+export const changeUserRole = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { role } = req.body;
+
+    if (!role) {
+      return res.status(400).json({ status: 'error', message: 'Role is required' });
+    }
+
+    // Validate role
+    const validRoles = ['ADMIN', 'STUDENT', 'INSTRUCTOR', 'CONSULTANT', 'GUEST'];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({ status: 'error', message: 'Invalid role' });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      id,
+      { role },
+      { new: true }
+    );
+
+    if (!user) {
+      return res.status(404).json({ status: 'error', message: 'User not found' });
+    }
+
+    res.json({
+      status: 'success',
+      data: formatUserResponse(user),
+      message: `Đã thay đổi quyền thành ${role}`
+    });
+    } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+  
 
 // 7. Lấy Giáo viên theo Khu vực
 export const getInstructorsByLocation = async (req, res) => {
@@ -193,6 +256,25 @@ export const getInstructorsByLocation = async (req, res) => {
     });
 
     res.json({ status: 'success', data: formatUserResponse(instructors) });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+// Restore User (Admin) - Unlock account
+export const restoreUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = await User.findByIdAndUpdate(id, { status: 'ACTIVE' }, { new: true });
+
+    if (!user) {
+      return res.status(404).json({ status: 'error', message: 'User not found' });
+    }
+
+    res.json({
+      status: 'success',
+      data: formatUserResponse(user),
+      message: 'Đã khôi phục tài khoản user'
+    });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }

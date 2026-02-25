@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+import mongoose from "mongoose";
 
 const userSchema = new mongoose.Schema(
   {
@@ -26,7 +26,7 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ['ADMIN', 'STUDENT', 'INSTRUCTOR', 'CONSULTANT'],
+      enum: ["ADMIN", "STUDENT", "INSTRUCTOR", "CONSULTANT", "GUEST"],
       required: true,
     },
     status: {
@@ -77,11 +77,10 @@ const userSchema = new mongoose.Schema(
   },
   {
     timestamps: false,
-  },
+  }
 );
 
-// Indexes
-userSchema.index({ email: 1 });
+// Indexes (email index is created automatically by unique: true)
 userSchema.index({ phone: 1 });
 userSchema.index({ role: 1 });
 userSchema.index({ status: 1 });
@@ -89,6 +88,6 @@ userSchema.index({ status: 1 });
 // [QUAN TRỌNG] Index cho workingLocation để chức năng lọc chạy nhanh
 userSchema.index({ workingLocation: 1 });
 
-const User = mongoose.model('User', userSchema);
+const User = mongoose.model("User", userSchema);
 
 export default User;
