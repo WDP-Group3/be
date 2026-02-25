@@ -10,6 +10,9 @@ const formatUserResponse = (user) => {
       return userWithoutPassword;
     });
   }
+  // Check if user is null/undefined
+  if (!user) return null;
+  
   const userObj = user.toObject ? user.toObject() : user;
   const { password, ...userWithoutPassword } = userObj;
   return userWithoutPassword;
@@ -41,6 +44,15 @@ export const getAllUsers = async (req, res) => {
 
     if (role) filter.role = role;
     if (status) filter.status = status;
+    
+    // Thêm tính năng tìm kiếm (Search)
+    if (search) {
+      filter.$or = [
+        { fullName: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } },
+      ];
+    }
 
     // Search by name or email
     if (search) {
@@ -51,30 +63,25 @@ export const getAllUsers = async (req, res) => {
     }
 
     const users = await User.find(filter).sort({ createdAt: -1 });
+    
     res.json({
       status: 'success',
       data: formatUserResponse(users),
       count: users.length,
     });
   } catch (error) {
-    res.status(500).json({
-      status: 'error',
-      message: error.message,
-    });
+    res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
-// Lấy user theo ID
+// 2. Lấy user theo ID
 export const getUserById = async (req, res) => {
   try {
     const { id } = req.params;
     const user = await User.findById(id);
 
     if (!user) {
-      return res.status(404).json({
-        status: 'error',
-        message: 'User not found',
-      });
+      return res.status(404).json({ status: 'error', message: 'User not found' });
     }
 
     res.json({
@@ -82,18 +89,14 @@ export const getUserById = async (req, res) => {
       data: formatUserResponse(user),
     });
   } catch (error) {
-    res.status(500).json({
-      status: 'error',
-      message: error.message,
-    });
+    res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
-
-// Create User (Admin)
+// 3. Create User (Admin) - Cập nhật để lưu workingLocation
 export const createUser = async (req, res) => {
   try {
-    const { fullName, email, phone, role, password } = req.body;
+    const { fullName, email, phone, role, password, workingLocation } = req.body;
 
     // Check existing
     const existingUser = await User.findOne({
@@ -116,8 +119,10 @@ export const createUser = async (req, res) => {
       email: email.toLowerCase(),
       phone: finalPhone,
       role,
-      password: hashedPassword,
-      status: 'ACTIVE'
+      password: finalPassword, // Nên hash password ở đây hoặc trong pre-save hook của Model
+      status: 'ACTIVE',
+      // Chỉ lưu workingLocation nếu role là INSTRUCTOR
+      workingLocation: role === 'INSTRUCTOR' ? workingLocation : undefined
     });
 
     await newUser.save();
@@ -132,18 +137,24 @@ export const createUser = async (req, res) => {
   }
 };
 
-// Update User (Admin)
+// 4. Update User (Admin) - Cập nhật để sửa workingLocation
 export const updateUser = async (req, res) => {
   try {
     const { id } = req.params;
-    const body = req.body;
+    const { fullName, phone, address, gender, dateOfBirth, avatar, workingLocation, role } = req.body;
+    
+    // Tạo object update data để kiểm soát những gì được sửa
+    const updateData = { fullName, phone, address, gender, dateOfBirth, avatar };
 
-    // Hash password if updating
-    if (body.password) {
-      body.password = await bcrypt.hash(body.password, 10);
+    // Nếu có gửi role lên thì cập nhật role
+    if (role) updateData.role = role;
+
+    // Cập nhật workingLocation
+    if (workingLocation) {
+        updateData.workingLocation = workingLocation;
     }
 
-    const user = await User.findByIdAndUpdate(id, body, { new: true });
+    const user = await User.findByIdAndUpdate(id, updateData, { new: true });
 
     if (!user) {
       return res.status(404).json({ status: 'error', message: 'User not found' });
@@ -159,7 +170,7 @@ export const updateUser = async (req, res) => {
   }
 };
 
-// Deactivate User (Admin)
+// 5. Deactivate User (Admin)
 export const deactivateUser = async (req, res) => {
   try {
     const { id } = req.params;
@@ -179,6 +190,26 @@ export const deactivateUser = async (req, res) => {
   }
 };
 
+// ==========================================
+// [NEW FEATURES] API CHO VIỆC LỌC GIÁO VIÊN
+// ==========================================
+
+// 6. Lấy danh sách các Khu vực hoạt động (Distinct Locations)
+export const getLocations = async (req, res) => {
+  try {
+    // Lấy tất cả các workingLocation khác null/rỗng của Instructor đang Active
+    const locations = await User.find({ 
+      role: 'INSTRUCTOR', 
+      status: 'ACTIVE',
+      workingLocation: { $ne: null } 
+    }).distinct('workingLocation');
+    
+    res.json({ status: 'success', data: locations });
+
+    } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
 // Change User Role (Admin)
 export const changeUserRole = async (req, res) => {
   try {
@@ -210,11 +241,32 @@ export const changeUserRole = async (req, res) => {
       data: formatUserResponse(user),
       message: `Đã thay đổi quyền thành ${role}`
     });
+    } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+  
+
+// 7. Lấy Giáo viên theo Khu vực
+export const getInstructorsByLocation = async (req, res) => {
+  try {
+    const { location } = req.query;
+    
+    if (!location) {
+      return res.status(400).json({ status: 'error', message: 'Vui lòng chọn khu vực' });
+    }
+
+    const instructors = await User.find({
+      role: 'INSTRUCTOR',
+      status: 'ACTIVE',
+      workingLocation: location
+    });
+
+    res.json({ status: 'success', data: formatUserResponse(instructors) });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
-
 // Restore User (Admin) - Unlock account
 export const restoreUser = async (req, res) => {
   try {
