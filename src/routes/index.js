@@ -14,6 +14,7 @@ import notificationRoutes from './notification.routes.js';
 import bannerRoutes from './banner.routes.js';
 import reportRoutes from './report.routes.js';
 import feedbackRoutes from './feedback.routes.js';
+import blogRoutes from './blog.routes.js';
 
 const router = express.Router();
 
@@ -27,6 +28,7 @@ router.use('/admin', adminRoutes);
 router.use('/users', userRoutes);
 router.use('/courses', courseRoutes);
 router.use('/batches', batchRoutes);
+router.use('/blogs', blogRoutes);
 router.use('/registrations', registrationRoutes);
 router.use('/payments', paymentRoutes);
 router.use('/documents', documentRoutes);
