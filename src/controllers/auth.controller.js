@@ -40,6 +40,13 @@ export const login = async (req, res) => {
       });
     }
 
+    if (user.status === "INACTIVE") {
+      return res.status(403).json({
+        status: "error",
+        message: "Tài khoản của bạn đã bị khóa. Vui lòng liên hệ quản trị viên.",
+      });
+    }
+
     // Check password
     // If user doesn't have password (existing users), allow login with any password for now
     // In production, you should require password reset
