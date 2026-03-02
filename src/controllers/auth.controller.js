@@ -238,9 +238,6 @@ export const forgotPassword = async (req, res) => {
     const resetTokenExpires = new Date();
     resetTokenExpires.setHours(resetTokenExpires.getHours() + 1); // Token expires in 1 hour
 
-    // Save reset token to user
-    user.resetPasswordToken = resetToken;
-    user.resetPasswordExpires = resetTokenExpires;
     await user.save();
 
     // Create reset URL

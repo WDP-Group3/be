@@ -34,12 +34,12 @@ const userSchema = new mongoose.Schema(
       enum: ['ACTIVE', 'INACTIVE'],
       default: 'ACTIVE',
     },
-    
+
     // --- [MỚI] Khu vực hoạt động (Dành cho Giáo viên) ---
     workingLocation: {
       type: String,
       trim: true,
-      default: null, 
+      default: null,
     },
     // ----------------------------------------------------
 
@@ -80,14 +80,6 @@ const userSchema = new mongoose.Schema(
   }
 );
 
-// Indexes (email index is created automatically by unique: true)
-userSchema.index({ phone: 1 });
-userSchema.index({ role: 1 });
-userSchema.index({ status: 1 });
-
-// [QUAN TRỌNG] Index cho workingLocation để chức năng lọc chạy nhanh
-userSchema.index({ workingLocation: 1 });
-
-const User = mongoose.model("User", userSchema);
+const User = mongoose.model('User', userSchema);
 
 export default User;
