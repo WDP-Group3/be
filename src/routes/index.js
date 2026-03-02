@@ -15,6 +15,7 @@ import bannerRoutes from './banner.routes.js';
 import leadRoutes from './lead.routes.js';
 import reportRoutes from './report.routes.js';
 import feedbackRoutes from './feedback.routes.js';
+import requestRoutes from './request.routes.js';
 
 const router = express.Router();
 
@@ -39,6 +40,7 @@ router.use('/banners', bannerRoutes);
 router.use('/leads', leadRoutes);
 router.use('/reports', reportRoutes);
 router.use('/feedbacks', feedbackRoutes);
+router.use('/requests', requestRoutes);
 
 export default router;
 

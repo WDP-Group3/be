@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+import mongoose from "mongoose";
 
 const userSchema = new mongoose.Schema(
   {
@@ -26,32 +26,23 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ['ADMIN', 'STUDENT', 'INSTRUCTOR', 'CONSULTANT'],
+      enum: ["ADMIN", "STUDENT", "INSTRUCTOR", "CONSULTANT", "GUEST"],
       required: true,
+    },
+    requestedRole: {
+      type: String,
+      enum: ["INSTRUCTOR", "CONSULTANT", "STUDENT"],
+      default: null,
+    },
+    approvalStatus: {
+      type: String,
+      enum: ["PENDING", "APPROVED", "REJECTED"],
+      default: "APPROVED",
     },
     status: {
       type: String,
-      enum: ['ACTIVE', 'INACTIVE'],
-      default: 'ACTIVE',
-    },
-    // Thông tin hồ sơ cá nhân (phục vụ Update Personal Profile)
-    address: {
-      type: String,
-      trim: true,
-      default: '',
-    },
-    dateOfBirth: {
-      type: String,
-      default: '',
-    },
-    gender: {
-      type: String,
-      enum: ['MALE', 'FEMALE', 'OTHER', ''],
-      default: '',
-    },
-    avatar: {
-      type: String, // URL ảnh Cloudinary
-      default: null,
+      enum: ["ACTIVE", "INACTIVE"],
+      default: "ACTIVE",
     },
     createdAt: {
       type: Date,
@@ -74,4 +65,3 @@ const userSchema = new mongoose.Schema(
 const User = mongoose.model('User', userSchema);
 
 export default User;
-

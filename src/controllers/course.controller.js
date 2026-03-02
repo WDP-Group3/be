@@ -94,13 +94,14 @@ export const createCourse = async (req, res) => {
     const {
       code,
       name,
-      estimatedCost, 
+      estimatedCost,
       description,
       image,
       status,
       estimatedDuration,
       location,
-      note
+      note,
+      feePayments
     } = req.body;
 
     if (!code || !name) {
@@ -126,14 +127,12 @@ export const createCourse = async (req, res) => {
       feePayments: feePayments || [],
       estimatedDuration,
       location: location || [],
-      status: "Active", 
+      status: "Active",
       description,
       image,
       location: location || [],
       note,
     });
-
-    console.log('Creating new course:', newCourse);
 
     await newCourse.save();
 
@@ -157,11 +156,9 @@ export const updateCourse = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 3. Lấy đúng field estimatedCost từ request
     const updates = req.body;
 
     const course = await Course.findByIdAndUpdate(id, updates, { new: true });
-    console.log('Updated course:', course);
     if (!course) {
       return res
         .status(404)
@@ -179,11 +176,6 @@ export const updateCourse = async (req, res) => {
   }
 };
 
-/**
- * @desc    Xoá course
- * @route   DELETE /api/courses/:id
- * @access  Private (Admin)
- */
 export const deleteCourse = async (req, res) => {
   try {
     const { id } = req.params;
