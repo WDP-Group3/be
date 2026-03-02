@@ -1,6 +1,117 @@
 import Document from '../models/Document.js';
 import Registration from '../models/Registration.js';
 
+// --- [REVIEW] Danh sách hồ sơ cần duyệt (Sale/Admin) ---
+export const getDocumentsForReview = async (req, res) => {
+  try {
+    const { status = 'PENDING', registerMethod } = req.query;
+
+    const filter = {};
+    if (status) filter.status = status;
+
+    // Consultant (Sale) chỉ xem hồ sơ theo registerMethod CONSULTANT
+    let allowedRegistrationIds = null;
+    if (req.user?.role === 'CONSULTANT') {
+      const regs = await Registration.find({ registerMethod: 'CONSULTANT' }).select('_id');
+      allowedRegistrationIds = regs.map((r) => r._id);
+    } else if (req.user?.role === 'ADMIN' && registerMethod) {
+      const regs = await Registration.find({ registerMethod }).select('_id');
+      allowedRegistrationIds = regs.map((r) => r._id);
+    }
+
+    if (Array.isArray(allowedRegistrationIds)) {
+      filter.registrationId = { $in: allowedRegistrationIds };
+    }
+
+    const documents = await Document.find(filter)
+      .populate({
+        path: 'registrationId',
+        select: 'studentId batchId status registerMethod createdAt',
+        populate: [
+          { path: 'studentId', select: 'fullName phone email role status' },
+          {
+            path: 'batchId',
+            select: 'location startDate status courseId',
+            populate: [{ path: 'courseId', select: 'code name' }],
+          },
+        ],
+      })
+      .sort({ _id: -1 });
+
+    res.json({
+      status: 'success',
+      data: documents,
+      count: documents.length,
+    });
+  } catch (error) {
+    console.error('Get documents for review error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: error.message,
+    });
+  }
+};
+
+// --- [REVIEW] Cập nhật trạng thái hồ sơ (Approve/Reject) ---
+export const updateDocumentStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    const allowed = ['PENDING', 'APPROVED', 'REJECTED'];
+    if (!allowed.includes(status)) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Trạng thái không hợp lệ',
+      });
+    }
+
+    const document = await Document.findById(id).populate({
+      path: 'registrationId',
+      select: 'registerMethod studentId batchId',
+    });
+
+    if (!document) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'Document not found',
+      });
+    }
+
+    // Consultant chỉ được duyệt hồ sơ thuộc luồng CONSULTANT
+    if (req.user?.role === 'CONSULTANT' && document.registrationId?.registerMethod !== 'CONSULTANT') {
+      return res.status(403).json({
+        status: 'error',
+        message: 'Bạn không có quyền duyệt hồ sơ này',
+      });
+    }
+
+    document.status = status;
+    await document.save();
+
+    const result = await Document.findById(document._id).populate({
+      path: 'registrationId',
+      select: 'studentId batchId status registerMethod',
+      populate: [
+        { path: 'studentId', select: 'fullName phone email' },
+        { path: 'batchId', select: 'location startDate courseId', populate: [{ path: 'courseId', select: 'code name' }] },
+      ],
+    });
+
+    res.json({
+      status: 'success',
+      data: result,
+      message: 'Cập nhật trạng thái hồ sơ thành công',
+    });
+  } catch (error) {
+    console.error('Update document status error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: error.message,
+    });
+  }
+};
+
 // Lấy tất cả documents
 export const getAllDocuments = async (req, res) => {
   try {
