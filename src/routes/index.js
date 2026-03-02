@@ -18,6 +18,7 @@ import feedbackRoutes from './feedback.routes.js';
 import requestRoutes from './request.routes.js';
 import blogRoutes from './blog.routes.js';
 import scheduleRoutes from './schedule.routes.js';
+import invoiceRoutes from './invoice.routes.js';
 
 const router = express.Router();
 
@@ -34,6 +35,7 @@ router.use('/batches', batchRoutes);
 router.use('/blogs', blogRoutes);
 router.use('/registrations', registrationRoutes);
 router.use('/payments', paymentRoutes);
+router.use('/invoices', invoiceRoutes);
 router.use('/documents', documentRoutes);
 router.use('/bookings', bookingRoutes);
 router.use('/exam-questions', examQuestionRoutes);
