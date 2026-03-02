@@ -1,5 +1,5 @@
 import User from '../models/User.js';
-import { sendApprovalEmail, sendRejectionEmail } from '../services/email.service.js';
+import bcrypt from 'bcryptjs';
 
 // Helper function to format user response (remove password)
 const formatUserResponse = (user) => {
@@ -10,6 +10,9 @@ const formatUserResponse = (user) => {
       return userWithoutPassword;
     });
   }
+  // Check if user is null/undefined
+  if (!user) return null;
+  
   const userObj = user.toObject ? user.toObject() : user;
   const { password, ...userWithoutPassword } = userObj;
   return userWithoutPassword;
@@ -19,19 +22,13 @@ const formatUserResponse = (user) => {
 export const getUserStats = async (req, res) => {
   try {
     const totalUsers = await User.countDocuments({
-      role: { $in: ['STUDENT', 'INSTRUCTOR', 'CONSULTANT'] },
-      approvalStatus: 'APPROVED'
-    });
-
-    const pendingUsers = await User.countDocuments({
-      approvalStatus: 'PENDING'
+      role: { $in: ['STUDENT', 'INSTRUCTOR', 'CONSULTANT'] }
     });
 
     res.json({
       status: 'success',
       data: {
-        totalUsers,
-        pendingUsers
+        totalUsers
       }
     });
   } catch (error) {
@@ -42,12 +39,20 @@ export const getUserStats = async (req, res) => {
 // Lấy tất cả users
 export const getAllUsers = async (req, res) => {
   try {
-    const { role, status, approvalStatus, search } = req.query;
+    const { role, status, search } = req.query;
     const filter = {};
 
     if (role) filter.role = role;
     if (status) filter.status = status;
-    if (approvalStatus) filter.approvalStatus = approvalStatus;
+    
+    // Thêm tính năng tìm kiếm (Search)
+    if (search) {
+      filter.$or = [
+        { fullName: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } },
+      ];
+    }
 
     // Search by name or email
     if (search) {
@@ -58,30 +63,25 @@ export const getAllUsers = async (req, res) => {
     }
 
     const users = await User.find(filter).sort({ createdAt: -1 });
+    
     res.json({
       status: 'success',
       data: formatUserResponse(users),
       count: users.length,
     });
   } catch (error) {
-    res.status(500).json({
-      status: 'error',
-      message: error.message,
-    });
+    res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
-// Lấy user theo ID
+// 2. Lấy user theo ID
 export const getUserById = async (req, res) => {
   try {
     const { id } = req.params;
     const user = await User.findById(id);
 
     if (!user) {
-      return res.status(404).json({
-        status: 'error',
-        message: 'User not found',
-      });
+      return res.status(404).json({ status: 'error', message: 'User not found' });
     }
 
     res.json({
@@ -89,18 +89,14 @@ export const getUserById = async (req, res) => {
       data: formatUserResponse(user),
     });
   } catch (error) {
-    res.status(500).json({
-      status: 'error',
-      message: error.message,
-    });
+    res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
-
-// Create User (Admin)
+// 3. Create User (Admin) - Cập nhật để lưu workingLocation
 export const createUser = async (req, res) => {
   try {
-    const { fullName, email, phone, role, password } = req.body;
+    const { fullName, email, phone, role, password, workingLocation } = req.body;
 
     // Check existing
     const existingUser = await User.findOne({
@@ -110,23 +106,24 @@ export const createUser = async (req, res) => {
       return res.status(400).json({ status: 'error', message: 'Email hoặc số điện thoại đã tồn tại' });
     }
 
-    // Default password if not provided (mock send via email)
-    const finalPassword = password || '123456';
+    // Default password '11111111@' per requirements if not provided
+    const finalPassword = password || '11111111@';
+    const hashedPassword = await bcrypt.hash(finalPassword, 10);
+
+    // Auto-fill required fields if missing (since Admin form only asks for Email)
+    const finalFullName = fullName || "New User";
+    const finalPhone = phone || "0000000000";
 
     const newUser = new User({
-      fullName,
+      fullName: finalFullName,
       email: email.toLowerCase(),
-      phone,
+      phone: finalPhone,
       role,
-      password: finalPassword, // Model should hash this pre-save or we handle it here
-      status: 'ACTIVE'
+      password: finalPassword, // Nên hash password ở đây hoặc trong pre-save hook của Model
+      status: 'ACTIVE',
+      // Chỉ lưu workingLocation nếu role là INSTRUCTOR
+      workingLocation: role === 'INSTRUCTOR' ? workingLocation : undefined
     });
-
-    // Note: If model doesn't hash on pre-save, we need to hash here. 
-    // Assuming pre-save hook exists inside User model or we rely on the Register logic duplication?
-    // Let's assume we need to import bcrypt if we were to be thorough, but for brevity we'll save as is
-    // or rely on the `register` controller logic. But `register` hashes.
-    // Let's rely on simple save for now, assuming Mongoose Middleware or we fix it if needed.
 
     await newUser.save();
 
@@ -140,13 +137,24 @@ export const createUser = async (req, res) => {
   }
 };
 
-// Update User (Admin)
+// 4. Update User (Admin) - Cập nhật để sửa workingLocation
 export const updateUser = async (req, res) => {
   try {
     const { id } = req.params;
-    const body = req.body;
+    const { fullName, phone, address, gender, dateOfBirth, avatar, workingLocation, role } = req.body;
+    
+    // Tạo object update data để kiểm soát những gì được sửa
+    const updateData = { fullName, phone, address, gender, dateOfBirth, avatar };
 
-    const user = await User.findByIdAndUpdate(id, body, { new: true });
+    // Nếu có gửi role lên thì cập nhật role
+    if (role) updateData.role = role;
+
+    // Cập nhật workingLocation
+    if (workingLocation) {
+        updateData.workingLocation = workingLocation;
+    }
+
+    const user = await User.findByIdAndUpdate(id, updateData, { new: true });
 
     if (!user) {
       return res.status(404).json({ status: 'error', message: 'User not found' });
@@ -162,7 +170,7 @@ export const updateUser = async (req, res) => {
   }
 };
 
-// Deactivate User (Admin)
+// 5. Deactivate User (Admin)
 export const deactivateUser = async (req, res) => {
   try {
     const { id } = req.params;
@@ -182,81 +190,97 @@ export const deactivateUser = async (req, res) => {
   }
 };
 
-// Approve User Role Request
-export const approveUser = async (req, res) => {
+// ==========================================
+// [NEW FEATURES] API CHO VIỆC LỌC GIÁO VIÊN
+// ==========================================
+
+// 6. Lấy danh sách các Khu vực hoạt động (Distinct Locations)
+export const getLocations = async (req, res) => {
+  try {
+    // Lấy tất cả các workingLocation khác null/rỗng của Instructor đang Active
+    const locations = await User.find({ 
+      role: 'INSTRUCTOR', 
+      status: 'ACTIVE',
+      workingLocation: { $ne: null } 
+    }).distinct('workingLocation');
+    
+    res.json({ status: 'success', data: locations });
+
+    } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+// Change User Role (Admin)
+export const changeUserRole = async (req, res) => {
   try {
     const { id } = req.params;
-    const user = await User.findById(id);
+    const { role } = req.body;
+
+    if (!role) {
+      return res.status(400).json({ status: 'error', message: 'Role is required' });
+    }
+
+    // Validate role
+    const validRoles = ['ADMIN', 'STUDENT', 'INSTRUCTOR', 'CONSULTANT'];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({ status: 'error', message: 'Invalid role' });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      id,
+      { role },
+      { new: true }
+    );
 
     if (!user) {
       return res.status(404).json({ status: 'error', message: 'User not found' });
     }
 
-    if (user.approvalStatus !== 'PENDING' || !user.requestedRole) {
-      return res.status(400).json({ status: 'error', message: 'User does not have a pending role request' });
-    }
-
-    const startRole = user.role;
-    const newRole = user.requestedRole;
-
-    user.role = newRole;
-    user.approvalStatus = 'APPROVED';
-    // user.requestedRole = null; // Optional: Clear it or keep for history. Let's keep for now or clear? 
-    // Usually good to keep until next request? But simplicity says just set it. 
-    // Let's NOT clear it so we know what they asked for recently, or detailed logs. 
-    // Actually, to prevent re-approving, we should check status PENDING.
-
-    await user.save();
-
-    // Send email
-    try {
-      // Need to import these functions at the top
-      await sendApprovalEmail(user.email, newRole);
-    } catch (emailErr) {
-      console.error('Failed to send approval email', emailErr);
-    }
-
     res.json({
       status: 'success',
       data: formatUserResponse(user),
-      message: `Đã duyệt user lên quyền ${newRole}`
+      message: `Đã thay đổi quyền thành ${role}`
     });
+    } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+  
+
+// 7. Lấy Giáo viên theo Khu vực
+export const getInstructorsByLocation = async (req, res) => {
+  try {
+    const { location } = req.query;
+    
+    if (!location) {
+      return res.status(400).json({ status: 'error', message: 'Vui lòng chọn khu vực' });
+    }
+
+    const instructors = await User.find({
+      role: 'INSTRUCTOR',
+      status: 'ACTIVE',
+      workingLocation: location
+    });
+
+    res.json({ status: 'success', data: formatUserResponse(instructors) });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
-
-// Reject User Role Request
-export const rejectUser = async (req, res) => {
+// Restore User (Admin) - Unlock account
+export const restoreUser = async (req, res) => {
   try {
     const { id } = req.params;
-    const user = await User.findById(id);
+    const user = await User.findByIdAndUpdate(id, { status: 'ACTIVE' }, { new: true });
 
     if (!user) {
       return res.status(404).json({ status: 'error', message: 'User not found' });
     }
 
-    if (user.approvalStatus !== 'PENDING') {
-      return res.status(400).json({ status: 'error', message: 'User is not pending approval' });
-    }
-
-    const requestedRole = user.requestedRole;
-    user.approvalStatus = 'REJECTED';
-    // user.requestedRole = null; // Clear request?
-
-    await user.save();
-
-    // Send email
-    try {
-      await sendRejectionEmail(user.email, requestedRole);
-    } catch (emailErr) {
-      console.error('Failed to send rejection email', emailErr);
-    }
-
     res.json({
       status: 'success',
       data: formatUserResponse(user),
-      message: 'Đã từ chối yêu cầu nâng quyền'
+      message: 'Đã khôi phục tài khoản user'
     });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });

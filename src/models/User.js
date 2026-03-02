@@ -26,23 +26,41 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ["ADMIN", "STUDENT", "INSTRUCTOR", "CONSULTANT", "GUEST"],
+      enum: ["ADMIN", "STUDENT", "INSTRUCTOR", "CONSULTANT"],
       required: true,
-    },
-    requestedRole: {
-      type: String,
-      enum: ["INSTRUCTOR", "CONSULTANT", "STUDENT"],
-      default: null,
-    },
-    approvalStatus: {
-      type: String,
-      enum: ["PENDING", "APPROVED", "REJECTED"],
-      default: "APPROVED",
     },
     status: {
       type: String,
-      enum: ["ACTIVE", "INACTIVE"],
-      default: "ACTIVE",
+      enum: ['ACTIVE', 'INACTIVE'],
+      default: 'ACTIVE',
+    },
+
+    // --- [MỚI] Khu vực hoạt động (Dành cho Giáo viên) ---
+    workingLocation: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    // ----------------------------------------------------
+
+    // Thông tin hồ sơ cá nhân
+    address: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    dateOfBirth: {
+      type: String,
+      default: '',
+    },
+    gender: {
+      type: String,
+      enum: ['MALE', 'FEMALE', 'OTHER', ''],
+      default: '',
+    },
+    avatar: {
+      type: String, // URL ảnh Cloudinary
+      default: null,
     },
     createdAt: {
       type: Date,
@@ -59,7 +77,7 @@ const userSchema = new mongoose.Schema(
   },
   {
     timestamps: false,
-  },
+  }
 );
 
 const User = mongoose.model('User', userSchema);

@@ -40,6 +40,13 @@ export const login = async (req, res) => {
       });
     }
 
+    if (user.status === "INACTIVE") {
+      return res.status(403).json({
+        status: "error",
+        message: "Tài khoản của bạn đã bị khóa. Vui lòng liên hệ quản trị viên.",
+      });
+    }
+
     // Check password
     // If user doesn't have password (existing users), allow login with any password for now
     // In production, you should require password reset
@@ -76,7 +83,7 @@ export const login = async (req, res) => {
 // Register
 export const register = async (req, res) => {
   try {
-    const { name, email, phone, password, role = "STUDENT" } = req.body;
+    const { name, email, phone, password } = req.body;
 
     if (!name || !email || !phone || !password) {
       return res.status(400).json({
@@ -97,31 +104,13 @@ export const register = async (req, res) => {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Determine initial role and approval status
-    let initialRole = "GUEST";
-    let approvalStatus = "PENDING";
-    let requestedRole = role;
-
-    // Special case for ADMIN (if we allow creating admin via this API, which we shouldn't publicly)
-    // But IF we did, we'd check here. For now, everyone becomes GUEST.
-    if (role === "ADMIN") {
-      // Decide policy: either forbid or allow. 
-      // Assuming public register -> NO ADMIN allowed. 
-      // If seeded/internal, they use different flow.
-      // Let's force GUEST even if they ask for ADMIN, or error out.
-      // For safety: 
-      requestedRole = "STUDENT"; // Fallback or Error
-    }
-
-    // Create new user
+    // Create new user with GUEST role by default
     const user = new User({
       fullName: name,
       email: email.toLowerCase(),
       phone,
       password: hashedPassword,
-      role: initialRole,
-      requestedRole: requestedRole,
-      approvalStatus: approvalStatus,
+      role: "STUDENT",
       status: "ACTIVE",
     });
 

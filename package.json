@@ -28,7 +28,8 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.0.3",
     "nodemailer": "^7.0.12",
-    "vnpay": "^2.4.4"
+    "vnpay": "^2.4.4",
+    "node-cron": "^4.2.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

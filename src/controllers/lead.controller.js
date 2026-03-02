@@ -34,6 +34,8 @@ export const getAllLeads = async (req, res) => {
         // Phân quyền: Nếu là CONSULTANT thì chỉ lấy lead được gán cho mình
         if (user && user.role === 'CONSULTANT') {
             query.assignTo = userId;
+        } else if (user && user.role !== 'ADMIN') {
+            return res.status(403).json({ message: 'Forbidden' });
         }
 
         if (search) {
