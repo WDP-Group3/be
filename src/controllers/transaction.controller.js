@@ -1,73 +1,205 @@
-
-import dotenv from 'dotenv';
-import { VNPay, ignoreLogger, ProductCode, VnpLocale, dateFormat } from 'vnpay';
+import crypto from 'crypto';
 import Transaction from '../models/Transaction.js';
-import mongoose from 'mongoose';
+import Payment from '../models/Payment.js';
 
-dotenv.config();
+const SEPAY_BANK_CODE = process.env.SEPAY_BANK_CODE || '';
+const SEPAY_BANK_ACCOUNT = process.env.SEPAY_BANK_ACCOUNT || '';
+const SEPAY_ACCOUNT_NAME = process.env.SEPAY_ACCOUNT_NAME || '';
+const SEPAY_WEBHOOK_API_KEY = process.env.SEPAY_WEBHOOK_API_KEY || '';
 
-const TMN_CODE = process.env.TMN_CODE || '2VBV7V3L6TA36WY82C996VTKIYHK9NVS';
-const SERCURE_SECRET = process.env.SERCURE_SECRET || 'http://localhost:3000/api';
-const RETURN_URL = process.env.RETURN_URL || '';
-const URL_FE = process.env.URL_FE || 'http://localhost:5173';
+const randomCode = () => crypto.randomBytes(4).toString('hex').toUpperCase();
+
+const getHeaderApiKey = (req) => {
+  const auth = req.headers?.authorization || req.headers?.Authorization || '';
+  if (!auth) return '';
+  const [prefix, key] = auth.split(' ');
+  if (String(prefix || '').toLowerCase() === 'apikey') return key || '';
+  return auth;
+};
 
 export const createQR = async (req, res) => {
-    try {
-        const { vnp_Amount, vnp_OrderInfo, user } = req.body;
+  try {
+    const { vnp_Amount, vnp_OrderInfo, user, registrationId } = req.body;
 
-        const vnpay = new VNPay({
-            tmnCode: TMN_CODE,
-            secureSecret: SERCURE_SECRET,
-            vnpayHost: 'https://sandbox.vnpayment.vn',
-            testMode: true,
-            hashAlgorithm: 'SHA512',
-            loggerFn: ignoreLogger,
-        });
-
-
-        // Create a pending transaction record
-        const transaction = new Transaction({
-            vnp_Amount: vnp_Amount.toString(),
-            status: 'pending',
-            user: user,
-        });
-
-        await transaction.save();
-
-        const tomorrow = new Date();
-        tomorrow.setDate(tomorrow.getDate() + 1);
-
-        const vnpayResponse = await vnpay.buildPaymentUrl({
-            vnp_Amount: vnp_Amount,
-            vnp_IpAddr: '127.0.0.1',
-            vnp_TxnRef: transaction._id,
-            vnp_OrderInfo: vnp_OrderInfo,
-            vnp_OrderType: ProductCode.Other,
-            vnp_ReturnUrl: RETURN_URL,
-            vnp_Locale: VnpLocale.VN,
-            vnp_CreateDate: dateFormat(new Date()),
-            vnp_ExpireDate: dateFormat(tomorrow),
-        });
-
-        return res.status(201).json(vnpayResponse)
-    } catch (error) {
-        console.error('Error creating QR:', error);
-        return res.status(500).json({ message: 'Internal Server Error', error: error.message });
+    const amount = Number(vnp_Amount);
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ status: 'error', message: 'Số tiền không hợp lệ' });
     }
-}
+
+    const transferContent = `HP-${Date.now()}-${randomCode()}`;
+
+    const transaction = await Transaction.create({
+      amount,
+      orderInfo: vnp_OrderInfo || '',
+      transferContent,
+      user: user || req.userId,
+      registrationId: registrationId || null,
+      status: 'pending',
+    });
+
+    if (!SEPAY_BANK_CODE || !SEPAY_BANK_ACCOUNT) {
+      return res.status(500).json({
+        status: 'error',
+        message: 'Thiếu cấu hình SEPAY_BANK_CODE hoặc SEPAY_BANK_ACCOUNT trong backend .env',
+      });
+    }
+
+    const qrPayload = `https://qr.sepay.vn/img?acc=${encodeURIComponent(SEPAY_BANK_ACCOUNT)}&bank=${encodeURIComponent(SEPAY_BANK_CODE)}&amount=${encodeURIComponent(amount)}&des=${encodeURIComponent(transferContent)}`;
+
+    return res.status(201).json({
+      status: 'success',
+      data: {
+        transactionId: transaction._id,
+        transferContent,
+        amount,
+        bankCode: SEPAY_BANK_CODE,
+        bankAccount: SEPAY_BANK_ACCOUNT,
+        accountName: SEPAY_ACCOUNT_NAME,
+        paymentUrl: qrPayload,
+      },
+      message: 'Tạo QR SePay thành công',
+    });
+  } catch (error) {
+    console.error('Error creating SePay QR:', error);
+    return res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
 export const checkStatus = async (req, res) => {
-    try {
-        const { vnp_TxnRef, ...updateData } = req.query;
-        const transaction = await Transaction.findByIdAndUpdate(vnp_TxnRef, {
-            ...updateData,
-            status: 'completed'
-        }, { new: true });
-        if (!transaction) {
-            return res.status(404).json({ message: 'Transaction not found' });
-        }
-        res.redirect(URL_FE);
-    } catch (error) {
-        console.error('Error checking status:', error);
-        return res.status(500).json({ message: 'Internal Server Error', error: error.message });
+  try {
+    const incomingKey = getHeaderApiKey(req);
+    if (!SEPAY_WEBHOOK_API_KEY || incomingKey !== SEPAY_WEBHOOK_API_KEY) {
+      return res.status(401).json({ status: 'error', message: 'Unauthorized webhook' });
     }
-}
+
+    const payload = req.body || {};
+    const transferContent = payload.transferContent || payload.content || payload.description || '';
+    if (!transferContent) {
+      return res.status(400).json({ status: 'error', message: 'Thiếu transferContent' });
+    }
+
+    const transaction = await Transaction.findOne({ transferContent, status: { $ne: 'completed' } });
+    if (!transaction) {
+      return res.status(404).json({ status: 'error', message: 'Không tìm thấy giao dịch pending' });
+    }
+
+    const paidAmount = Number(payload.transferAmount || payload.amount || 0);
+    if (paidAmount < Number(transaction.amount || 0)) {
+      return res.status(400).json({ status: 'error', message: 'Số tiền nhận nhỏ hơn số tiền yêu cầu' });
+    }
+
+    transaction.status = 'completed';
+    transaction.paidAt = new Date();
+    transaction.providerTransactionId = String(payload.id || payload.transactionId || payload.referenceCode || '');
+    transaction.rawPayload = payload;
+    await transaction.save();
+
+    if (transaction.registrationId) {
+      const existedPayment = await Payment.findOne({ note: `SePay auto webhook - ${transaction.transferContent}` });
+      if (!existedPayment) {
+        await Payment.create({
+          registrationId: transaction.registrationId,
+          amount: Number(transaction.amount),
+          method: 'ONLINE',
+          receivedBy: 'SYSTEM',
+          paidAt: transaction.paidAt,
+          note: `SePay auto webhook - ${transaction.transferContent}`,
+        });
+      }
+    }
+
+    return res.json({ status: 'success', message: 'Đã xác nhận thanh toán SePay' });
+  } catch (error) {
+    console.error('Error processing SePay webhook:', error);
+    return res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+export const getTransactionStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const transaction = await Transaction.findById(id).lean();
+
+    if (!transaction) {
+      return res.status(404).json({ status: 'error', message: 'Không tìm thấy giao dịch' });
+    }
+
+    const isOwner = String(transaction.user || '') === String(req.userId || '');
+    const isAdminOrSale = ['ADMIN', 'CONSULTANT'].includes(req.user?.role);
+
+    if (!isOwner && !isAdminOrSale) {
+      return res.status(403).json({ status: 'error', message: 'Bạn không có quyền xem giao dịch này' });
+    }
+
+    return res.json({
+      status: 'success',
+      data: {
+        id: transaction._id,
+        paymentStatus: transaction.status,
+        amount: transaction.amount,
+        transferContent: transaction.transferContent,
+        paidAt: transaction.paidAt,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+export const getTransactions = async (req, res) => {
+  try {
+    const filter = {};
+    const { status } = req.query;
+
+    if (status) filter.status = status;
+
+    if (req.user?.role === 'STUDENT') {
+      filter.user = req.userId;
+    }
+
+    const transactions = await Transaction.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .lean();
+
+    return res.json({ status: 'success', data: transactions });
+  } catch (error) {
+    return res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+export const confirmTransaction = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const transaction = await Transaction.findById(id);
+    if (!transaction) {
+      return res.status(404).json({ status: 'error', message: 'Không tìm thấy giao dịch' });
+    }
+
+    if (transaction.status !== 'completed') {
+      transaction.status = 'completed';
+      transaction.paidAt = transaction.paidAt || new Date();
+      await transaction.save();
+    }
+
+    if (transaction.registrationId) {
+      const note = `SePay auto webhook - ${transaction.transferContent}`;
+      const existedPayment = await Payment.findOne({ note });
+      if (!existedPayment) {
+        await Payment.create({
+          registrationId: transaction.registrationId,
+          amount: Number(transaction.amount),
+          method: 'ONLINE',
+          receivedBy: 'SYSTEM',
+          paidAt: transaction.paidAt || new Date(),
+          note,
+        });
+      }
+    }
+
+    return res.json({ status: 'success', message: 'Đã xác nhận giao dịch', data: transaction });
+  } catch (error) {
+    return res.status(500).json({ status: 'error', message: error.message });
+  }
+};
