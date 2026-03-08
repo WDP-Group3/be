@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { connectDB } from './config/db.js';
 import apiRoutes from './routes/index.js';
 import { initCloudinary, isCloudinaryConfigured, pingCloudinary } from './services/cloudinary.service.js';
+import { startFridayReminderCron, startAttendanceReminderCron } from './services/cron.job.js';
 
 // Load environment variables
 dotenv.config();
@@ -26,6 +27,12 @@ if (isCloudinaryConfigured()) {
 } else {
   console.log('☁️  Cloudinary: not configured (CLOUDINARY_URL is missing)');
 }
+
+// Khởi động cron job nhắc nhở giáo viên (17:30 thứ 6)
+startFridayReminderCron();
+
+// Khởi động cron job nhắc nhở điểm danh (chạy mỗi 5 phút)
+startAttendanceReminderCron();
 
 // Routes
 app.get('/', (req, res) => {

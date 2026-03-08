@@ -1,15 +1,22 @@
 import Booking from '../models/Booking.js';
 import Schedule from '../models/Schedule.js';       
 import Registration from '../models/Registration.js';
+import User from '../models/User.js';
+import { sendNotificationEmail } from '../services/email.service.js';
 
 // [HELPER 1] Kiểm tra khoảng cách thời gian (Quy tắc 12h)
 // Logic: Trả về số giờ chênh lệch. Nếu < 0 là quá khứ, < 12 là gấp.
 const checkTimeDistance = (slotDateStr, slotTimeSlot) => {
-  const SLOT_START_HOURS = { "1": 7, "2": 9, "3": 13, "4": 15 };
+  // 10 ca học theo frontend
+  const SLOT_START_HOURS = { 
+    "1": 7, "2": 8.5, "3": 10, "4": 11.5, 
+    "5": 13, "6": 14.5, "7": 16, "8": 17.5, 
+    "9": 19, "10": 20.5 
+  };
   const startHour = SLOT_START_HOURS[String(slotTimeSlot)] || 7;
   
   const targetTime = new Date(slotDateStr);
-  targetTime.setHours(startHour, 0, 0, 0); 
+  targetTime.setHours(Math.floor(startHour), (startHour % 1) * 60, 0, 0); 
 
   const now = new Date();
   const diffMs = targetTime - now;
@@ -43,6 +50,42 @@ const checkBookingLimit = (slotDateStr) => {
   }
 
   // Lưu ý: Không chặn quá khứ ở đây vì hàm checkTimeDistance đã lo việc đó (quy tắc 12h)
+  return { allowed: true };
+};
+
+// [HELPER 3 - MỚI] Kiểm tra thời điểm mở đăng ký tuần sau (18:30 thứ 6)
+// Học viên chỉ có thể đăng ký tuần sau SAU 18:30 (6:30 tối) thứ 6
+const checkNextWeekBookingTime = (slotDateStr) => {
+  const now = new Date();
+  const targetDate = new Date(slotDateStr);
+
+  // Tính ngày Chủ nhật tuần này
+  const currentDay = now.getDay();
+  const daysUntilSunday = 0 - currentDay + (currentDay === 0 ? 0 : 7);
+  const thisSunday = new Date(now);
+  thisSunday.setDate(now.getDate() + daysUntilSunday);
+  thisSunday.setHours(23, 59, 59, 999);
+
+  // Nếu ngày đặt nằm trong tuần này hoặc quá khứ -> cho phép
+  if (targetDate <= thisSunday) {
+    return { allowed: true };
+  }
+
+  // Nếu ngày đặt là tuần sau -> kiểm tra thời gian
+  // Tính 18:30 thứ 6 của tuần này
+  const thisFriday = new Date(now);
+  const diffToFriday = 5 - currentDay;
+  thisFriday.setDate(now.getDate() + diffToFriday);
+  thisFriday.setHours(18, 30, 0, 0); // 18:30:00
+
+  // Nếu chưa đến 18:30 thứ 6 -> chặn đăng ký tuần sau
+  if (now < thisFriday) {
+    return { 
+      allowed: false, 
+      message: 'Chưa đến giờ mở đăng ký tuần sau. Bạn sẽ có thể đăng ký lịch tuần sau vào lúc 18:30 (6:30 tối) thứ 6.' 
+    };
+  }
+
   return { allowed: true };
 };
 
@@ -107,7 +150,13 @@ export const createBooking = async (req, res) => {
       return res.status(400).json({ status: 'error', message: limitCheck.message });
     }
 
-    // C. CÁC CHECK LOGIC KHÁC
+    // C. CHECK THỜI ĐIỂM MỞ ĐĂNG KÝ TUẦN SAU (18:30 thứ 6)
+    const timeCheck = checkNextWeekBookingTime(date);
+    if (!timeCheck.allowed) {
+      return res.status(400).json({ status: 'error', message: timeCheck.message });
+    }
+
+    // D. CÁC CHECK LOGIC KHÁC
     const registration = await Registration.findOne({
       studentId,
       status: { $in: ['STUDYING', 'PROCESSING', 'NEW'] } 
@@ -245,6 +294,154 @@ export const submitFeedback = async (req, res) => {
     await booking.save();
 
     res.json({ status: 'success', message: 'Cảm ơn bạn đã đánh giá!' });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// [HELPER 4] Lấy thông tin trạng thái mở đăng ký tuần sau
+// Dùng để frontend hiển thị thông báo cho học viên
+export const getBookingStatus = async (req, res) => {
+  try {
+    const now = new Date();
+    const currentDay = now.getDay(); // 0 (Sun) - 6 (Sat)
+
+    // Tính 18:30 thứ 6 của tuần này
+    const thisFriday = new Date(now);
+    const diffToFriday = 5 - currentDay;
+    thisFriday.setDate(now.getDate() + diffToFriday);
+    thisFriday.setHours(18, 30, 0, 0);
+
+    // Tính Chủ nhật tuần này
+    const thisSunday = new Date(now);
+    const daysUntilSunday = 0 - currentDay + (currentDay === 0 ? 0 : 7);
+    thisSunday.setDate(now.getDate() + daysUntilSunday);
+    thisSunday.setHours(23, 59, 59, 999);
+
+    // Tính Chủ nhật tuần sau
+    const nextSunday = new Date(thisSunday);
+    nextSunday.setDate(thisSunday.getDate() + 7);
+    nextSunday.setHours(23, 59, 59, 999);
+
+    // Xác định trạng thái
+    const isNextWeekOpen = now >= thisFriday; // Đã đến 18:30 thứ 6
+    const nextWeekOpenTime = thisFriday.toISOString(); // Thời điểm mở
+
+    // Nếu đã qua thứ 7 tuần này -> tuần sau luôn mở
+    // Nếu là thứ 6 trước 18:30 -> chưa mở
+    // Nếu là thứ 6 sau 18:30 hoặc CN -> đã mở
+
+    res.json({
+      status: 'success',
+      data: {
+        isNextWeekOpen,
+        nextWeekOpenTime,
+        currentTime: now.toISOString(),
+        message: isNextWeekOpen 
+          ? 'Đã mở đăng ký tuần sau' 
+          : `Sẽ mở đăng ký tuần sau vào lúc 18:30 thứ 6`
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// [TEST] Endpoint test gửi mail nhắc điểm danh
+// 10 ca học theo frontend
+const SLOT_END_TIMES = {
+  "1": { hour: 8, minute: 0 },    // Ca 1: 07:00-08:00
+  "2": { hour: 9, minute: 30 },  // Ca 2: 08:30-09:30
+  "3": { hour: 11, minute: 0 },  // Ca 3: 10:00-11:00
+  "4": { hour: 12, minute: 30 }, // Ca 4: 11:30-12:30
+  "5": { hour: 14, minute: 0 },  // Ca 5: 13:00-14:00
+  "6": { hour: 15, minute: 30 }, // Ca 6: 14:30-15:30
+  "7": { hour: 17, minute: 0 },  // Ca 7: 16:00-17:00
+  "8": { hour: 18, minute: 30 }, // Ca 8: 17:30-18:30
+  "9": { hour: 20, minute: 0 },  // Ca 9: 19:00-20:00
+  "10": { hour: 21, minute: 30 }, // Ca 10: 20:30-21:30
+};
+
+const SLOT_LABELS = {
+  "1": "Ca 1 (07:00 - 08:00)",
+  "2": "Ca 2 (08:30 - 09:30)",
+  "3": "Ca 3 (10:00 - 11:00)",
+  "4": "Ca 4 (11:30 - 12:30)",
+  "5": "Ca 5 (13:00 - 14:00)",
+  "6": "Ca 6 (14:30 - 15:30)",
+  "7": "Ca 7 (16:00 - 17:00)",
+  "8": "Ca 8 (17:30 - 18:30)",
+  "9": "Ca 9 (19:00 - 20:00)",
+  "10": "Ca 10 (20:30 - 21:30)",
+};
+
+// [TEST] Gửi mail nhắc điểm danh cho tất cả booking chưa điểm danh đã kết thúc
+export const testSendAttendanceReminder = async (req, res) => {
+  try {
+    // Tìm các booking chưa điểm danh và đã kết thúc + 5 phút
+    const bookings = await Booking.find({
+      status: 'BOOKED',
+      attendance: { $exists: false }
+    }).populate('studentId', 'fullName email phone')
+      .populate('instructorId', 'fullName email phone');
+
+    let reminderCount = 0;
+
+    for (const booking of bookings) {
+      const { hour, minute } = SLOT_END_TIMES[String(booking.timeSlot)] || { hour: 17, minute: 0 };
+      
+      // Tính thời điểm kết thúc ca học + 5 phút
+      const classEndTime = new Date(booking.date);
+      classEndTime.setHours(hour, minute, 0, 0);
+      
+      const reminderTime = new Date(classEndTime.getTime() + 5 * 60 * 1000); // +5 phút
+      const now = new Date();
+
+      // Nếu đã đến hoặc qua thời điểm kết thúc + 5 phút
+      if (now >= reminderTime) {
+        // Gửi email nhắc nhở cho cả giáo viên và học viên
+        const classDateStr = new Date(booking.date).toLocaleDateString('vi-VN', {
+          weekday: 'long',
+          day: 'numeric',
+          month: 'numeric',
+          year: 'numeric'
+        });
+
+        const title = '⏰ [TEST] Nhắc nhở: Buổi học chưa được điểm danh';
+        const message = `Kính gửi Quý Thầy/Cô và Học viên,
+
+Buổi học ngày ${classDateStr} ${SLOT_LABELS[String(booking.timeSlot)] || 'Ca ' + booking.timeSlot} đã kết thúc nhưng chưa được điểm danh.
+
+Vui lòng thực hiện điểm danh ngay để hoàn tất buổi học.
+
+Thông tin buổi học:
+- Ngày: ${classDateStr}
+- Ca: ${SLOT_LABELS[String(booking.timeSlot)] || 'Ca ' + booking.timeSlot}
+- Giáo viên: ${booking.instructorId?.fullName || 'N/A'}
+- Học viên: ${booking.studentId?.fullName || 'N/A'}
+
+Trân trọng!`;
+
+        // Gửi email cho giáo viên
+        if (booking.instructorId?.email) {
+          await sendNotificationEmail(booking.instructorId.email, title, message);
+          console.log(`✅ [TEST] Đã gửi email nhắc điểm danh cho giáo viên: ${booking.instructorId.fullName}`);
+        }
+
+        // Gửi email cho học viên
+        if (booking.studentId?.email) {
+          await sendNotificationEmail(booking.studentId.email, title, message);
+          console.log(`✅ [TEST] Đã gửi email nhắc điểm danh cho học viên: ${booking.studentId.fullName}`);
+        }
+
+        reminderCount++;
+      }
+    }
+
+    res.json({
+      status: 'success',
+      message: `Đã gửi ${reminderCount} email nhắc nhở điểm danh (test)`
+    });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
