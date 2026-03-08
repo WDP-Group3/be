@@ -1,61 +1,60 @@
-
 import mongoose from 'mongoose';
 
 const transactionSchema = new mongoose.Schema({
-    vnp_Amount: {
-        type: String,
-        required: true,
-    },
-    vnp_BankCode: {
-        type: String,
-    },
-    vnp_BankTranNo: {
-        type: String,
-    },
-    vnp_CardType: {
-        type: String,
-    },
-    vnp_OrderInfo: {
-        type: String,
-    },
-    vnp_PayDate: {
-        type: String,
-    },
-    vnp_ResponseCode: {
-        type: String,
-    },
-    vnp_TmnCode: {
-        type: String,
-    },
-    vnp_TransactionNo: {
-        type: String,
-    },
-    vnp_TransactionStatus: {
-        type: String,
-    },
-    vnp_SecureHash: {
-        type: String,
-    },
-    // Optional application specific fields
-    user: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-    },
-    status: {
-        type: String,
-        enum: ['pending', 'completed', 'failed', 'process'],
-        default: 'process',
-    }
+  amount: {
+    type: Number,
+    required: true,
+    min: 0,
+  },
+  orderInfo: {
+    type: String,
+    trim: true,
+  },
+  transferContent: {
+    type: String,
+    trim: true,
+    required: true,
+    unique: true,
+  },
+  registrationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Registration',
+    default: null,
+  },
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+  },
+  paymentMethod: {
+    type: String,
+    enum: ['SEPAY'],
+    default: 'SEPAY',
+  },
+  status: {
+    type: String,
+    enum: ['pending', 'completed', 'failed'],
+    default: 'pending',
+  },
+  providerTransactionId: {
+    type: String,
+    trim: true,
+    default: null,
+  },
+  paidAt: {
+    type: Date,
+    default: null,
+  },
+  rawPayload: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null,
+  },
 }, {
-    timestamps: true,
+  timestamps: true,
 });
 
-transactionSchema.pre('validate', function (next) {
-    if (this.vnp_TxnRef && !this._id) {
-        this._id = this.vnp_TxnRef;
-    }
-    next();
-});
+transactionSchema.index({ transferContent: 1 }, { unique: true });
+transactionSchema.index({ user: 1, status: 1 });
+transactionSchema.index({ registrationId: 1 });
 
 const Transaction = mongoose.model('Transaction', transactionSchema);
 

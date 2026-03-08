@@ -1,58 +1,55 @@
 import Document from '../models/Document.js';
 import Registration from '../models/Registration.js';
 
-// --- [REVIEW] Danh sách hồ sơ cần duyệt (Sale/Admin) ---
+const documentPopulate = [
+  { path: 'studentId', select: 'fullName phone email role status' },
+  {
+    path: 'registrationId',
+    select: 'studentId batchId status registerMethod createdAt',
+    populate: [
+      { path: 'studentId', select: 'fullName phone email role status' },
+      {
+        path: 'batchId',
+        select: 'location startDate status courseId',
+        populate: [{ path: 'courseId', select: 'code name' }],
+      },
+    ],
+  },
+];
+
+const isDocumentComplete = (document) => !!(
+  document?.cccdNumber
+  && document?.cccdImage
+  && document?.healthCertificate
+  && document?.photo
+);
+
 export const getDocumentsForReview = async (req, res) => {
   try {
     const { status = 'PENDING', registerMethod } = req.query;
 
-    const filter = {};
+    const filter = { isDeleted: { $ne: true } };
     if (status) filter.status = status;
 
-    // Consultant (Sale) chỉ xem hồ sơ theo registerMethod CONSULTANT
-    let allowedRegistrationIds = null;
-    if (req.user?.role === 'CONSULTANT') {
-      const regs = await Registration.find({ registerMethod: 'CONSULTANT' }).select('_id');
-      allowedRegistrationIds = regs.map((r) => r._id);
-    } else if (req.user?.role === 'ADMIN' && registerMethod) {
-      const regs = await Registration.find({ registerMethod }).select('_id');
-      allowedRegistrationIds = regs.map((r) => r._id);
-    }
-
-    if (Array.isArray(allowedRegistrationIds)) {
-      filter.registrationId = { $in: allowedRegistrationIds };
-    }
-
     const documents = await Document.find(filter)
-      .populate({
-        path: 'registrationId',
-        select: 'studentId batchId status registerMethod createdAt',
-        populate: [
-          { path: 'studentId', select: 'fullName phone email role status' },
-          {
-            path: 'batchId',
-            select: 'location startDate status courseId',
-            populate: [{ path: 'courseId', select: 'code name' }],
-          },
-        ],
-      })
+      .populate(documentPopulate)
       .sort({ _id: -1 });
 
-    res.json({
-      status: 'success',
-      data: documents,
-      count: documents.length,
+    const filtered = documents.filter((doc) => {
+      const method = doc?.registrationId?.registerMethod;
+
+      if (req.user?.role === 'CONSULTANT') return method === 'CONSULTANT';
+      if (req.user?.role === 'ADMIN' && registerMethod) return method === registerMethod;
+      return true;
     });
+
+    res.json({ status: 'success', data: filtered, count: filtered.length });
   } catch (error) {
     console.error('Get documents for review error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: error.message,
-    });
+    res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
-// --- [REVIEW] Cập nhật trạng thái hồ sơ (Approve/Reject) ---
 export const updateDocumentStatus = async (req, res) => {
   try {
     const { id } = req.params;
@@ -60,10 +57,7 @@ export const updateDocumentStatus = async (req, res) => {
 
     const allowed = ['PENDING', 'APPROVED', 'REJECTED'];
     if (!allowed.includes(status)) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Trạng thái không hợp lệ',
-      });
+      return res.status(400).json({ status: 'error', message: 'Trạng thái không hợp lệ' });
     }
 
     const document = await Document.findById(id).populate({
@@ -71,223 +65,158 @@ export const updateDocumentStatus = async (req, res) => {
       select: 'registerMethod studentId batchId',
     });
 
-    if (!document) {
-      return res.status(404).json({
-        status: 'error',
-        message: 'Document not found',
-      });
-    }
+    if (!document) return res.status(404).json({ status: 'error', message: 'Document not found' });
 
-    // Consultant chỉ được duyệt hồ sơ thuộc luồng CONSULTANT
     if (req.user?.role === 'CONSULTANT' && document.registrationId?.registerMethod !== 'CONSULTANT') {
-      return res.status(403).json({
-        status: 'error',
-        message: 'Bạn không có quyền duyệt hồ sơ này',
-      });
+      return res.status(403).json({ status: 'error', message: 'Bạn không có quyền duyệt hồ sơ này' });
     }
 
     document.status = status;
     await document.save();
 
-    const result = await Document.findById(document._id).populate({
-      path: 'registrationId',
-      select: 'studentId batchId status registerMethod',
-      populate: [
-        { path: 'studentId', select: 'fullName phone email' },
-        { path: 'batchId', select: 'location startDate courseId', populate: [{ path: 'courseId', select: 'code name' }] },
-      ],
-    });
-
-    res.json({
-      status: 'success',
-      data: result,
-      message: 'Cập nhật trạng thái hồ sơ thành công',
-    });
+    const result = await Document.findById(document._id).populate(documentPopulate);
+    return res.json({ status: 'success', data: result, message: 'Cập nhật trạng thái hồ sơ thành công' });
   } catch (error) {
     console.error('Update document status error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: error.message,
-    });
+    return res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
-// Lấy tất cả documents
 export const getAllDocuments = async (req, res) => {
   try {
-    const { registrationId, status } = req.query;
-    const filter = {};
-    
+    const { registrationId, status, studentId } = req.query;
+    const filter = { isDeleted: { $ne: true } };
+
     if (registrationId) filter.registrationId = registrationId;
+    if (studentId) filter.studentId = studentId;
     if (status) filter.status = status;
-    
-    const documents = await Document.find(filter)
-      .populate('registrationId', 'studentId batchId')
-      .sort({ _id: -1 });
-    
-    res.json({
-      status: 'success',
-      data: documents,
-      count: documents.length,
-    });
+
+    const documents = await Document.find(filter).populate(documentPopulate).sort({ _id: -1 });
+    return res.json({ status: 'success', data: documents, count: documents.length });
   } catch (error) {
-    res.status(500).json({
-      status: 'error',
-      message: error.message,
-    });
+    return res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
-// Lấy document theo ID
 export const getDocumentById = async (req, res) => {
   try {
     const { id } = req.params;
-    const document = await Document.findById(id)
-      .populate('registrationId');
-    
-    if (!document) {
-      return res.status(404).json({
-        status: 'error',
-        message: 'Document not found',
-      });
-    }
-    
-    res.json({
-      status: 'success',
-      data: document,
-    });
+    const document = await Document.findOne({ _id: id, isDeleted: { $ne: true } }).populate(documentPopulate);
+    if (!document) return res.status(404).json({ status: 'error', message: 'Document not found' });
+    return res.json({ status: 'success', data: document });
   } catch (error) {
-    res.status(500).json({
-      status: 'error',
-      message: error.message,
-    });
+    return res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
-// Upload documents (UC09: Enroll & Upload Docs)
+export const getMyDocument = async (req, res) => {
+  try {
+    const studentId = req.userId;
+
+    let document = await Document.findOne({ studentId, isDeleted: { $ne: true } }).populate(documentPopulate);
+    if (!document) {
+      document = await Document.create({ studentId, status: 'PENDING' });
+      document = await Document.findById(document._id).populate(documentPopulate);
+    }
+
+    return res.json({ status: 'success', data: document, isComplete: isDocumentComplete(document) });
+  } catch (error) {
+    return res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
 export const uploadDocuments = async (req, res) => {
   try {
     const { registrationId, cccdImage, healthCertificate, photo, cccdNumber } = req.body;
-    const studentId = req.userId; // Lấy từ token authentication
+    const studentId = req.userId;
 
-    if (!registrationId) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Registration ID là bắt buộc',
-      });
+    let registration = null;
+    if (registrationId) {
+      registration = await Registration.findById(registrationId);
+      if (!registration) return res.status(404).json({ status: 'error', message: 'Không tìm thấy hồ sơ đăng ký' });
+      if (registration.studentId.toString() !== studentId) {
+        return res.status(403).json({ status: 'error', message: 'Bạn không có quyền upload hồ sơ này' });
+      }
     }
 
-    // Kiểm tra registration có tồn tại và thuộc về student này không
-    const registration = await Registration.findById(registrationId);
-    if (!registration) {
-      return res.status(404).json({
-        status: 'error',
-        message: 'Không tìm thấy hồ sơ đăng ký',
-      });
-    }
+    let document = await Document.findOne({ studentId, isDeleted: { $ne: true } });
+    if (!document) document = new Document({ studentId, status: 'PENDING' });
 
-    // Kiểm tra quyền: chỉ học viên sở hữu hồ sơ mới được upload
-    if (registration.studentId.toString() !== studentId) {
-      return res.status(403).json({
-        status: 'error',
-        message: 'Bạn không có quyền upload hồ sơ này',
-      });
-    }
-
-    // Tìm hoặc tạo document
-    let document = await Document.findOne({ registrationId });
-    
-    if (!document) {
-      document = new Document({
-        registrationId,
-        status: 'PENDING',
-      });
-    }
-
-    // Cập nhật thông tin documents
+    if (registration?._id) document.registrationId = registration._id;
     if (cccdImage) document.cccdImage = cccdImage;
     if (healthCertificate) document.healthCertificate = healthCertificate;
     if (photo) document.photo = photo;
     if (cccdNumber) document.cccdNumber = cccdNumber;
 
-    // Nếu đã có đủ 3 loại giấy tờ, tự động chuyển sang PENDING để staff duyệt
-    if (document.cccdImage && document.healthCertificate && document.photo) {
-      document.status = 'PENDING'; // Chờ staff duyệt
-    }
+    if (cccdImage || healthCertificate || photo || cccdNumber) document.status = 'PENDING';
 
     await document.save();
 
-    // Populate để trả về thông tin đầy đủ
-    const result = await Document.findById(document._id)
-      .populate('registrationId', 'studentId batchId status');
-
-    res.json({
+    const result = await Document.findById(document._id).populate(documentPopulate);
+    return res.json({
       status: 'success',
       data: result,
+      isComplete: isDocumentComplete(result),
       message: 'Upload hồ sơ thành công',
     });
   } catch (error) {
     console.error('Upload documents error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: error.message,
-    });
+    return res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
-// Lấy documents theo registrationId (UC10: View Document Status)
 export const getDocumentsByRegistration = async (req, res) => {
   try {
     const { registrationId } = req.params;
-    const studentId = req.userId; // Lấy từ token authentication
+    const studentId = req.userId;
 
-    // Kiểm tra registration có tồn tại và thuộc về student này không
     const registration = await Registration.findById(registrationId);
-    if (!registration) {
-      return res.status(404).json({
-        status: 'error',
-        message: 'Không tìm thấy hồ sơ đăng ký',
-      });
-    }
+    if (!registration) return res.status(404).json({ status: 'error', message: 'Không tìm thấy hồ sơ đăng ký' });
 
-    // Kiểm tra quyền: chỉ học viên sở hữu hoặc admin/staff mới được xem
     if (registration.studentId.toString() !== studentId && req.user?.role !== 'ADMIN' && req.user?.role !== 'CONSULTANT') {
-      return res.status(403).json({
-        status: 'error',
-        message: 'Bạn không có quyền xem hồ sơ này',
-      });
+      return res.status(403).json({ status: 'error', message: 'Bạn không có quyền xem hồ sơ này' });
     }
 
-    const document = await Document.findOne({ registrationId })
-      .populate('registrationId', 'studentId batchId status');
-
+    let document = await Document.findOne({ studentId: registration.studentId, isDeleted: { $ne: true } }).populate(documentPopulate);
     if (!document) {
-      // Nếu chưa có document, tạo mới với status PENDING
-      const newDocument = new Document({
-        registrationId,
-        status: 'PENDING',
-      });
-      await newDocument.save();
-      
-      const result = await Document.findById(newDocument._id)
-        .populate('registrationId', 'studentId batchId status');
-      
-      return res.json({
-        status: 'success',
-        data: result,
-      });
+      document = await Document.create({ studentId: registration.studentId, registrationId, status: 'PENDING' });
+      document = await Document.findById(document._id).populate(documentPopulate);
     }
 
-    res.json({
-      status: 'success',
-      data: document,
-    });
+    if (!document.registrationId) {
+      document.registrationId = registrationId;
+      await document.save();
+      document = await Document.findById(document._id).populate(documentPopulate);
+    }
+
+    return res.json({ status: 'success', data: document, isComplete: isDocumentComplete(document) });
   } catch (error) {
     console.error('Get documents by registration error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: error.message,
-    });
+    return res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
+export const softDeleteDocument = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const updated = await Document.findByIdAndUpdate(
+      id,
+      {
+        $set: {
+          isDeleted: true,
+          deletedAt: new Date(),
+        },
+      },
+      { new: true, runValidators: false }
+    );
+
+    if (!updated) {
+      return res.status(404).json({ status: 'error', message: 'Document not found' });
+    }
+
+    return res.json({ status: 'success', message: 'Đã xóa ảo hồ sơ' });
+  } catch (error) {
+    return res.status(500).json({ status: 'error', message: error.message });
+  }
+};

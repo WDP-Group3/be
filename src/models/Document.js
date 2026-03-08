@@ -1,21 +1,28 @@
 import mongoose from 'mongoose';
 
 const documentSchema = new mongoose.Schema({
+  studentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    unique: true,
+  },
   registrationId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Registration',
-    required: true,
+    required: false,
+    default: null,
   },
   cccdImage: {
-    type: String, // URL hoặc path đến file
+    type: String,
     trim: true,
   },
   healthCertificate: {
-    type: String, // URL hoặc path đến file
+    type: String,
     trim: true,
   },
   photo: {
-    type: String, // URL hoặc path đến file
+    type: String,
     trim: true,
   },
   cccdNumber: {
@@ -27,13 +34,23 @@ const documentSchema = new mongoose.Schema({
     enum: ['PENDING', 'APPROVED', 'REJECTED'],
     default: 'PENDING',
   },
+  isDeleted: {
+    type: Boolean,
+    default: false,
+  },
+  deletedAt: {
+    type: Date,
+    default: null,
+  },
 }, {
   timestamps: false,
 });
 
 // Indexes
+documentSchema.index({ studentId: 1 }, { unique: true });
 documentSchema.index({ registrationId: 1 });
 documentSchema.index({ status: 1 });
+documentSchema.index({ isDeleted: 1 });
 
 const Document = mongoose.model('Document', documentSchema);
 
