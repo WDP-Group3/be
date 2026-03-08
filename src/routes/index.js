@@ -12,9 +12,13 @@ import examQuestionRoutes from './examQuestion.routes.js';
 import examResultRoutes from './examResult.routes.js';
 import notificationRoutes from './notification.routes.js';
 import bannerRoutes from './banner.routes.js';
+import leadRoutes from './lead.routes.js';
 import reportRoutes from './report.routes.js';
 import feedbackRoutes from './feedback.routes.js';
+import requestRoutes from './request.routes.js';
+import blogRoutes from './blog.routes.js';
 import scheduleRoutes from './schedule.routes.js';
+import invoiceRoutes from './invoice.routes.js';
 
 const router = express.Router();
 
@@ -28,16 +32,20 @@ router.use('/admin', adminRoutes);
 router.use('/users', userRoutes);
 router.use('/courses', courseRoutes);
 router.use('/batches', batchRoutes);
+router.use('/blogs', blogRoutes);
 router.use('/registrations', registrationRoutes);
 router.use('/payments', paymentRoutes);
+router.use('/invoices', invoiceRoutes);
 router.use('/documents', documentRoutes);
 router.use('/bookings', bookingRoutes);
 router.use('/exam-questions', examQuestionRoutes);
 router.use('/exam-results', examResultRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/banners', bannerRoutes);
+router.use('/leads', leadRoutes);
 router.use('/reports', reportRoutes);
 router.use('/feedbacks', feedbackRoutes);
+router.use('/requests', requestRoutes);
 router.use('/schedule', scheduleRoutes);
 
 export default router;

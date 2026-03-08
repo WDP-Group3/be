@@ -21,6 +21,19 @@ const registrationSchema = new mongoose.Schema({
     enum: ['NEW', 'PROCESSING', 'STUDYING', 'COMPLETED', 'CANCELLED'],
     default: 'NEW',
   },
+  paymentPlanType: {
+    type: String,
+    enum: ['INSTALLMENT', 'FULL'],
+    default: 'INSTALLMENT',
+  },
+  feePlanSnapshot: [
+    {
+      name: String,
+      amount: Number,
+      dueDate: Date,
+      note: String,
+    },
+  ],
   createdAt: {
     type: Date,
     default: Date.now,

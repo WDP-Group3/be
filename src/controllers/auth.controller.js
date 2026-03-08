@@ -40,6 +40,13 @@ export const login = async (req, res) => {
       });
     }
 
+    if (user.status === "INACTIVE") {
+      return res.status(403).json({
+        status: "error",
+        message: "Tài khoản của bạn đã bị khóa. Vui lòng liên hệ quản trị viên.",
+      });
+    }
+
     // Check password
     // If user doesn't have password (existing users), allow login with any password for now
     // In production, you should require password reset
@@ -103,7 +110,7 @@ export const register = async (req, res) => {
       email: email.toLowerCase(),
       phone,
       password: hashedPassword,
-      role: "GUEST",
+      role: "STUDENT",
       status: "ACTIVE",
     });
 
@@ -231,9 +238,6 @@ export const forgotPassword = async (req, res) => {
     const resetTokenExpires = new Date();
     resetTokenExpires.setHours(resetTokenExpires.getHours() + 1); // Token expires in 1 hour
 
-    // Save reset token to user
-    user.resetPasswordToken = resetToken;
-    user.resetPasswordExpires = resetTokenExpires;
     await user.save();
 
     // Create reset URL
