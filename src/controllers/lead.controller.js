@@ -22,7 +22,7 @@ export const createLead = async (req, res) => {
 
 export const getAllLeads = async (req, res) => {
     try {
-        const { page = 1, limit = 10, search = '' } = req.query;
+        const { page = 1, limit = 10, search = '', status = '' } = req.query;
         const skip = (parseInt(page) - 1) * parseInt(limit);
 
         // Auth info from middleware
@@ -36,6 +36,10 @@ export const getAllLeads = async (req, res) => {
             query.assignTo = userId;
         } else if (user && user.role !== 'ADMIN') {
             return res.status(403).json({ message: 'Forbidden' });
+        }
+
+        if (status) {
+            query.status = status;
         }
 
         if (search) {

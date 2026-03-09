@@ -9,8 +9,13 @@ const userSchema = new mongoose.Schema(
     },
     phone: {
       type: String,
-      required: true,
+      required: false,
       trim: true,
+      default: '',
+    },
+    googleId: {
+      type: String,
+      default: null,
     },
     email: {
       type: String,
