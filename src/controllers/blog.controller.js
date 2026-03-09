@@ -118,6 +118,61 @@ export const getBlogs = async (req, res) => {
 
 
 
+// ADMIN LẤY TẤT CẢ BLOG (kể cả ẩn)
+export const getAllBlogsAdmin = async (req, res) => {
+    try {
+
+        const blogs = await Blog.find()
+            .sort({ createdAt: -1 });
+
+        res.json({
+            total: blogs.length,
+            blogs
+        });
+
+    } catch (error) {
+        res.status(500).json({
+            message: "Lỗi lấy danh sách blog",
+            error: error.message
+        });
+    }
+};
+
+
+
+// ADMIN HIỆN BÀI
+export const unhideBlog = async (req, res) => {
+    try {
+
+        const { id } = req.params;
+
+        const blog = await Blog.findByIdAndUpdate(
+            id,
+            { status: "VISIBLE" },
+            { new: true }
+        );
+
+        if (!blog) {
+            return res.status(404).json({
+                message: "Không tìm thấy bài viết"
+            });
+        }
+
+        res.json({
+            message: "Đã hiện bài viết",
+            blog
+        });
+
+    } catch (error) {
+        res.status(500).json({
+            message: "Lỗi hiện bài viết",
+            error: error.message
+        });
+    }
+};
+
+
+
 // USER LẤY CHI TIẾT BLOG
 export const getBlogById = async (req, res) => {
     try {
