@@ -53,19 +53,18 @@ const createTransporter = () => {
 };
 
 /**
- * Gửi email đặt lại mật khẩu
+ * Gửi email cấp mật khẩu mới
  * @param {string} email - Email người nhận
- * @param {string} resetToken - Token để đặt lại mật khẩu
- * @param {string} resetUrl - URL để đặt lại mật khẩu
+ * @param {string} newPassword - Mật khẩu mới được tạo
  */
-export const sendPasswordResetEmail = async (email, resetToken, resetUrl) => {
+export const sendPasswordResetEmail = async (email, newPassword) => {
   try {
     const transporter = createTransporter();
 
     const mailOptions = {
       from: process.env.SMTP_FROM || "noreply@drivecenter.com",
       to: email,
-      subject: "Đặt lại mật khẩu - Drive Center",
+      subject: "Cấp lại mật khẩu mới - Drive Center",
       html: `
         <!DOCTYPE html>
         <html>
@@ -76,7 +75,7 @@ export const sendPasswordResetEmail = async (email, resetToken, resetUrl) => {
             .container { max-width: 600px; margin: 0 auto; padding: 20px; }
             .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
             .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
-            .button { display: inline-block; padding: 12px 30px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 20px 0; }
+            .password-box { background: #e2e8f0; border-radius: 8px; font-size: 24px; font-weight: bold; letter-spacing: 2px; color: #1e293b; padding: 15px; text-align: center; margin: 20px 0; border: 1px dashed #94a3b8; }
             .footer { text-align: center; margin-top: 20px; color: #666; font-size: 12px; }
           </style>
         </head>
@@ -84,19 +83,17 @@ export const sendPasswordResetEmail = async (email, resetToken, resetUrl) => {
           <div class="container">
             <div class="header">
               <h1>Drive Center</h1>
-              <p>Đặt lại mật khẩu</p>
+              <p>Mật khẩu mới của bạn</p>
             </div>
             <div class="content">
               <p>Xin chào,</p>
-              <p>Bạn đã yêu cầu đặt lại mật khẩu cho tài khoản của mình.</p>
-              <p>Vui lòng click vào nút bên dưới để đặt lại mật khẩu:</p>
-              <div style="text-align: center;">
-                <a href="${resetUrl}" class="button">Đặt lại mật khẩu</a>
+              <p>Hệ thống đã nhận được yêu cầu cài đặt lại mật khẩu cho tài khoản của bạn.</p>
+              <p>Dưới đây là mật khẩu mới được tạo tự động để bạn đăng nhập:</p>
+              <div class="password-box">
+                ${newPassword}
               </div>
-              <p>Hoặc copy link sau vào trình duyệt:</p>
-              <p style="word-break: break-all; color: #667eea;">${resetUrl}</p>
-              <p><strong>Lưu ý:</strong> Link này sẽ hết hạn sau 1 giờ.</p>
-              <p>Nếu bạn không yêu cầu đặt lại mật khẩu, vui lòng bỏ qua email này.</p>
+              <p><strong>Bảo mật:</strong> Vui lòng đăng nhập và bảo vệ tài khoản bằng cách đổi lại mật khẩu này sang mật khẩu dễ nhớ của riêng bạn trong phần Tài khoản của tôi.</p>
+              <p>Nếu bạn không thực hiện yêu cầu này, vui lòng bỏ qua email hoặc liên hệ ngay với ban quản trị.</p>
             </div>
             <div class="footer">
               <p>© ${new Date().getFullYear()} Drive Center. All rights reserved.</p>
@@ -106,16 +103,12 @@ export const sendPasswordResetEmail = async (email, resetToken, resetUrl) => {
         </html>
       `,
       text: `
-        Đặt lại mật khẩu - Drive Center
+        Mật khẩu mới - Drive Center
         
-        Bạn đã yêu cầu đặt lại mật khẩu cho tài khoản của mình.
+        Hệ thống đã nhận được yêu cầu cài đặt lại mật khẩu cho tài khoản của bạn.
+        Mật khẩu mới của bạn là: ${newPassword}
         
-        Vui lòng truy cập link sau để đặt lại mật khẩu:
-        ${resetUrl}
-        
-        Link này sẽ hết hạn sau 1 giờ.
-        
-        Nếu bạn không yêu cầu đặt lại mật khẩu, vui lòng bỏ qua email này.
+        Vui lòng đăng nhập và đổi lại mật khẩu của riêng bạn thiết lập.
         
         © ${new Date().getFullYear()} Drive Center. All rights reserved.
       `,
