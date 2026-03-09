@@ -43,7 +43,7 @@ export const getQuestionsByCategory = async (category) => {
 export const getRandomQuestions = async (count = 35, category = null) => {
   try {
     let questions = [];
-    
+
     // Nếu có category, gọi API với category parameter
     if (category) {
       // Lấy tất cả câu hỏi theo category từ API
@@ -56,24 +56,24 @@ export const getRandomQuestions = async (count = 35, category = null) => {
       const numbers = new Set();
       let attempts = 0;
       const maxAttempts = 1000;
-      
+
       while (numbers.size < count && attempts < maxAttempts) {
         const randomNumber = Math.floor(Math.random() * (maxNumber - minNumber + 1)) + minNumber;
         numbers.add(randomNumber);
         attempts++;
       }
-      
+
       const questionNumbers = Array.from(numbers);
       const promises = questionNumbers.map(num => getQuestionByNumber(num).catch(err => null));
       const fetchedQuestions = await Promise.all(promises);
-      
+
       // Loại bỏ null và lấy số lượng cần thiết
       questions = fetchedQuestions.filter(q => q !== null).slice(0, count);
     }
-    
+
     // Chuyển đổi format để phù hợp với frontend
     return questions.map((q) => ({
-      _id: q.number.toString(), // Dùng number làm ID
+      _id: q.number, // Dùng number làm ID
       number: q.number,
       content: q.question,
       question: q.question,
@@ -99,13 +99,13 @@ export const getRandomQuestions = async (count = 35, category = null) => {
 const convertAnswersToOptions = (answers) => {
   const options = {};
   const labels = ['A', 'B', 'C', 'D'];
-  
+
   answers.forEach((answer, index) => {
     if (labels[index]) {
       options[labels[index]] = answer.text;
     }
   });
-  
+
   return options;
 };
 
@@ -117,11 +117,11 @@ const convertAnswersToOptions = (answers) => {
 export const getQuestionWithAnswer = async (number) => {
   try {
     const question = await getQuestionByNumber(number);
-    
+
     // Tìm đáp án đúng
     const correctIndex = question.answers.findIndex(a => a.correct);
     const correctAnswer = correctIndex !== -1 ? ['A', 'B', 'C', 'D'][correctIndex] : null;
-    
+
     return {
       ...question,
       correctAnswer,
