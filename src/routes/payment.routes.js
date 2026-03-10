@@ -1,5 +1,5 @@
 import express from 'express';
-import { createQR, checkStatus } from '../controllers/transaction.controller.js';
+import { createQR, checkStatus, getTransactionStatus, getTransactions, confirmTransaction } from '../controllers/transaction.controller.js';
 import {
   getAllPayments,
   getPaymentById,
@@ -22,10 +22,14 @@ router.post('/upsert-due-date', authenticate, requireRole('ADMIN', 'CONSULTANT')
 
 router.post('/', authenticate, requireRole('ADMIN', 'CONSULTANT'), createPayment);
 router.get('/', authenticate, requireRole('STUDENT', 'ADMIN', 'CONSULTANT'), getAllPayments);
+
+router.post('/create-qr', authenticate, requireRole('STUDENT', 'ADMIN', 'CONSULTANT'), createQR);
+router.get('/transactions', authenticate, requireRole('STUDENT', 'ADMIN', 'CONSULTANT'), getTransactions);
+router.get('/transaction-status/:id', authenticate, requireRole('STUDENT', 'ADMIN', 'CONSULTANT'), getTransactionStatus);
+router.patch('/transactions/:id/confirm', authenticate, requireRole('ADMIN', 'CONSULTANT'), confirmTransaction);
+router.post('/check-payment', checkStatus);
+
 router.get('/:id', authenticate, requireRole('STUDENT', 'ADMIN', 'CONSULTANT'), getPaymentById);
 router.delete('/:id', authenticate, requireRole('ADMIN', 'CONSULTANT'), deletePayment);
-
-router.post('/create-qr', createQR);
-router.get('/check-payment', checkStatus);
 
 export default router;

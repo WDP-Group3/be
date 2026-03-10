@@ -40,12 +40,24 @@ const buildFeePlanSnapshot = (course, paymentPlanType = 'INSTALLMENT') => {
   ];
 };
 
+const hasCompleteDocumentProfile = (doc) => !!(
+  doc?.cccdNumber
+  && doc?.cccdImage
+  && doc?.healthCertificate
+  && doc?.photo
+);
+
 export const getAllRegistrations = async (req, res) => {
   try {
     const { studentId, batchId, status } = req.query;
     const filter = {};
 
-    if (studentId) filter.studentId = studentId;
+    if (req.user?.role === 'STUDENT') {
+      filter.studentId = req.userId;
+    } else if (studentId) {
+      filter.studentId = studentId;
+    }
+
     if (batchId) filter.batchId = batchId;
     if (status) filter.status = status;
 
@@ -101,6 +113,15 @@ export const createRegistration = async (req, res) => {
       return res.status(400).json({ status: 'error', message: 'Lớp học đã đóng đăng ký' });
     }
 
+    // Yêu cầu hồ sơ cá nhân phải có trước khi đăng ký
+    const studentDocument = await Document.findOne({ studentId });
+    if (!hasCompleteDocumentProfile(studentDocument)) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Bạn cần nộp đầy đủ hồ sơ (CCCD, khám sức khỏe, ảnh 3x4) trước khi đăng ký lớp',
+      });
+    }
+
     const existingRegistration = await Registration.findOne({
       studentId,
       batchId,
@@ -124,8 +145,14 @@ export const createRegistration = async (req, res) => {
 
     await registration.save();
 
-    const document = new Document({ registrationId: registration._id, status: 'PENDING' });
-    await document.save();
+    await Document.findOneAndUpdate(
+      { studentId },
+      {
+        $set: { registrationId: registration._id },
+        $setOnInsert: { studentId, status: 'PENDING' },
+      },
+      { upsert: true, new: true }
+    );
 
     const result = await Registration.findById(registration._id)
       .populate('studentId', 'fullName phone email')
@@ -186,8 +213,14 @@ export const assignRegistrationByAdmin = async (req, res) => {
 
     await registration.save();
 
-    const document = new Document({ registrationId: registration._id, status: 'PENDING' });
-    await document.save();
+    await Document.findOneAndUpdate(
+      { studentId },
+      {
+        $set: { registrationId: registration._id },
+        $setOnInsert: { studentId, status: 'PENDING' },
+      },
+      { upsert: true, new: true }
+    );
 
     const result = await Registration.findById(registration._id)
       .populate('studentId', 'fullName phone email')
@@ -200,6 +233,36 @@ export const assignRegistrationByAdmin = async (req, res) => {
       status: 'success',
       message: 'Gán khóa học cho học viên thành công',
       data: result,
+    });
+  } catch (error) {
+    return res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+export const getCourseParticipants = async (req, res) => {
+  try {
+    const { courseId } = req.params;
+
+    const batches = await Batch.find({ courseId }, '_id location startDate estimatedEndDate status').lean();
+    const batchIds = batches.map((b) => b._id);
+
+    if (batchIds.length === 0) {
+      return res.json({ status: 'success', data: [], count: 0 });
+    }
+
+    const registrations = await Registration.find({ batchId: { $in: batchIds } })
+      .populate('studentId', 'fullName phone email status')
+      .populate({
+        path: 'batchId',
+        select: 'location startDate estimatedEndDate status courseId',
+        populate: { path: 'courseId', select: 'code name' },
+      })
+      .sort({ createdAt: -1 });
+
+    return res.json({
+      status: 'success',
+      data: registrations,
+      count: registrations.length,
     });
   } catch (error) {
     return res.status(500).json({ status: 'error', message: error.message });
