@@ -2,7 +2,7 @@ import cron from 'node-cron';
 import Notification from '../models/Notification.js';
 import Booking from '../models/Booking.js';
 import User from '../models/User.js';
-import { sendNotificationMailToRoles, sendNotificationEmail } from './email.service.js';
+import { sendNotificationEmail } from './email.service.js';
 
 // [CRON JOB] Gửi thông báo nhắc nhở giáo viên đăng ký lịch bận
 // Chạy vào lúc 17:30 (5:30 chiều) thứ 6 hàng tuần
@@ -69,10 +69,14 @@ const SLOT_LABELS = {
 // Hàm kiểm tra và gửi nhắc nhở điểm danh
 const checkAndSendAttendanceReminders = async () => {
   // Tìm các booking chưa điểm danh và đã kết thúc + 5 phút
-  // Trạng thái BOOKED hoặc COMPLETED (đã điểm danh rồi)
+  // Chỉ gửi email 1 lần duy nhất (attendanceReminderSent = false)
   const bookings = await Booking.find({
     status: 'BOOKED', // Chỉ lấy những buổi chưa điểm danh
-    attendance: { $exists: false } // Chưa có attendance
+    attendanceReminderSent: false, // Chỉ gửi email nếu chưa gửi
+    $or: [
+      { attendance: { $exists: false } }, // Chưa từng có attendance
+      { attendance: 'PENDING' }            // Đã có nhưng chưa điểm danh
+    ]
   }).populate('studentId', 'fullName email phone')
     .populate('instructorId', 'fullName email phone');
 
@@ -92,6 +96,10 @@ const checkAndSendAttendanceReminders = async () => {
     if (now >= reminderTime) {
       // Gửi email nhắc nhở cho cả giáo viên và học viên
       await sendAttendanceReminderEmail(booking);
+      
+      // Đánh dấu đã gửi email nhắc nhở (chỉ gửi 1 lần duy nhất)
+      await Booking.findByIdAndUpdate(booking._id, { attendanceReminderSent: true });
+      
       reminderCount++;
     }
   }
@@ -101,8 +109,8 @@ const checkAndSendAttendanceReminders = async () => {
   }
 };
 
-// Hàm gửi email nhắc nhở điểm danh
-const sendAttendanceReminderEmail = async (booking) => {
+// Hàm gửi email nhắc nhở điểm danh cho GIÁO VIÊN
+const sendAttendanceReminderToInstructor = async (booking) => {
   const classDateStr = new Date(booking.date).toLocaleDateString('vi-VN', {
     weekday: 'long',
     day: 'numeric',
@@ -111,21 +119,22 @@ const sendAttendanceReminderEmail = async (booking) => {
   });
 
   const title = '⏰ Nhắc nhở: Buổi học chưa được điểm danh';
-  const message = `Kính gửi Quý Thầy/Cô và Học viên,
+  const message = `Kính gửi Quý Thầy/Cô,
 
-Buổi học ngày ${classDateStr} ${SLOT_LABELS[String(booking.timeSlot)] || 'Ca ' + booking.timeSlot} đã kết thúc nhưng chưa được điểm danh.
+Buổi học ngày ${classDateStr} ${SLOT_LABELS[String(booking.timeSlot)] || 'Ca ' + booking.timeSlot} đã kết thúc nhưng Thầy/Cô chưa thực hiện điểm danh.
 
-Vui lòng thực hiện điểm danh ngay để hoàn tất buổi học.
+Vui lòng điểm danh ngay để hoàn tất buổi học.
 
 Thông tin buổi học:
 - Ngày: ${classDateStr}
 - Ca: ${SLOT_LABELS[String(booking.timeSlot)] || 'Ca ' + booking.timeSlot}
-- Giáo viên: ${booking.instructorId?.fullName || 'N/A'}
 - Học viên: ${booking.studentId?.fullName || 'N/A'}
+- SĐT học viên: ${booking.studentId?.phone || 'N/A'}
+
+Truy cập hệ thống để điểm danh: https://drivecenter.com/portal/instructor-schedule
 
 Trân trọng!`;
 
-  // Gửi email cho giáo viên
   if (booking.instructorId?.email) {
     try {
       await sendNotificationEmail(booking.instructorId.email, title, message);
@@ -134,8 +143,34 @@ Trân trọng!`;
       console.error(`❌ [CRON] Lỗi gửi email cho giáo viên:`, error.message);
     }
   }
+};
 
-  // Gửi email cho học viên
+// Hàm gửi email nhắc nhở điểm danh cho HỌC VIÊN
+const sendAttendanceReminderToStudent = async (booking) => {
+  const classDateStr = new Date(booking.date).toLocaleDateString('vi-VN', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'numeric',
+    year: 'numeric'
+  });
+
+  const title = '⏰ Nhắc nhở: Buổi học chưa được điểm danh';
+  const message = `Kính gửi Học viên,
+
+Buổi học ngày ${classDateStr} ${SLOT_LABELS[String(booking.timeSlot)] || 'Ca ' + booking.timeSlot} đã kết thúc nhưng chưa được điểm danh.
+
+Vui lòng liên hệ giáo viên hoặc kiểm tra lịch học để được điểm danh.
+
+Thông tin buổi học:
+- Ngày: ${classDateStr}
+- Ca: ${SLOT_LABELS[String(booking.timeSlot)] || 'Ca ' + booking.timeSlot}
+- Giáo viên: ${booking.instructorId?.fullName || 'N/A'}
+- SĐT giáo viên: ${booking.instructorId?.phone || 'N/A'}
+
+Truy cập hệ thống để xem lịch: https://drivecenter.com/portal/schedule
+
+Trân trọng!`;
+
   if (booking.studentId?.email) {
     try {
       await sendNotificationEmail(booking.studentId.email, title, message);
@@ -146,7 +181,16 @@ Trân trọng!`;
   }
 };
 
-// Hàm gửi thông báo nhắc nhở giáo viên
+// Hàm gửi email nhắc nhở điểm danh (gửi cho cả GV và HV)
+const sendAttendanceReminderEmail = async (booking) => {
+  // Gửi email cho giáo viên
+  await sendAttendanceReminderToInstructor(booking);
+  
+  // Gửi email cho học viên
+  await sendAttendanceReminderToStudent(booking);
+};
+
+// Hàm gửi thông báo nhắc nhở giáo viên đăng ký lịch bận
 const sendInstructorBusyScheduleReminder = async () => {
   // Tìm tất cả giáo viên (INSTRUCTOR)
   const instructors = await User.find({ role: 'INSTRUCTOR' });
@@ -156,13 +200,15 @@ const sendInstructorBusyScheduleReminder = async () => {
     return;
   }
 
-  // Tính deadline (18:00 ngày mai - thứ 7)
+  // Tính deadline (18:00 thứ 6)
   const now = new Date();
-  const tomorrow = new Date(now);
-  tomorrow.setDate(now.getDate() + 1); // Thứ 7
-  tomorrow.setHours(18, 0, 0, 0); // 18:00
+  const friday = new Date(now);
+  const currentDay = now.getDay();
+  const diffToFriday = 5 - currentDay;
+  friday.setDate(now.getDate() + diffToFriday);
+  friday.setHours(18, 0, 0, 0); // 18:00 thứ 6
 
-  const deadlineStr = tomorrow.toLocaleDateString('vi-VN', { 
+  const deadlineStr = friday.toLocaleDateString('vi-VN', { 
     weekday: 'long', 
     day: 'numeric', 
     month: 'numeric',
@@ -171,17 +217,28 @@ const sendInstructorBusyScheduleReminder = async () => {
   });
 
   const notificationTitle = '⏰ Nhắc nhở: Đăng ký lịch bận tuần sau';
-  const notificationMessage = `Kính gửi Quý Thầy/Cô,\n\nVui lòng đăng ký lịch bận cho tuần sau trước ${deadlineStr}. Sau thời gian này, hệ thống sẽ tự động mở lịch trống để học viên đăng ký.\n\nTrân trọng!`;
+  const notificationMessage = `Kính gửi Quý Thầy/Cô,
 
-  // Tạo notification cho từng giáo viên
+Để chuẩn bị tốt cho tuần học tới, xin vui lòng đăng ký lịch bận (nếu có) trước ${deadlineStr}.
+
+Sau thời gian này, hệ thống sẽ tự động mở lịch trống để học viên đăng ký.
+
+Vui lòng đăng nhập vào hệ thống để đăng ký lịch bận.
+
+Truy cập hệ thống: https://drivecenter.com/portal/instructor-schedule
+
+Trân trọng!`;
+
+  // Tạo notification cho từng giáo viên và gửi email riêng
   for (const instructor of instructors) {
+    // Tạo notification
     try {
       const notification = new Notification({
         userId: instructor._id,
         type: 'REMINDER',
         title: notificationTitle,
         message: notificationMessage,
-        expireAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // Hết hạn sau 7 ngày
+        expireAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         isRead: false,
       });
       
@@ -190,18 +247,16 @@ const sendInstructorBusyScheduleReminder = async () => {
     } catch (error) {
       console.error(`❌ [CRON] Lỗi tạo thông báo cho ${instructor.fullName}:`, error.message);
     }
-  }
 
-  // Gửi email thông báo
-  try {
-    await sendNotificationMailToRoles({
-      roles: ['INSTRUCTOR'],
-      title: notificationTitle,
-      message: notificationMessage,
-    });
-    console.log('✅ [CRON] Đã gửi email nhắc nhở cho giáo viên');
-  } catch (error) {
-    console.error('❌ [CRON] Lỗi gửi email nhắc nhở:', error.message);
+    // Gửi email riêng cho từng giáo viên
+    if (instructor.email) {
+      try {
+        await sendNotificationEmail(instructor.email, notificationTitle, notificationMessage);
+        console.log(`✅ [CRON] Đã gửi email nhắc nhở lịch bận cho giáo viên: ${instructor.email}`);
+      } catch (error) {
+        console.error(`❌ [CRON] Lỗi gửi email cho ${instructor.fullName}:`, error.message);
+      }
+    }
   }
 
   console.log(`🔔 [CRON] Hoàn tất gửi thông báo cho ${instructors.length} giáo viên`);

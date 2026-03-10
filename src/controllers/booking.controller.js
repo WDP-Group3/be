@@ -251,7 +251,9 @@ export const takeAttendance = async (req, res) => {
     const { id } = req.params;
     const { attendance, instructorNote } = req.body; 
 
-    const booking = await Booking.findById(id);
+    const booking = await Booking.findById(id)
+      .populate('studentId', 'fullName email phone')
+      .populate('instructorId', 'fullName phone');
     if (!booking) return res.status(404).json({ status: 'error', message: 'Không tìm thấy lịch học' });
 
     const hoursDiff = checkTimeDistance(booking.date, booking.timeSlot);
@@ -267,9 +269,88 @@ export const takeAttendance = async (req, res) => {
     
     await booking.save();
 
+    // Gửi email thông báo cho học viên sau khi điểm danh
+    await sendAttendanceNotificationEmail(booking);
+
     res.json({ status: 'success', message: 'Điểm danh thành công', data: booking });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// [HELPER] Gửi email thông báo điểm danh cho học viên
+const sendAttendanceNotificationEmail = async (booking) => {
+  const classDateStr = new Date(booking.date).toLocaleDateString('vi-VN', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'numeric',
+    year: 'numeric'
+  });
+
+  const SLOT_LABELS = {
+    "1": "Ca 1 (07:00 - 08:00)",
+    "2": "Ca 2 (08:30 - 09:30)",
+    "3": "Ca 3 (10:00 - 11:00)",
+    "4": "Ca 4 (11:30 - 12:30)",
+    "5": "Ca 5 (13:00 - 14:00)",
+    "6": "Ca 6 (14:30 - 15:30)",
+    "7": "Ca 7 (16:00 - 17:00)",
+    "8": "Ca 8 (17:30 - 18:30)",
+    "9": "Ca 9 (19:00 - 20:00)",
+    "10": "Ca 10 (20:30 - 21:30)",
+  };
+
+  if (booking.attendance === 'PRESENT') {
+    // Gửi email thông báo điểm danh có mặt
+    const title = '✅ Thông báo: Buổi học đã được điểm danh - Có mặt';
+    const message = `Kính gửi Học viên,
+
+Buổi học của bạn đã được điểm danh thành công với trạng thái: CÓ MẶT
+
+Thông tin buổi học:
+- Ngày: ${classDateStr}
+- Ca: ${SLOT_LABELS[String(booking.timeSlot)] || 'Ca ' + booking.timeSlot}
+- Giáo viên: ${booking.instructorId?.fullName || 'N/A'}
+- SĐT giáo viên: ${booking.instructorId?.phone || 'N/A'}
+
+Cảm ơn bạn đã tham gia buổi học!
+
+Trân trọng!`;
+
+    if (booking.studentId?.email) {
+      try {
+        await sendNotificationEmail(booking.studentId.email, title, message);
+        console.log(`✅ [ATTENDANCE] Đã gửi email điểm danh CÓ MẶT cho học viên: ${booking.studentId.email}`);
+      } catch (error) {
+        console.error(`❌ [ATTENDANCE] Lỗi gửi email điểm danh:`, error.message);
+      }
+    }
+  } else if (booking.attendance === 'ABSENT') {
+    // Gửi email thông báo vắng mặt
+    const title = '⚠️ Thông báo: Buổi học - Vắng mặt';
+    const message = `Kính gửi Học viên,
+
+Buổi học của bạn được điểm danh với trạng thái: VẮNG MẶT
+
+Thông tin buổi học:
+- Ngày: ${classDateStr}
+- Ca: ${SLOT_LABELS[String(booking.timeSlot)] || 'Ca ' + booking.timeSlot}
+- Giáo viên: ${booking.instructorId?.fullName || 'N/A'}
+- SĐT giáo viên: ${booking.instructorId?.phone || 'N/A'}
+- Ghi chú: ${booking.instructorNote || 'Không có'}
+
+Lưu ý: Vắng mặt không có lý do sẽ mất buổi học. Vui liên hệ giáo viên hoặc tư vấn viên nếu có lý do chính đáng.
+
+Trân trọng!`;
+
+    if (booking.studentId?.email) {
+      try {
+        await sendNotificationEmail(booking.studentId.email, title, message);
+        console.log(`✅ [ATTENDANCE] Đã gửi email điểm danh VẮNG MẶT cho học viên: ${booking.studentId.email}`);
+      } catch (error) {
+        console.error(`❌ [ATTENDANCE] Lỗi gửi email điểm danh:`, error.message);
+      }
+    }
   }
 };
 
@@ -379,13 +460,20 @@ const SLOT_LABELS = {
 export const testSendAttendanceReminder = async (req, res) => {
   try {
     // Tìm các booking chưa điểm danh và đã kết thúc + 5 phút
+    // Chỉ gửi email 1 lần duy nhất (attendanceReminderSent = false)
     const bookings = await Booking.find({
       status: 'BOOKED',
-      attendance: { $exists: false }
+      attendanceReminderSent: false, // Chỉ gửi email nếu chưa gửi
+      $or: [
+        { attendance: { $exists: false } }, // Chưa từng có attendance
+        { attendance: 'PENDING' }            // Đã có nhưng chưa điểm danh
+      ]
     }).populate('studentId', 'fullName email phone')
       .populate('instructorId', 'fullName email phone');
 
     let reminderCount = 0;
+    let instructorEmailsSent = [];
+    let studentEmailsSent = [];
 
     for (const booking of bookings) {
       const { hour, minute } = SLOT_END_TIMES[String(booking.timeSlot)] || { hour: 17, minute: 0 };
@@ -399,7 +487,6 @@ export const testSendAttendanceReminder = async (req, res) => {
 
       // Nếu đã đến hoặc qua thời điểm kết thúc + 5 phút
       if (now >= reminderTime) {
-        // Gửi email nhắc nhở cho cả giáo viên và học viên
         const classDateStr = new Date(booking.date).toLocaleDateString('vi-VN', {
           weekday: 'long',
           day: 'numeric',
@@ -407,32 +494,60 @@ export const testSendAttendanceReminder = async (req, res) => {
           year: 'numeric'
         });
 
-        const title = '⏰ [TEST] Nhắc nhở: Buổi học chưa được điểm danh';
-        const message = `Kính gửi Quý Thầy/Cô và Học viên,
+        // === GỬI EMAIL CHO GIÁO VIÊN ===
+        const titleInstructor = '⏰ [TEST] Nhắc nhở: Buổi học chưa được điểm danh';
+        const messageInstructor = `Kính gửi Quý Thầy/Cô,
+
+Đây là email TEST nhắc nhở điểm danh từ hệ thống.
+
+Buổi học ngày ${classDateStr} ${SLOT_LABELS[String(booking.timeSlot)] || 'Ca ' + booking.timeSlot} đã kết thúc nhưng Thầy/Cô chưa thực hiện điểm danh.
+
+Vui lòng điểm danh ngay để hoàn tất buổi học.
+
+Thông tin buổi học:
+- Ngày: ${classDateStr}
+- Ca: ${SLOT_LABELS[String(booking.timeSlot)] || 'Ca ' + booking.timeSlot}
+- Học viên: ${booking.studentId?.fullName || 'N/A'}
+- SĐT học viên: ${booking.studentId?.phone || 'N/A'}
+
+Truy cập hệ thống để điểm danh: https://drivecenter.com/portal/instructor-schedule
+
+Trân trọng!`;
+
+        if (booking.instructorId?.email) {
+          await sendNotificationEmail(booking.instructorId.email, titleInstructor, messageInstructor);
+          console.log(`✅ [TEST] Đã gửi email nhắc điểm danh cho giáo viên: ${booking.instructorId.fullName} - ${booking.instructorId.email}`);
+          instructorEmailsSent.push(booking.instructorId.email);
+        }
+
+        // === GỬI EMAIL CHO HỌC VIÊN ===
+        const titleStudent = '⏰ [TEST] Nhắc nhở: Buổi học chưa được điểm danh';
+        const messageStudent = `Kính gửi Học viên,
+
+Đây là email TEST nhắc nhở điểm danh từ hệ thống.
 
 Buổi học ngày ${classDateStr} ${SLOT_LABELS[String(booking.timeSlot)] || 'Ca ' + booking.timeSlot} đã kết thúc nhưng chưa được điểm danh.
 
-Vui lòng thực hiện điểm danh ngay để hoàn tất buổi học.
+Vui lòng liên hệ giáo viên hoặc kiểm tra lịch học để được điểm danh.
 
 Thông tin buổi học:
 - Ngày: ${classDateStr}
 - Ca: ${SLOT_LABELS[String(booking.timeSlot)] || 'Ca ' + booking.timeSlot}
 - Giáo viên: ${booking.instructorId?.fullName || 'N/A'}
-- Học viên: ${booking.studentId?.fullName || 'N/A'}
+- SĐT giáo viên: ${booking.instructorId?.phone || 'N/A'}
+
+Truy cập hệ thống để xem lịch: https://drivecenter.com/portal/schedule
 
 Trân trọng!`;
 
-        // Gửi email cho giáo viên
-        if (booking.instructorId?.email) {
-          await sendNotificationEmail(booking.instructorId.email, title, message);
-          console.log(`✅ [TEST] Đã gửi email nhắc điểm danh cho giáo viên: ${booking.instructorId.fullName}`);
+        if (booking.studentId?.email) {
+          await sendNotificationEmail(booking.studentId.email, titleStudent, messageStudent);
+          console.log(`✅ [TEST] Đã gửi email nhắc điểm danh cho học viên: ${booking.studentId.fullName} - ${booking.studentId.email}`);
+          studentEmailsSent.push(booking.studentId.email);
         }
 
-        // Gửi email cho học viên
-        if (booking.studentId?.email) {
-          await sendNotificationEmail(booking.studentId.email, title, message);
-          console.log(`✅ [TEST] Đã gửi email nhắc điểm danh cho học viên: ${booking.studentId.fullName}`);
-        }
+        // Đánh dấu đã gửi email nhắc nhở (chỉ gửi 1 lần duy nhất)
+        await Booking.findByIdAndUpdate(booking._id, { attendanceReminderSent: true });
 
         reminderCount++;
       }
@@ -440,7 +555,13 @@ Trân trọng!`;
 
     res.json({
       status: 'success',
-      message: `Đã gửi ${reminderCount} email nhắc nhở điểm danh (test)`
+      message: `✅ Test hoàn tất! Đã gửi ${reminderCount} email nhắc nhở điểm danh`,
+      details: {
+        totalBookingsFound: bookings.length,
+        emailsSent: reminderCount,
+        instructorEmails: instructorEmailsSent,
+        studentEmails: studentEmailsSent
+      }
     });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
