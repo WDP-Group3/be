@@ -8,8 +8,12 @@ import {
 // Lấy tất cả notifications
 export const getAllNotifications = async (req, res) => {
   try {
-    const { type, search } = req.query;
+    const { type, search, userId, unread } = req.query;
     const filter = {};
+
+    if (userId) {
+      filter.$or = [{ userId }, { userId: null }];
+    }
 
     // Filter by Type
     if (type) {
@@ -21,14 +25,25 @@ export const getAllNotifications = async (req, res) => {
       filter.title = { $regex: search, $options: "i" };
     }
 
+    if (unread === "true") {
+      filter.isRead = false;
+    }
+
     const notifications = await Notification.find(filter).sort({
       createdAt: -1,
+    });
+
+    const unreadCount = await Notification.countDocuments({
+      ...(filter.$or ? { $or: filter.$or } : {}),
+      ...(filter.type ? { type: filter.type } : {}),
+      isRead: false,
     });
 
     res.json({
       status: "success",
       data: notifications,
       count: notifications.length,
+      unreadCount,
     });
   } catch (error) {
     res.status(500).json({
@@ -66,7 +81,7 @@ export const getNotificationById = async (req, res) => {
 // Tạo notification mới
 export const createNotification = async (req, res) => {
   try {
-    const { type, message, expirationDays } = req.body;
+    const { type, message, expirationDays, userId } = req.body;
     let { title } = req.body;
 
     // Validate inputs
@@ -75,6 +90,16 @@ export const createNotification = async (req, res) => {
         status: "error",
         message: "Missing required fields: type, message, expirationDays",
       });
+    }
+
+    if (userId) {
+      const userExists = await User.exists({ _id: userId });
+      if (!userExists) {
+        return res.status(404).json({
+          status: "error",
+          message: "User not found",
+        });
+      }
     }
 
     // Determine Title
@@ -102,7 +127,7 @@ export const createNotification = async (req, res) => {
     expireAt.setDate(expireAt.getDate() + days);
 
     const newNotification = new Notification({
-      userId: null, // Broadcast to all by default for this feature
+      userId: userId || null,
       type,
       title,
       message,
@@ -112,11 +137,13 @@ export const createNotification = async (req, res) => {
 
     await newNotification.save();
 
-    sendNotificationMailToRoles({
-      roles: targetRoles,
-      title: newNotification.title,
-      message: newNotification.message,
-    });
+    if (!userId) {
+      sendNotificationMailToRoles({
+        roles: targetRoles,
+        title: newNotification.title,
+        message: newNotification.message,
+      });
+    }
 
     res.status(201).json({
       status: "success",
@@ -212,6 +239,34 @@ export const deleteNotification = async (req, res) => {
     res.json({
       status: "success",
       message: "Notification deleted successfully",
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: "error",
+      message: error.message,
+    });
+  }
+};
+
+export const markNotificationRead = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const notification = await Notification.findById(id);
+
+    if (!notification) {
+      return res.status(404).json({
+        status: "error",
+        message: "Notification not found",
+      });
+    }
+
+    notification.isRead = true;
+    await notification.save();
+
+    res.json({
+      status: "success",
+      data: notification,
+      message: "Notification marked as read",
     });
   } catch (error) {
     res.status(500).json({
