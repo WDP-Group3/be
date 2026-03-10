@@ -53,6 +53,8 @@ const buildTuitionItems = (registrations, payments) => {
       courseId: course?._id || null,
       courseCode: course?.code || 'N/A',
       courseName: course?.name || 'Khóa học',
+      courseStartDate: batch?.startDate || null,
+      courseEndDate: batch?.estimatedEndDate || null,
       paymentPlanType: registration.paymentPlanType || 'INSTALLMENT',
       totalFee,
       paidAmount,
