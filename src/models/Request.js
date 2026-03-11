@@ -9,7 +9,7 @@ const requestSchema = new mongoose.Schema(
         },
         type: {
             type: String,
-            enum: ['LATE_PAYMENT', 'SUPPORT', 'OTHER', 'OFFLINE_PAYMENT'],
+            enum: ['LATE_PAYMENT', 'SUPPORT', 'OTHER', 'OFFLINE_PAYMENT', 'CANCEL_SESSION'],
             default: 'LATE_PAYMENT',
             required: true,
         },
@@ -24,6 +24,15 @@ const requestSchema = new mongoose.Schema(
             required: function () {
                 return this.type === 'LATE_PAYMENT';
             },
+        },
+        // Extra fields for LATE_PAYMENT (student)
+        paymentBatch: {
+            type: String,
+            trim: true,
+        },
+        batchCourse: {
+            type: String,
+            trim: true,
         },
         // Fields for OFFLINE_PAYMENT
         paymentDate: {
@@ -44,6 +53,14 @@ const requestSchema = new mongoose.Schema(
             trim: true,
             required: function () {
                 return this.type === 'OFFLINE_PAYMENT';
+            },
+        },
+        // Fields for CANCEL_SESSION (instructor)
+        sessionInfo: {
+            type: String,
+            trim: true,
+            required: function () {
+                return this.type === 'CANCEL_SESSION';
             },
         },
         status: {

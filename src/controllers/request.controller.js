@@ -4,7 +4,7 @@ import User from '../models/User.js';
 // Create a new request
 export const createRequest = async (req, res) => {
     try {
-        const { type, reason, expectedPayDate, paymentDate, studentName, courseName, metadata } = req.body;
+        const { type, reason, expectedPayDate, paymentBatch, batchCourse, paymentDate, studentName, courseName, sessionInfo, metadata } = req.body;
         const userId = req.userId;
 
         if (!type || !reason) {
@@ -17,8 +17,13 @@ export const createRequest = async (req, res) => {
         }
 
         // Validate specific fields for LATE_PAYMENT
-        if (type === 'LATE_PAYMENT' && !expectedPayDate) {
-            return res.status(400).json({ status: 'error', message: 'Thời gian nộp không được để trống đối với đơn xin nộp muộn' });
+        if (type === 'LATE_PAYMENT') {
+            if (!expectedPayDate) {
+                return res.status(400).json({ status: 'error', message: 'Thời gian nộp không được để trống đối với đơn xin nộp muộn' });
+            }
+            if (user.role !== 'STUDENT' && user.role !== 'ADMIN') {
+                return res.status(403).json({ status: 'error', message: 'Chỉ học viên mới có quyền tạo đơn xin nộp muộn' });
+            }
         }
 
         // Validate specific fields and role for OFFLINE_PAYMENT
@@ -26,9 +31,18 @@ export const createRequest = async (req, res) => {
             if (user.role !== 'CONSULTANT' && user.role !== 'ADMIN') {
                 return res.status(403).json({ status: 'error', message: 'Chỉ tư vấn viên hoặc admin mới có quyền tạo đơn xác nhận nộp tiền offline' });
             }
-
             if (!paymentDate || !studentName || !courseName) {
                 return res.status(400).json({ status: 'error', message: 'Vui lòng điền đầy đủ thông tin: ngày nộp, học viên và khóa học' });
+            }
+        }
+
+        // Validate CANCEL_SESSION (instructor only)
+        if (type === 'CANCEL_SESSION') {
+            if (user.role !== 'INSTRUCTOR' && user.role !== 'ADMIN') {
+                return res.status(403).json({ status: 'error', message: 'Chỉ giảng viên mới có quyền tạo đơn hủy dạy đột xuất' });
+            }
+            if (!sessionInfo) {
+                return res.status(400).json({ status: 'error', message: 'Vui lòng nhập thông tin ca dạy cần hủy' });
             }
         }
 
@@ -36,10 +50,16 @@ export const createRequest = async (req, res) => {
             user: userId,
             type,
             reason,
+            // LATE_PAYMENT fields
             expectedPayDate,
+            paymentBatch,
+            batchCourse,
+            // OFFLINE_PAYMENT fields
             paymentDate,
             studentName,
             courseName,
+            // CANCEL_SESSION fields
+            sessionInfo,
             status: user.role === 'ADMIN' ? 'APPROVED' : 'PENDING',
             metadata
         });
