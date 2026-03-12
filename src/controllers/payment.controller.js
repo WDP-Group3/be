@@ -2,6 +2,7 @@ import Payment from '../models/Payment.js';
 import Registration from '../models/Registration.js';
 import Course from '../models/Course.js';
 import Invoice from '../models/Invoice.js';
+import { enrollSingleStudent } from '../services/enrollment.service.js';
 
 const getFeePlanFromRegistration = (registration) => {
   const course = registration?.batchId?.courseId;
@@ -177,7 +178,21 @@ export const createPayment = async (req, res) => {
 
     const result = await Payment.findById(payment._id).populate('registrationId', 'studentId batchId status');
 
-    return res.status(201).json({ status: 'success', message: 'Tạo giao dịch học phí thành công', data: result });
+    // 🔄 Tự động cập nhật trạng thái và gán học viên vào lớp nếu chưa được gán
+    // Chuyển NEW/WAITING -> PROCESSING khi đã thanh toán
+    if (['NEW', 'WAITING'].includes(registration.status)) {
+      await Registration.findByIdAndUpdate(registrationId, { status: 'PROCESSING' });
+    }
+
+    const enrollResult = await enrollSingleStudent(registrationId);
+    console.log('💰 [PAYMENT] Kết quả auto-enroll:', enrollResult);
+
+    return res.status(201).json({ 
+      status: 'success', 
+      message: 'Tạo giao dịch học phí thành công', 
+      data: result,
+      enrollment: enrollResult
+    });
   } catch (error) {
     return res.status(500).json({ status: 'error', message: error.message });
   }

@@ -1,8 +1,9 @@
 import Booking from '../models/Booking.js';
-import Schedule from '../models/Schedule.js';       
+import Schedule from '../models/Schedule.js';
 import Registration from '../models/Registration.js';
 import User from '../models/User.js';
 import { sendNotificationEmail } from '../services/email.service.js';
+import { checkIsHoliday } from './systemHoliday.controller.js';
 
 // [HELPER 1] Kiểm tra khoảng cách thời gian (Quy tắc 12h)
 // Logic: Trả về số giờ chênh lệch. Nếu < 0 là quá khứ, < 12 là gấp.
@@ -156,7 +157,19 @@ export const createBooking = async (req, res) => {
       return res.status(400).json({ status: 'error', message: timeCheck.message });
     }
 
-    // D. CÁC CHECK LOGIC KHÁC
+    // D. CHECK LỊCH NGHỈ TOÀN HỆ THỐNG
+    const bookingDateCheck = new Date(date);
+    bookingDateCheck.setUTCHours(0, 0, 0, 0);
+
+    const holiday = await checkIsHoliday(bookingDateCheck);
+    if (holiday) {
+      return res.status(400).json({
+        status: 'error',
+        message: `Hệ thống có lịch nghỉ "${holiday.title}" từ ${new Date(holiday.startDate).toLocaleDateString('vi-VN')} đến ${new Date(holiday.endDate).toLocaleDateString('vi-VN')}. Không thể đặt lịch trong thời gian này.`
+      });
+    }
+
+    // E. CÁC CHECK LOGIC KHÁC
     const registration = await Registration.findOne({
       studentId,
       status: { $in: ['STUDYING', 'PROCESSING', 'NEW'] } 
@@ -354,7 +367,7 @@ Trân trọng!`;
   }
 };
 
-// 6. Học viên đánh giá
+// 6. Học viên đánh giá (sau khi giáo viên điểm danh)
 export const submitFeedback = async (req, res) => {
   try {
     const { id } = req.params;
@@ -362,10 +375,27 @@ export const submitFeedback = async (req, res) => {
 
     const booking = await Booking.findById(id);
     
+    // Kiểm tra: giáo viên đã điểm danh mới được đánh giá
     if (!booking || booking.status !== 'COMPLETED') {
       return res.status(400).json({ 
         status: 'error', 
         message: 'Bạn chỉ có thể đánh giá sau khi đã hoàn thành buổi học.' 
+      });
+    }
+
+    // Kiểm tra attendance phải là PRESENT mới được đánh giá
+    if (booking.attendance !== 'PRESENT') {
+      return res.status(400).json({ 
+        status: 'error', 
+        message: 'Bạn chỉ có thể đánh giá sau khi giáo viên điểm danh có mặt.' 
+      });
+    }
+
+    // Kiểm tra đã đánh giá chưa
+    if (booking.rating) {
+      return res.status(400).json({ 
+        status: 'error', 
+        message: 'Bạn đã đánh giá buổi học này rồi.' 
       });
     }
 
@@ -561,6 +591,61 @@ Trân trọng!`;
         emailsSent: reminderCount,
         instructorEmails: instructorEmailsSent,
         studentEmails: studentEmailsSent
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// 7. Admin xem tất cả feedback (View Feedback & Ratings)
+export const getAllFeedbacks = async (req, res) => {
+  try {
+    const { instructorId, minRating, startDate, endDate } = req.query;
+    const filter = {};
+
+    // Chỉ lấy các booking đã có feedback
+    filter.rating = { $exists: true, $ne: null };
+
+    if (instructorId) filter.instructorId = instructorId;
+    
+    // Lọc theo rating (thấp hơn hoặc bằng)
+    if (minRating) filter.rating = { $lte: parseInt(minRating) };
+
+    // Lọc theo ngày
+    if (startDate || endDate) {
+      filter.date = {};
+      if (startDate) filter.date.$gte = new Date(startDate);
+      if (endDate) filter.date.$lte = new Date(endDate);
+    }
+
+    const feedbacks = await Booking.find(filter)
+      .select('rating studentFeedback feedbackDate date timeSlot')
+      .populate('studentId', 'fullName email phone')
+      .populate('instructorId', 'fullName email')
+      .sort({ feedbackDate: -1 });
+
+    // Tính thống kê
+    const totalFeedbacks = feedbacks.length;
+    const avgRating = totalFeedbacks > 0 
+      ? (feedbacks.reduce((sum, f) => sum + f.rating, 0) / totalFeedbacks).toFixed(1) 
+      : 0;
+    
+    const ratingDistribution = {
+      5: feedbacks.filter(f => f.rating === 5).length,
+      4: feedbacks.filter(f => f.rating === 4).length,
+      3: feedbacks.filter(f => f.rating === 3).length,
+      2: feedbacks.filter(f => f.rating === 2).length,
+      1: feedbacks.filter(f => f.rating === 1).length,
+    };
+
+    res.json({
+      status: 'success',
+      data: feedbacks,
+      statistics: {
+        totalFeedbacks,
+        avgRating: parseFloat(avgRating),
+        ratingDistribution
       }
     });
   } catch (error) {
