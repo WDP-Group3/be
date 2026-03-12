@@ -1,7 +1,7 @@
 import express from 'express';
 import { authenticate } from '../middleware/auth.middleware.js';
 import { requireRole } from '../middleware/role.middleware.js';
-import { toggleBusy, getMySchedule, getPublicSchedule } from '../controllers/schedule.controller.js';
+import { toggleBusy, getMySchedule, getPublicSchedule, getEmergencyLeaveInfo, testEmergencyBusy, toggleBusyAllDay } from '../controllers/schedule.controller.js';
 
 const router = express.Router();
 
@@ -13,5 +13,14 @@ router.get('/', getPublicSchedule);
 // GV xem lịch & báo bận
 router.get('/instructor', requireRole('INSTRUCTOR'), getMySchedule);
 router.post('/busy', requireRole('INSTRUCTOR'), toggleBusy);
+
+// [MỚI] Báo bận cả ngày
+router.post('/busy-all-day', requireRole('INSTRUCTOR'), toggleBusyAllDay);
+
+// [MỚI] Lấy thông tin nghỉ phép khẩn cấp
+router.get('/emergency-leave', requireRole('INSTRUCTOR'), getEmergencyLeaveInfo);
+
+// [TEST] API test báo bận khẩn cấp
+router.post('/test-emergency', authenticate, testEmergencyBusy);
 
 export default router;

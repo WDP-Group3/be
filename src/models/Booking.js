@@ -27,6 +27,10 @@ const bookingSchema = new mongoose.Schema({
     enum: ['PENDING', 'PRESENT', 'ABSENT'],
     default: 'PENDING',
   },
+  attendanceReminderSent: {
+    type: Boolean,
+    default: false,
+  },
   instructorNote: { type: String, trim: true },
 
   // --- PHẦN ĐÁNH GIÁ (UC26) ---

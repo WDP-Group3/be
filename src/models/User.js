@@ -48,6 +48,16 @@ const userSchema = new mongoose.Schema(
     },
     // ----------------------------------------------------
 
+    // [MỚI] Thông tin nghỉ phép khẩn cấp (Dành cho Giáo viên)
+    emergencyLeaveCount: {
+      type: Number,
+      default: 0
+    },
+    lastEmergencyLeaveMonth: {
+      type: String, // Format: "2026-03"
+      default: null
+    },
+
     // Thông tin hồ sơ cá nhân
     address: {
       type: String,

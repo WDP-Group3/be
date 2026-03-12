@@ -8,4 +8,4 @@ export const TYPE_TITLES_Notification = {
   OTHER: 'Thông báo khác'
 };
 
-export const targetRoles = ['STUDENT', 'INSTRUCTOR', 'CONSULTANT', 'SALE'];
+export const targetRoles = ['LEARNER', 'INSTRUCTOR', 'CONSULTANT'];

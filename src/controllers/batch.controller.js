@@ -1,4 +1,5 @@
 import Batch from '../models/Batch.js';
+import { autoEnrollStudents } from '../services/enrollment.service.js';
 
 // Lấy tất cả batches
 export const getAllBatches = async (req, res) => {
@@ -77,10 +78,18 @@ export const createBatch = async (req, res) => {
 
     const result = await Batch.findById(batch._id).populate('courseId', 'code name');
 
+    // Tự động gán học viên đã thanh toán vào lớp mới tạo
+    const enrollResult = await autoEnrollStudents(courseId, { batchId: batch._id });
+    console.log(`[CREATE-BATCH] Auto-enroll result:`, enrollResult.message);
+
     return res.status(201).json({
       status: 'success',
       message: 'Tạo lớp học thành công',
       data: result,
+      enrollInfo: enrollResult.success ? {
+        enrolledCount: enrollResult.enrolledCount,
+        newlyEnrolled: enrollResult.newlyEnrolled?.length || 0
+      } : null
     });
   } catch (error) {
     return res.status(500).json({
