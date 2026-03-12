@@ -19,6 +19,7 @@ import requestRoutes from './request.routes.js';
 import blogRoutes from './blog.routes.js';
 import scheduleRoutes from './schedule.routes.js';
 import invoiceRoutes from './invoice.routes.js';
+import systemHolidayRoutes from './systemHoliday.routes.js';
 
 const router = express.Router();
 
@@ -47,6 +48,7 @@ router.use('/reports', reportRoutes);
 router.use('/feedbacks', feedbackRoutes);
 router.use('/requests', requestRoutes);
 router.use('/schedule', scheduleRoutes);
+router.use('/system-holidays', systemHolidayRoutes);
 
 export default router;
 

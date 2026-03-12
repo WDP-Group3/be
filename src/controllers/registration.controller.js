@@ -97,20 +97,34 @@ export const getRegistrationById = async (req, res) => {
 
 export const createRegistration = async (req, res) => {
   try {
-    const { batchId, registerMethod = 'ONLINE', paymentPlanType = 'INSTALLMENT' } = req.body;
+    const { 
+      batchId, 
+      courseId, // Thêm courseId để cho phép đăng ký không cần batch
+      registerMethod = 'ONLINE', 
+      paymentPlanType = 'INSTALLMENT' 
+    } = req.body;
     const studentId = req.userId;
 
-    if (!batchId) {
-      return res.status(400).json({ status: 'error', message: 'Batch ID là bắt buộc' });
+    // Cho phép đăng ký với courseId hoặc batchId
+    if (!batchId && !courseId) {
+      return res.status(400).json({ status: 'error', message: 'Batch ID hoặc Course ID là bắt buộc' });
     }
 
-    const batch = await Batch.findById(batchId).populate('courseId');
-    if (!batch) {
-      return res.status(404).json({ status: 'error', message: 'Không tìm thấy lớp học' });
-    }
+    let batch = null;
+    let actualCourseId = courseId;
 
-    if (batch.status !== 'OPEN') {
-      return res.status(400).json({ status: 'error', message: 'Lớp học đã đóng đăng ký' });
+    // Nếu có batchId, lấy thông tin batch và course
+    if (batchId) {
+      batch = await Batch.findById(batchId).populate('courseId');
+      if (!batch) {
+        return res.status(404).json({ status: 'error', message: 'Không tìm thấy lớp học' });
+      }
+
+      if (batch.status !== 'OPEN') {
+        return res.status(400).json({ status: 'error', message: 'Lớp học đã đóng đăng ký' });
+      }
+
+      actualCourseId = batch.courseId._id;
     }
 
     // Yêu cầu hồ sơ cá nhân phải có trước khi đăng ký
@@ -122,23 +136,34 @@ export const createRegistration = async (req, res) => {
       });
     }
 
+    // Kiểm tra đăng ký trùng
     const existingRegistration = await Registration.findOne({
       studentId,
-      batchId,
-      status: { $in: ['NEW', 'PROCESSING', 'STUDYING'] },
+      status: { $in: ['NEW', 'PROCESSING', 'STUDYING', 'WAITING'] },
+      $or: [
+        { batchId: batchId || null },
+        { courseId: actualCourseId }
+      ]
     });
 
     if (existingRegistration) {
-      return res.status(400).json({ status: 'error', message: 'Bạn đã đăng ký lớp học này rồi' });
+      return res.status(400).json({ status: 'error', message: 'Bạn đã đăng ký khoá học này rồi' });
     }
 
-    const feePlanSnapshot = buildFeePlanSnapshot(batch.courseId, paymentPlanType);
+    // Lấy thông tin course
+    const course = await Course.findById(actualCourseId);
+    if (!course) {
+      return res.status(404).json({ status: 'error', message: 'Không tìm thấy khoá học' });
+    }
+
+    const feePlanSnapshot = buildFeePlanSnapshot(course, paymentPlanType);
 
     const registration = new Registration({
       studentId,
-      batchId,
+      courseId: actualCourseId,
+      batchId: batchId || null, // Có thể null nếu đăng ký theo course
       registerMethod,
-      status: 'NEW',
+      status: batchId ? 'NEW' : 'WAITING', // Nếu không có batch thì vào danh sách chờ
       paymentPlanType,
       feePlanSnapshot,
     });
@@ -156,6 +181,7 @@ export const createRegistration = async (req, res) => {
 
     const result = await Registration.findById(registration._id)
       .populate('studentId', 'fullName phone email')
+      .populate('courseId', 'code name estimatedCost')
       .populate('batchId', 'startDate estimatedEndDate location');
 
     res.status(201).json({ status: 'success', data: result, message: 'Đăng ký thành công' });

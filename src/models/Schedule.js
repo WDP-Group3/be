@@ -20,6 +20,11 @@ const scheduleSchema = new mongoose.Schema({
     enum: ['BUSY', 'AVAILABLE'], 
     default: 'BUSY'
   },
+  // [MỚI] Đánh dấu báo bận khẩn cấp (vượt deadline thứ 6)
+  isEmergency: {
+    type: Boolean,
+    default: false
+  },
   note: String
 }, { timestamps: true });
 
