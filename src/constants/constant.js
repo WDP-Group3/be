@@ -4,7 +4,8 @@ export const TYPE_TITLES_Notification = {
   PHOTO: 'Thông báo bổ sung ảnh',
   CABIN: 'Thông báo học Ca Bin',
   HOLIDAY: 'Thông báo lịch nghỉ Lễ/ Tết',
+  MAINTENANCE: 'Thông báo bảo trì hệ thống',
   OTHER: 'Thông báo khác'
 };
 
-export const targetRoles = ['STUDENT', 'INSTRUCTOR', 'CONSULTANT', 'SALE'];
+export const targetRoles = ['LEARNER', 'INSTRUCTOR', 'CONSULTANT'];

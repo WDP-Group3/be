@@ -104,13 +104,13 @@ export const register = async (req, res) => {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create new user with GUEST role by default
+    // Create new user with USER role by default
     const user = new User({
       fullName: name,
       email: email.toLowerCase(),
       phone,
       password: hashedPassword,
-      role: "STUDENT",
+      role: "USER",
       status: "ACTIVE",
     });
 

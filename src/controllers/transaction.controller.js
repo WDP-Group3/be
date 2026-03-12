@@ -94,8 +94,11 @@ export const checkStatus = async (req, res) => {
     transaction.rawPayload = payload;
     await transaction.save();
 
+    let paymentCreated = false;
+
     if (transaction.registrationId) {
-      const existedPayment = await Payment.findOne({ note: `SePay auto webhook - ${transaction.transferContent}` });
+      const note = `SePay auto webhook - ${transaction.transferContent}`;
+      const existedPayment = await Payment.findOne({ note });
       if (!existedPayment) {
         await Payment.create({
           registrationId: transaction.registrationId,
@@ -103,12 +106,13 @@ export const checkStatus = async (req, res) => {
           method: 'ONLINE',
           receivedBy: 'SYSTEM',
           paidAt: transaction.paidAt,
-          note: `SePay auto webhook - ${transaction.transferContent}`,
+          note,
         });
+        paymentCreated = true;
       }
     }
 
-    return res.json({ status: 'success', message: 'Đã xác nhận thanh toán SePay' });
+    return res.json({ status: 'success', message: 'Đã xác nhận thanh toán SePay', data: { paymentCreated } });
   } catch (error) {
     console.error('Error processing SePay webhook:', error);
     return res.status(500).json({ status: 'error', message: error.message });
@@ -183,6 +187,8 @@ export const confirmTransaction = async (req, res) => {
       await transaction.save();
     }
 
+    let paymentCreated = false;
+
     if (transaction.registrationId) {
       const note = `SePay auto webhook - ${transaction.transferContent}`;
       const existedPayment = await Payment.findOne({ note });
@@ -195,10 +201,11 @@ export const confirmTransaction = async (req, res) => {
           paidAt: transaction.paidAt || new Date(),
           note,
         });
+        paymentCreated = true;
       }
     }
 
-    return res.json({ status: 'success', message: 'Đã xác nhận giao dịch', data: transaction });
+    return res.json({ status: 'success', message: 'Đã xác nhận giao dịch', data: { transaction, paymentCreated } });
   } catch (error) {
     return res.status(500).json({ status: 'error', message: error.message });
   }
