@@ -21,8 +21,6 @@ export const autoEnrollStudents = async (courseId, options = {}) => {
       return { success: false, message: 'Không tìm thấy khoá học' };
     }
 
-    const maxStudents = course.maxStudents || 50;
-
     // 2. Tìm batch phù hợp
     let batch = null;
     if (targetBatchId) {
@@ -62,6 +60,8 @@ export const autoEnrollStudents = async (courseId, options = {}) => {
       console.log(`✅ [AUTO-ENROLL] Đã tạo batch mới cho khoá học: ${course.name}`);
     }
 
+    const maxStudents = batch.maxStudents || course.maxStudents || 50;
+
     // 3. Tính số slot còn trống
     const enrolledCount = await Registration.countDocuments({
       batchId: batch._id,
@@ -70,7 +70,7 @@ export const autoEnrollStudents = async (courseId, options = {}) => {
 
     const openSlots = Math.max(maxStudents - enrolledCount, 0);
     if (openSlots <= 0) {
-      console.log(`⚠️ [AUTO-ENROLL] Lớp học ${course.name} đã đầy (${enrolledCount}/${maxStudents})`);
+      console.log(`⚠️ [AUTO-ENROLL] Lớp học ${batch.name || course.name} đã đầy (${enrolledCount}/${maxStudents})`);
       return {
         success: false,
         message: `Lớp học đã đầy (${enrolledCount}/${maxStudents})`,
@@ -149,11 +149,11 @@ export const autoEnrollStudents = async (courseId, options = {}) => {
 
     const newEnrolledCount = enrolledCount + newlyEnrolled.length;
 
-    console.log(`🎉 [AUTO-ENROLL] Hoàn tất! Đã gán ${newlyEnrolled.length} học viên vào lớp ${course.name} (${newEnrolledCount}/${maxStudents})`);
+    console.log(`🎉 [AUTO-ENROLL] Hoàn tất! Đã gán ${newlyEnrolled.length} học viên vào lớp ${batch.name || course.name} (${newEnrolledCount}/${maxStudents})`);
 
     return {
       success: true,
-      message: `Đã gán ${newlyEnrolled.length} học viên vào lớp`,
+      message: `Đã gán ${newlyEnrolled.length} học viên vào lớp ${batch.name || "mới tạo"}`,
       enrolledCount: newEnrolledCount,
       maxStudents,
       newlyEnrolled,
@@ -207,8 +207,6 @@ export const enrollSingleStudent = async (registrationId) => {
       return { success: false, message: 'Không tìm thấy khoá học' };
     }
 
-    const maxStudents = course.maxStudents || 50;
-
     // 4. Tìm hoặc tạo Batch
     let batch = await Batch.findOne({ 
       courseId, 
@@ -231,6 +229,8 @@ export const enrollSingleStudent = async (registrationId) => {
         instructorIds: []
       });
     }
+
+    const maxStudents = batch.maxStudents || course.maxStudents || 50;
 
     // 5. Đếm số HV hiện tại
     const enrolledCount = await Registration.countDocuments({

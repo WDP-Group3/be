@@ -6,6 +6,16 @@ const batchSchema = new mongoose.Schema({
     ref: 'Course',
     required: true,
   },
+  name: {
+    type: String,
+    trim: true,
+    default: '',
+  },
+  examLocation: {
+    type: String,
+    trim: true,
+    default: '',
+  },
   startDate: {
     type: Date,
     required: true,
@@ -23,6 +33,10 @@ const batchSchema = new mongoose.Schema({
     type: [mongoose.Schema.Types.ObjectId],
     ref: 'User',
     default: [],
+  },
+  maxStudents: {
+    type: Number,
+    default: 30,
   },
   status: {
     type: String,

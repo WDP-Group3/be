@@ -49,7 +49,7 @@ const hasCompleteDocumentProfile = (doc) => !!(
 
 export const getAllRegistrations = async (req, res) => {
   try {
-    const { studentId, batchId, status } = req.query;
+    const { studentId, batchId, status, courseId, unassigned } = req.query;
     const filter = {};
 
     if (req.user?.role === 'STUDENT') {
@@ -58,8 +58,21 @@ export const getAllRegistrations = async (req, res) => {
       filter.studentId = studentId;
     }
 
+    if (courseId) filter.courseId = courseId;
     if (batchId) filter.batchId = batchId;
-    if (status) filter.status = status;
+    if (unassigned === 'true') {
+        filter.$or = [
+            { batchId: null },
+            { batchId: { $exists: false } }
+        ];
+    }
+    if (status) {
+        if (status.includes(',')) {
+            filter.status = { $in: status.split(',') };
+        } else {
+            filter.status = status;
+        }
+    }
 
     const registrations = await Registration.find(filter)
       .populate('studentId', 'fullName phone email')
@@ -226,18 +239,44 @@ export const assignRegistrationByAdmin = async (req, res) => {
       return res.status(409).json({ status: 'error', message: 'Học viên đã được gán vào lớp này rồi' });
     }
 
-    const feePlanSnapshot = buildFeePlanSnapshot(batch.courseId, paymentPlanType);
-
-    const registration = new Registration({
+    // Tìm xem người này đã đăng ký khoá học này chưa (nhưng chưa có batch)
+    let registration = await Registration.findOne({
       studentId,
-      batchId,
-      registerMethod,
-      status,
-      paymentPlanType,
-      feePlanSnapshot,
+      courseId: batch.courseId._id,
+      $or: [
+        { batchId: null },
+        { batchId: { $exists: false } }
+      ],
+      status: { $in: ['NEW', 'PROCESSING', 'WAITING'] },
     });
 
-    await registration.save();
+    if (registration) {
+      // Nếu có rồi thì update batchId
+      registration.batchId = batchId;
+      registration.status = status;
+      registration.registerMethod = registerMethod;
+      // Cập nhật lại feeSnapshot nếu cần thiết
+      if (registration.feePlanSnapshot?.length === 0) {
+          registration.feePlanSnapshot = buildFeePlanSnapshot(batch.courseId, paymentPlanType);
+          registration.paymentPlanType = paymentPlanType;
+      }
+      await registration.save();
+    } else {
+      // Nếu chưa thì tạo mới (có thể Admin đang thêm thủ công một người mới tinh)
+      const feePlanSnapshot = buildFeePlanSnapshot(batch.courseId, paymentPlanType);
+
+      registration = new Registration({
+        studentId,
+        courseId: batch.courseId._id,
+        batchId,
+        registerMethod,
+        status,
+        paymentPlanType,
+        feePlanSnapshot,
+      });
+
+      await registration.save();
+    }
 
     await Document.findOneAndUpdate(
       { studentId },
@@ -259,6 +298,29 @@ export const assignRegistrationByAdmin = async (req, res) => {
       status: 'success',
       message: 'Gán khóa học cho học viên thành công',
       data: result,
+    });
+  } catch (error) {
+    return res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+export const getBatchParticipants = async (req, res) => {
+  try {
+    const { batchId } = req.params;
+
+    const registrations = await Registration.find({ batchId })
+      .populate('studentId', 'fullName phone email status')
+      .populate({
+        path: 'batchId',
+        select: 'location startDate estimatedEndDate status courseId',
+        populate: { path: 'courseId', select: 'code name' },
+      })
+      .sort({ createdAt: -1 });
+
+    return res.json({
+      status: 'success',
+      data: registrations,
+      count: registrations.length,
     });
   } catch (error) {
     return res.status(500).json({ status: 'error', message: error.message });
