@@ -1,4 +1,5 @@
 import Batch from '../models/Batch.js';
+import Registration from '../models/Registration.js';
 import { autoEnrollStudents } from '../services/enrollment.service.js';
 
 // Lấy tất cả batches
@@ -15,9 +16,17 @@ export const getAllBatches = async (req, res) => {
       .populate('instructorIds', 'fullName phone')
       .sort({ startDate: -1 });
 
+    const batchesWithCount = await Promise.all(batches.map(async (batch) => {
+      const studentCount = await Registration.countDocuments({
+        batchId: batch._id,
+        status: { $in: ['NEW', 'PROCESSING', 'STUDYING'] }
+      });
+      return { ...batch.toObject(), studentCount };
+    }));
+
     res.json({
       status: 'success',
-      data: batches,
+      data: batchesWithCount,
       count: batches.length,
     });
   } catch (error) {
@@ -43,9 +52,14 @@ export const getBatchById = async (req, res) => {
       });
     }
 
+    const studentCount = await Registration.countDocuments({
+      batchId: batch._id,
+      status: { $in: ['NEW', 'PROCESSING', 'STUDYING'] }
+    });
+
     res.json({
       status: 'success',
-      data: batch,
+      data: { ...batch.toObject(), studentCount },
     });
   } catch (error) {
     res.status(500).json({
@@ -55,10 +69,9 @@ export const getBatchById = async (req, res) => {
   }
 };
 
-// Tạo batch mới (Admin)
 export const createBatch = async (req, res) => {
   try {
-    const { courseId, startDate, estimatedEndDate, location, instructorIds = [], status = 'OPEN' } = req.body;
+    const { courseId, name, examLocation, startDate, estimatedEndDate, location, maxStudents, instructorIds = [], status = 'OPEN' } = req.body;
 
     if (!courseId || !startDate || !estimatedEndDate || !location) {
       return res.status(400).json({
@@ -69,9 +82,12 @@ export const createBatch = async (req, res) => {
 
     const batch = await Batch.create({
       courseId,
+      name,
+      examLocation,
       startDate,
       estimatedEndDate,
       location,
+      maxStudents,
       instructorIds,
       status,
     });
