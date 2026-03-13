@@ -21,6 +21,11 @@ const transactionSchema = new mongoose.Schema({
     ref: 'Registration',
     default: null,
   },
+  scheduleIndex: {
+    type: Number,
+    default: null,
+    min: 0,
+  },
   user: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
