@@ -8,6 +8,7 @@ import {
   updateDocumentStatus,
   getMyDocument,
   softDeleteDocument,
+  lookupConsultantByEmail,
 } from '../controllers/document.controller.js';
 import { authenticate } from '../middleware/auth.middleware.js';
 import { requireRole } from '../middleware/role.middleware.js';
@@ -16,8 +17,9 @@ const router = express.Router();
 
 // Review routes (Sale/Admin)
 router.get('/review', authenticate, requireRole('ADMIN', 'CONSULTANT'), getDocumentsForReview);
-router.patch('/:id/status', authenticate, requireRole('ADMIN', 'CONSULTANT'), updateDocumentStatus);
-router.patch('/:id/soft-delete', authenticate, requireRole('ADMIN', 'CONSULTANT'), softDeleteDocument);
+router.get('/consultants/lookup', authenticate, lookupConsultantByEmail);
+router.patch('/:id/status', authenticate, requireRole('CONSULTANT'), updateDocumentStatus);
+router.patch('/:id/soft-delete', authenticate, requireRole('CONSULTANT'), softDeleteDocument);
 
 // Hồ sơ dùng chung theo user hiện tại
 router.get('/me', authenticate, getMyDocument);

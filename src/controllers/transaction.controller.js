@@ -1,6 +1,8 @@
 import crypto from 'crypto';
 import Transaction from '../models/Transaction.js';
 import Payment from '../models/Payment.js';
+import Registration from '../models/Registration.js';
+import { enrollSingleStudent } from '../services/enrollment.service.js';
 
 const SEPAY_BANK_CODE = process.env.SEPAY_BANK_CODE || '';
 const SEPAY_BANK_ACCOUNT = process.env.SEPAY_BANK_ACCOUNT || '';
@@ -19,7 +21,7 @@ const getHeaderApiKey = (req) => {
 
 export const createQR = async (req, res) => {
   try {
-    const { vnp_Amount, vnp_OrderInfo, user, registrationId } = req.body;
+    const { vnp_Amount, vnp_OrderInfo, user, registrationId, scheduleIndex } = req.body;
 
     const amount = Number(vnp_Amount);
     if (!amount || amount <= 0) {
@@ -34,6 +36,7 @@ export const createQR = async (req, res) => {
       transferContent,
       user: user || req.userId,
       registrationId: registrationId || null,
+      scheduleIndex: Number.isInteger(scheduleIndex) ? scheduleIndex : (scheduleIndex !== undefined ? Number(scheduleIndex) : null),
       status: 'pending',
     });
 
@@ -88,13 +91,30 @@ export const checkStatus = async (req, res) => {
       return res.status(400).json({ status: 'error', message: 'Số tiền nhận nhỏ hơn số tiền yêu cầu' });
     }
 
+    const extractPaidAt = (p) => {
+      const candidate =
+        p.paidAt || p.paid_at || p.transactionTime || p.transaction_time || p.createdAt || p.created_at || p.time;
+      if (!candidate) return null;
+      const d = new Date(candidate);
+      if (!Number.isNaN(d.getTime())) return d;
+      // Some providers send epoch seconds/ms
+      const n = Number(candidate);
+      if (!Number.isNaN(n) && n > 0) {
+        const maybeMs = n > 2_000_000_000 ? n : n * 1000;
+        const d2 = new Date(maybeMs);
+        if (!Number.isNaN(d2.getTime())) return d2;
+      }
+      return null;
+    };
+
     transaction.status = 'completed';
-    transaction.paidAt = new Date();
+    transaction.paidAt = extractPaidAt(payload) || new Date();
     transaction.providerTransactionId = String(payload.id || payload.transactionId || payload.referenceCode || '');
     transaction.rawPayload = payload;
     await transaction.save();
 
     let paymentCreated = false;
+    let enrollment = null;
 
     if (transaction.registrationId) {
       const note = `SePay auto webhook - ${transaction.transferContent}`;
@@ -110,9 +130,22 @@ export const checkStatus = async (req, res) => {
         });
         paymentCreated = true;
       }
+
+      // Auto-enroll only for installment 1 (scheduleIndex === 0)
+      const shouldAutoEnroll = Number(transaction.scheduleIndex) === 0;
+      if (shouldAutoEnroll) {
+        const registration = await Registration.findById(transaction.registrationId).select('_id status');
+        if (registration) {
+          // Ensure status progresses once money is received
+          if (['NEW', 'WAITING'].includes(registration.status)) {
+            await Registration.findByIdAndUpdate(registration._id, { status: 'PROCESSING' });
+          }
+          enrollment = await enrollSingleStudent(registration._id);
+        }
+      }
     }
 
-    return res.json({ status: 'success', message: 'Đã xác nhận thanh toán SePay', data: { paymentCreated } });
+    return res.json({ status: 'success', message: 'Đã xác nhận thanh toán SePay', data: { paymentCreated, enrollment } });
   } catch (error) {
     console.error('Error processing SePay webhook:', error);
     return res.status(500).json({ status: 'error', message: error.message });

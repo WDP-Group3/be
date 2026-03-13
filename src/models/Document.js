@@ -29,6 +29,17 @@ const documentSchema = new mongoose.Schema({
     type: String,
     trim: true,
   },
+  consultantId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+  },
+  consultantEmail: {
+    type: String,
+    trim: true,
+    lowercase: true,
+    default: null,
+  },
   status: {
     type: String,
     enum: ['PENDING', 'APPROVED', 'REJECTED'],
@@ -49,6 +60,7 @@ const documentSchema = new mongoose.Schema({
 // Indexes
 documentSchema.index({ studentId: 1 }, { unique: true });
 documentSchema.index({ registrationId: 1 });
+documentSchema.index({ consultantId: 1 });
 documentSchema.index({ status: 1 });
 documentSchema.index({ isDeleted: 1 });
 
