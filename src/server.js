@@ -207,8 +207,15 @@ app.use((err, req, res, next) => {
 });
 
 // Start server
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`🚀 Server đang chạy tại http://localhost:${PORT}`);
   console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
 });
 
+server.on('error', (err) => {
+  if (err?.code === 'EADDRINUSE') {
+    console.error(`❌ Port ${PORT} đang được sử dụng. Hãy tắt tiến trình đang dùng port hoặc đổi PORT trong .env.`);
+  } else {
+    console.error('Server error:', err);
+  }
+});
