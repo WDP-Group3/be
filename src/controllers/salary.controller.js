@@ -1,10 +1,7 @@
-import mongoose from 'mongoose';
 import SalaryConfig from '../models/SalaryConfig.js';
-import SalaryReport from '../models/SalaryReport.js';
 import Course from '../models/Course.js';
 import User from '../models/User.js';
 import Booking from '../models/Booking.js';
-import Registration from '../models/Registration.js';
 import Document from '../models/Document.js';
 
 // ============================================
@@ -25,8 +22,8 @@ const getActiveConfig = async () => {
 // ============================================
 // HELPER: Tính lương cho một user trong tháng
 // ============================================
-const calculateSalary = async (userId, month, year, config) => {
-  const user = await User.findById(userId);
+const calculateSalary = async (userId, month, year, config, options = {}) => {
+  const user = await User.findById(userId).lean();
   if (!user || !['INSTRUCTOR', 'CONSULTANT'].includes(user.role)) {
     return null;
   }
@@ -38,13 +35,24 @@ const calculateSalary = async (userId, month, year, config) => {
     courseMap[c._id.toString()] = { code: c.code, name: c.name };
   });
 
-  // Map commission theo courseId
+  // Map commission theo courseId (ưu tiên override của user nếu có)
   const commissionMap = {};
   config.courseCommissions.forEach(cc => {
     commissionMap[cc.courseId.toString()] = cc.commissionAmount;
   });
 
-  const hourlyRate = config.instructorHourlyRate || 80000;
+  if (Array.isArray(user.commissionOverrides) && user.commissionOverrides.length > 0) {
+    user.commissionOverrides.forEach(ov => {
+      if (ov?.courseId) {
+        commissionMap[ov.courseId.toString()] = ov.commissionAmount || 0;
+      }
+    });
+  }
+
+  const hourlyRate = Number.isFinite(user.salaryHourlyRate) ? user.salaryHourlyRate : (config.instructorHourlyRate || 80000);
+
+  const { courseIdFilter } = options;
+  const applyCourseFilter = Boolean(courseIdFilter);
 
   // Tính ngày bắt đầu và kết thúc của tháng
   const startDate = new Date(year, month - 1, 1);
@@ -53,6 +61,7 @@ const calculateSalary = async (userId, month, year, config) => {
   let totalTeachingHours = 0;
   let totalTeachingSessions = 0;
   let totalCommission = 0;
+  let totalDocuments = 0;
   const courseCounts = {};
   const teachingDetails = [];
   const commissionDetails = [];
@@ -64,12 +73,16 @@ const calculateSalary = async (userId, month, year, config) => {
       date: { $gte: startDate, $lte: endDate },
       attendance: 'PRESENT',
       status: 'COMPLETED'
-    }).populate('studentId', 'fullName').lean();
+    }).populate('studentId', 'fullName').populate('batchId', 'courseId').lean();
 
-    totalTeachingSessions = bookings.length;
-    totalTeachingHours = bookings.length; // Mỗi buổi = 1 giờ
+    const filteredBookings = applyCourseFilter
+      ? bookings.filter(b => b.batchId?.courseId?.toString() === courseIdFilter.toString())
+      : bookings;
 
-    bookings.forEach(booking => {
+    totalTeachingSessions = filteredBookings.length;
+    totalTeachingHours = filteredBookings.length; // Mỗi buổi = 1 giờ
+
+    filteredBookings.forEach(booking => {
       teachingDetails.push({
         date: booking.date,
         timeSlot: booking.timeSlot,
@@ -101,6 +114,14 @@ const calculateSalary = async (userId, month, year, config) => {
       return targetDate && targetDate >= startDate && targetDate <= endDate;
     });
 
+    const filteredDocs = applyCourseFilter
+      ? docsInMonth.filter(doc => {
+          const reg = doc.registrationId;
+          const courseId = reg?.courseId?._id?.toString() || reg?.courseId?.toString();
+          return courseId && courseId === courseIdFilter.toString();
+        })
+      : docsInMonth;
+
     // Thống kê theo course
     const processDocument = (doc) => {
       const reg = doc.registrationId;
@@ -118,6 +139,7 @@ const calculateSalary = async (userId, month, year, config) => {
         };
       }
       courseCounts[courseId].count++;
+      totalDocuments += 1;
 
       const commission = commissionMap[courseId] || 0;
       totalCommission += commission;
@@ -132,7 +154,7 @@ const calculateSalary = async (userId, month, year, config) => {
     };
 
     // Xử lý documents trong tháng
-    docsInMonth.forEach(doc => processDocument(doc));
+    filteredDocs.forEach(doc => processDocument(doc));
   }
 
   // Tính tổng lương
@@ -143,10 +165,13 @@ const calculateSalary = async (userId, month, year, config) => {
     userId,
     role: user.role,
     userName: user.fullName,
+    hourlyRate,
+    teachingSalary,
     totalTeachingHours,
     totalTeachingSessions,
     totalCommission,
     totalSalary,
+    totalDocuments,
     courseCounts: Object.values(courseCounts),
     teachingDetails,
     commissionDetails,
@@ -157,7 +182,7 @@ const calculateSalary = async (userId, month, year, config) => {
 // ============================================
 // API: Lấy cấu hình lương hiện tại (GET)
 // ============================================
-export const getSalaryConfig = async (req, res) => {
+export const getSalaryConfig = async (_req, res) => {
   try {
     const config = await getActiveConfig();
     const courses = await Course.find({ status: 'Active' }).lean();
@@ -277,7 +302,7 @@ export const updateSalaryConfig = async (req, res) => {
 // ============================================
 // API: Lấy danh sách cấu hình lương (GET all)
 // ============================================
-export const getAllSalaryConfigs = async (req, res) => {
+export const getAllSalaryConfigs = async (_req, res) => {
   try {
     const configs = await SalaryConfig.find()
       .sort({ effectiveFrom: -1 })
@@ -296,7 +321,7 @@ export const getAllSalaryConfigs = async (req, res) => {
 // ============================================
 // API: Lấy danh sách courses (dùng cho filter cột động)
 // ============================================
-export const getCoursesForSalary = async (req, res) => {
+export const getCoursesForSalary = async (_req, res) => {
   try {
     const courses = await Course.find({ status: 'Active' }).sort({ code: 1 }).lean();
     res.json({
@@ -313,21 +338,16 @@ export const getCoursesForSalary = async (req, res) => {
 // ============================================
 export const getMonthlySummary = async (req, res) => {
   try {
-    const { month, year, role, search, page = 1, limit = 10 } = req.query;
+    const { month, year, role, search, courseId, page = 1, limit = 10 } = req.query;
 
-    // Mặc định: tháng trước
+    // Mặc định: tháng hiện tại
     const now = new Date();
-    const currentMonth = month ? parseInt(month) : now.getMonth(); // 0-11
-    const currentYear = year ? parseInt(year) : now.getFullYear();
+    const currentMonth = now.getMonth() + 1; // 1-12
+    const currentYear = now.getFullYear();
 
-    // Tính tháng trước nếu không truyền month
-    let targetMonth = currentMonth;
-    let targetYear = currentYear;
-
-    if (!month) {
-      targetMonth = currentMonth === 0 ? 11 : currentMonth - 1;
-      targetYear = currentMonth === 0 ? currentYear - 1 : currentYear;
-    }
+    // Sử dụng tháng/năm từ query, mặc định là tháng hiện tại
+    const targetMonth = month ? parseInt(month) : currentMonth;
+    const targetYear = year ? parseInt(year) : currentYear;
 
     // Lấy users theo role
     const userFilter = { role: { $in: ['INSTRUCTOR', 'CONSULTANT'] }, status: 'ACTIVE' };
@@ -355,18 +375,11 @@ export const getMonthlySummary = async (req, res) => {
       });
     }
 
-    // Map commission theo courseId
-    const commissionMap = {};
-    config.courseCommissions.forEach(cc => {
-      commissionMap[cc.courseId.toString()] = cc.commissionAmount;
-    });
-
     // Tính lương cho từng user
     const results = [];
-    const courses = await Course.find({ status: 'Active' }).lean();
 
     for (const user of users) {
-      const salaryData = await calculateSalary(user._id, targetMonth + 1, targetYear, config);
+      const salaryData = await calculateSalary(user._id, targetMonth + 1, targetYear, config, { courseIdFilter: courseId });
 
       if (salaryData) {
         // Format course counts
@@ -375,13 +388,23 @@ export const getMonthlySummary = async (req, res) => {
           courseCountMap[cc.courseCode] = cc.count;
         });
 
+        if (courseId && user.role === 'CONSULTANT') {
+          const matchedCourse = salaryData.courseCounts.find(cc => cc.courseId?.toString() === courseId.toString());
+          if (!matchedCourse) {
+            continue;
+          }
+        }
+
         results.push({
           _id: user._id,
           fullName: user.fullName,
           role: user.role,
+          hourlyRate: salaryData.hourlyRate,
+          teachingSalary: salaryData.teachingSalary,
           totalTeachingHours: salaryData.totalTeachingHours,
           totalTeachingSessions: salaryData.totalTeachingSessions,
           totalCommission: salaryData.totalCommission,
+          totalDocuments: salaryData.totalDocuments,
           totalSalary: salaryData.totalSalary,
           courseCounts: courseCountMap,
           salaryData: salaryData // Giữ lại để dùng cho export
@@ -402,7 +425,8 @@ export const getMonthlySummary = async (req, res) => {
         filter: {
           month: targetMonth + 1,
           year: targetYear,
-          role
+          role,
+          courseId
         }
       }
     });
@@ -416,24 +440,19 @@ export const getMonthlySummary = async (req, res) => {
 // ============================================
 export const getSalaryDetail = async (req, res) => {
   try {
-    const { userId, month, year } = req.query;
+    const { userId, month, year, courseId } = req.query;
 
     if (!userId) {
       return res.status(400).json({ status: 'error', message: 'userId là bắt buộc' });
     }
 
     const now = new Date();
-    const currentMonth = month ? parseInt(month) : now.getMonth();
-    const currentYear = year ? parseInt(year) : now.getFullYear();
+    const currentMonth = now.getMonth() + 1; // 1-12
+    const currentYear = now.getFullYear();
 
-    // Tính tháng trước nếu không truyền month
-    let targetMonth = currentMonth;
-    let targetYear = currentYear;
-
-    if (!month) {
-      targetMonth = currentMonth === 0 ? 11 : currentMonth - 1;
-      targetYear = currentMonth === 0 ? currentYear - 1 : currentYear;
-    }
+    // Sử dụng tháng/năm từ query, mặc định là tháng hiện tại
+    const targetMonth = month ? parseInt(month) : currentMonth;
+    const targetYear = year ? parseInt(year) : currentYear;
 
     const config = await getActiveConfig();
     if (!config) {
@@ -443,7 +462,7 @@ export const getSalaryDetail = async (req, res) => {
       });
     }
 
-    const salaryData = await calculateSalary(userId, targetMonth + 1, targetYear, config);
+    const salaryData = await calculateSalary(userId, targetMonth + 1, targetYear, config, { courseIdFilter: courseId });
 
     if (!salaryData) {
       return res.status(404).json({ status: 'error', message: 'Không tìm thấy dữ liệu lương' });
@@ -464,7 +483,7 @@ export const getSalaryDetail = async (req, res) => {
 export const getMySalary = async (req, res) => {
   try {
     const userId = req.userId;
-    const { month, year } = req.query;
+    const { month, year, courseId } = req.query;
 
     if (!userId) {
       return res.status(401).json({ status: 'error', message: 'Chưa đăng nhập' });
@@ -476,17 +495,12 @@ export const getMySalary = async (req, res) => {
     }
 
     const now = new Date();
-    const currentMonth = month ? parseInt(month) : now.getMonth();
-    const currentYear = year ? parseInt(year) : now.getFullYear();
+    const currentMonth = now.getMonth() + 1; // 1-12
+    const currentYear = now.getFullYear();
 
-    // Tính tháng trước nếu không truyền month
-    let targetMonth = currentMonth;
-    let targetYear = currentYear;
-
-    if (!month) {
-      targetMonth = currentMonth === 0 ? 11 : currentMonth - 1;
-      targetYear = currentMonth === 0 ? currentYear - 1 : currentYear;
-    }
+    // Sử dụng tháng/năm từ query, mặc định là tháng hiện tại
+    const targetMonth = month ? parseInt(month) : currentMonth;
+    const targetYear = year ? parseInt(year) : currentYear;
 
     const config = await getActiveConfig();
     if (!config) {
@@ -496,7 +510,7 @@ export const getMySalary = async (req, res) => {
       });
     }
 
-    const salaryData = await calculateSalary(userId, targetMonth + 1, targetYear, config);
+    const salaryData = await calculateSalary(userId, targetMonth + 1, targetYear, config, { courseIdFilter: courseId });
 
     res.json({
       status: 'success',
@@ -504,8 +518,80 @@ export const getMySalary = async (req, res) => {
         ...salaryData,
         filter: {
           month: targetMonth + 1,
-          year: targetYear
+          year: targetYear,
+          courseId
         }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// ============================================
+// API: Lấy override lương/hoa hồng theo user (Admin)
+// ============================================
+export const getUserSalaryOverride = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = await User.findById(id).select('fullName role salaryHourlyRate commissionOverrides').populate('commissionOverrides.courseId', 'code name').lean();
+
+    if (!user) {
+      return res.status(404).json({ status: 'error', message: 'User không tồn tại' });
+    }
+
+    if (!['INSTRUCTOR', 'CONSULTANT'].includes(user.role)) {
+      return res.status(400).json({ status: 'error', message: 'User không phải Instructor/Consultant' });
+    }
+
+    return res.json({
+      status: 'success',
+      data: user
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// ============================================
+// API: Cập nhật override lương/hoa hồng theo user (Admin)
+// ============================================
+export const updateUserSalaryOverride = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { salaryHourlyRate, commissionOverrides } = req.body;
+
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ status: 'error', message: 'User không tồn tại' });
+    }
+
+    if (!['INSTRUCTOR', 'CONSULTANT'].includes(user.role)) {
+      return res.status(400).json({ status: 'error', message: 'User không phải Instructor/Consultant' });
+    }
+
+    if (salaryHourlyRate !== undefined) {
+      user.salaryHourlyRate = salaryHourlyRate === null || salaryHourlyRate === '' ? null : Number(salaryHourlyRate);
+    }
+
+    if (Array.isArray(commissionOverrides)) {
+      user.commissionOverrides = commissionOverrides.map(c => ({
+        courseId: c.courseId,
+        commissionAmount: Number(c.commissionAmount || 0)
+      }));
+    }
+
+    await user.save();
+
+    return res.json({
+      status: 'success',
+      message: 'Cập nhật override thành công',
+      data: {
+        _id: user._id,
+        fullName: user.fullName,
+        role: user.role,
+        salaryHourlyRate: user.salaryHourlyRate,
+        commissionOverrides: user.commissionOverrides
       }
     });
   } catch (error) {
@@ -518,22 +604,24 @@ export const getMySalary = async (req, res) => {
 // ============================================
 export const exportSalaryCSV = async (req, res) => {
   try {
-    const { userId, month, year } = req.query;
+    const { userId, month, year, courseId } = req.query;
 
     if (!userId) {
       return res.status(400).json({ status: 'error', message: 'userId là bắt buộc' });
     }
 
     const now = new Date();
-    const targetMonth = month ? parseInt(month) : (now.getMonth() === 0 ? 11 : now.getMonth());
-    const targetYear = year ? parseInt(year) : (now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear());
+    const currentMonth = now.getMonth() + 1; // 1-12
+    const currentYear = now.getFullYear();
+    const targetMonth = month ? parseInt(month) : currentMonth;
+    const targetYear = year ? parseInt(year) : currentYear;
 
     const config = await getActiveConfig();
     if (!config) {
       return res.status(400).json({ status: 'error', message: 'Chưa có cấu hình lương' });
     }
 
-    const salaryData = await calculateSalary(userId, targetMonth, targetYear, config);
+    const salaryData = await calculateSalary(userId, targetMonth, targetYear, config, { courseIdFilter: courseId });
 
     if (!salaryData) {
       return res.status(404).json({ status: 'error', message: 'Không tìm thấy dữ liệu lương' });
