@@ -39,6 +39,15 @@ router.get('/detail', authenticate, requireRole('ADMIN'), salaryController.getSa
 router.get('/export', authenticate, requireRole('ADMIN'), salaryController.exportSalaryCSV);
 
 // ============================================
+// Routes cho override lương/hoa hồng theo user (Admin)
+// ============================================
+// GET /salary/users/:id/override
+router.get('/users/:id/override', authenticate, requireRole('ADMIN'), salaryController.getUserSalaryOverride);
+
+// PUT /salary/users/:id/override
+router.put('/users/:id/override', authenticate, requireRole('ADMIN'), salaryController.updateUserSalaryOverride);
+
+// ============================================
 // Routes cho user (Instructor/Consultant)
 // ============================================
 // GET /salary/my - Lương của tôi

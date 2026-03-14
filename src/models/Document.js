@@ -53,8 +53,13 @@ const documentSchema = new mongoose.Schema({
     type: Date,
     default: null,
   },
+  // Ngày tạo hồ sơ (dùng để tính hoa hồng)
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
 }, {
-  timestamps: false,
+  timestamps: true,
 });
 
 // Indexes
