@@ -58,7 +58,8 @@ const documentSchema = new mongoose.Schema({
 });
 
 // Indexes
-documentSchema.index({ studentId: 1 }, { unique: true });
+// studentId already has unique: true in schema definition, so no extra index here
+
 documentSchema.index({ registrationId: 1 });
 documentSchema.index({ consultantId: 1 });
 documentSchema.index({ status: 1 });

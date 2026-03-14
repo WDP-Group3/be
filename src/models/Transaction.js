@@ -14,7 +14,6 @@ const transactionSchema = new mongoose.Schema({
     type: String,
     trim: true,
     required: true,
-    unique: true,
   },
   registrationId: {
     type: mongoose.Schema.Types.ObjectId,
