@@ -2,6 +2,8 @@ import Booking from '../models/Booking.js';
 import Schedule from '../models/Schedule.js';
 import Registration from '../models/Registration.js';
 import User from '../models/User.js';
+import Course from '../models/Course.js';
+import mongoose from 'mongoose';
 import { sendNotificationEmail } from '../services/email.service.js';
 import { checkIsHoliday } from './systemHoliday.controller.js';
 
@@ -130,10 +132,78 @@ export const getBookingById = async (req, res) => {
   }
 };
 
+// [HELPER] Kiểm tra tiến độ học tập của học viên theo khóa học
+// Trả về: { allowed: boolean, message?: string, required?: number, completed?: number, remaining?: number }
+const checkStudentCourseProgress = async (studentId, courseId) => {
+  try {
+    const studentObjId = new mongoose.Types.ObjectId(studentId);
+    const courseObjId = new mongoose.Types.ObjectId(courseId);
+
+    // Lấy thông tin khóa học
+    const course = await Course.findById(courseId).lean();
+    if (!course) return { allowed: true }; // Không tìm thấy khóa thì bỏ qua check
+    const requiredHours = course.requiredPracticeHours || 0;
+    if (requiredHours === 0) return { allowed: true }; // Không giới hạn thì bỏ qua
+
+    // Lấy registration của học viên với khóa học này
+    const registration = await Registration.findOne({
+      studentId: studentObjId,
+      courseId: courseObjId,
+      status: { $in: ['NEW', 'PROCESSING', 'STUDYING', 'COMPLETED'] }
+    }).populate('batchId', 'courseId').lean();
+
+    if (!registration) return { allowed: true }; // Chưa đăng ký thì bỏ qua
+
+    // Đếm số giờ đã hoàn thành (attendance PRESENT hoặc status COMPLETED)
+    const completedBookings = await Booking.find({
+      studentId: studentObjId,
+      $or: [
+        { attendance: 'PRESENT' },
+        { status: 'COMPLETED', attendance: { $exists: false } }
+      ]
+    })
+      .populate({
+        path: 'batchId',
+        select: 'courseId',
+        match: { courseId: courseObjId }
+      })
+      .lean();
+
+    // Đếm các booking có batch thuộc khóa học này
+    let completedHours = 0;
+    for (const b of completedBookings) {
+      if (b.batchId && b.batchId.courseId && b.batchId.courseId.toString() === courseId) {
+        completedHours++;
+      }
+    }
+
+    const remainingHours = Math.max(0, requiredHours - completedHours);
+    if (remainingHours <= 0) {
+      return {
+        allowed: false,
+        message: `Bạn đã hoàn thành đủ ${requiredHours} giờ thực hành cho khóa "${course.name || course.code}". Không thể đăng ký thêm.`,
+        required: requiredHours,
+        completed: completedHours,
+        remaining: 0
+      };
+    }
+
+    return {
+      allowed: true,
+      required: requiredHours,
+      completed: completedHours,
+      remaining: remainingHours
+    };
+  } catch (error) {
+    console.error('[checkStudentCourseProgress] Error:', error);
+    return { allowed: true }; // Lỗi thì bỏ qua check
+  }
+};
+
 // 3. Tạo Booking mới
 export const createBooking = async (req, res) => {
   try {
-    const { instructorId, date, timeSlot, type } = req.body;
+    const { instructorId, date, timeSlot, type, courseId } = req.body;
     const studentId = req.userId;
 
     // A. CHECK 12H (Quy tắc quan trọng nhất)
@@ -157,15 +227,28 @@ export const createBooking = async (req, res) => {
       return res.status(400).json({ status: 'error', message: timeCheck.message });
     }
 
-    // D. CHECK LỊCH NGHỈ TOÀN HỆ THỐNG
+    // C1. [MỚI] CHECK TIẾN ĐỘ HỌC TẬP - Nếu đủ giờ thì không cho đăng ký
+    if (courseId) {
+      const progressCheck = await checkStudentCourseProgress(studentId, courseId);
+      if (!progressCheck.allowed) {
+        return res.status(400).json({ status: 'error', message: progressCheck.message });
+      }
+    }
+
+    // D. CHECK LỊCH NGHỈ (toàn hệ thống hoặc theo khu vực của giáo viên)
     const bookingDateCheck = new Date(date);
     bookingDateCheck.setUTCHours(0, 0, 0, 0);
 
-    const holiday = await checkIsHoliday(bookingDateCheck);
+    // Lấy thông tin giáo viên để biết khu vực
+    const instructor = await User.findById(instructorId).select('workingLocation').lean();
+    const instructorLocation = instructor?.workingLocation || null;
+
+    const holiday = await checkIsHoliday(bookingDateCheck, instructorLocation);
     if (holiday) {
+      const locationMsg = holiday.location ? `tại khu vực ${holiday.location}` : 'toàn hệ thống';
       return res.status(400).json({
         status: 'error',
-        message: `Hệ thống có lịch nghỉ "${holiday.title}" từ ${new Date(holiday.startDate).toLocaleDateString('vi-VN')} đến ${new Date(holiday.endDate).toLocaleDateString('vi-VN')}. Không thể đặt lịch trong thời gian này.`
+        message: `Hệ thống có lịch nghỉ "${holiday.title}" ${locationMsg} từ ${new Date(holiday.startDate).toLocaleDateString('vi-VN')} đến ${new Date(holiday.endDate).toLocaleDateString('vi-VN')}. Không thể đặt lịch trong thời gian này.`
       });
     }
 
@@ -223,7 +306,7 @@ export const createBooking = async (req, res) => {
 export const updateBookingStatus = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status } = req.body;
+    const { status, forceCancel } = req.body;
 
     // --- CHECK 12H RULE KHI HỦY ---
     if (status === 'CANCELLED') {
@@ -236,10 +319,34 @@ export const updateBookingStatus = async (req, res) => {
             return res.status(400).json({ status: 'error', message: 'Buổi học đã diễn ra, không thể hủy.' });
         }
 
-        if (hoursUntilClass < 12) {
+        // Nếu dưới 12 tiếng VÀ KHÔNG có forceCancel flag -> không cho hủy
+        // Nếu có forceCancel -> cho phép hủy nhưng đánh dấu là ABSENT (mất giờ)
+        if (hoursUntilClass < 12 && !forceCancel) {
             return res.status(400).json({ 
                 status: 'error', 
-                message: 'Không thể hủy lịch gấp (dưới 12 tiếng trước giờ học).' 
+                message: 'Không thể hủy lịch gấp (dưới 12 tiếng trước giờ học). Vui lòng liên hệ giáo viên hoặc admin.' 
+            });
+        }
+
+        // Nếu hủy dưới 12 tiếng với forceCancel -> đánh dấu là ABSENT (mất giờ)
+        if (hoursUntilClass < 12 && forceCancel) {
+            const updatedBooking = await Booking.findByIdAndUpdate(
+                id,
+                { 
+                    status: 'ABSENT',
+                    attendance: 'ABSENT',
+                    instructorNote: 'Học viên hủy dưới 12 tiếng - mất 1 giờ thực hành'
+                },
+                { new: true }
+            );
+            
+            if (!updatedBooking) return res.status(404).json({ status: 'error', message: 'Không tìm thấy lịch' });
+            
+            return res.json({ 
+                status: 'success', 
+                message: 'Đã hủy lịch do hủy gấp. Bạn đã mất 1 giờ thực hành.', 
+                data: updatedBooking,
+                lostHour: true 
             });
         }
     }
