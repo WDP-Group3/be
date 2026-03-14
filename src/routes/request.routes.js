@@ -5,7 +5,7 @@ import {
     createRequest,
     getAllRequests,
     getMyRequests,
-    updateRequestStatus
+    updateRequestStatus,
 } from '../controllers/request.controller.js';
 
 const router = express.Router();
