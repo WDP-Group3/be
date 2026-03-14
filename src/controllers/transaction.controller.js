@@ -15,7 +15,9 @@ const getHeaderApiKey = (req) => {
   const auth = req.headers?.authorization || req.headers?.Authorization || '';
   if (!auth) return '';
   const [prefix, key] = auth.split(' ');
-  if (String(prefix || '').toLowerCase() === 'apikey') return key || '';
+  const lowerPrefix = String(prefix || '').toLowerCase();
+  // SePay gửi "Spikey {API_KEY}" hoặc "ApiKey {API_KEY}"
+  if (lowerPrefix === 'apikey' || lowerPrefix === 'spikey') return key || '';
   return auth;
 };
 
@@ -131,11 +133,18 @@ export const checkStatus = async (req, res) => {
         paymentCreated = true;
       }
 
-      // Auto-enroll only for installment 1 (scheduleIndex === 0)
-      const shouldAutoEnroll = Number(transaction.scheduleIndex) === 0;
-      if (shouldAutoEnroll) {
-        const registration = await Registration.findById(transaction.registrationId).select('_id status');
+      // Auto-enroll & set firstPaymentDate cho payment ĐẦU TIÊN (tự động)
+      // Kiểm tra xem registration đã có payment nào chưa
+      const existingPaymentCount = await Payment.countDocuments({ registrationId: transaction.registrationId });
+      if (existingPaymentCount <= 1) { // <= 1 vì vừa tạo payment ở trên
+        const registration = await Registration.findById(transaction.registrationId).select('_id status firstPaymentDate');
         if (registration) {
+          // Set firstPaymentDate nếu chưa có (thanh toán lần đầu)
+          if (!registration.firstPaymentDate) {
+            await Registration.findByIdAndUpdate(registration._id, {
+              firstPaymentDate: transaction.paidAt
+            });
+          }
           // Ensure status progresses once money is received
           if (['NEW', 'WAITING'].includes(registration.status)) {
             await Registration.findByIdAndUpdate(registration._id, { status: 'PROCESSING' });
@@ -235,6 +244,24 @@ export const confirmTransaction = async (req, res) => {
           note,
         });
         paymentCreated = true;
+      }
+
+      // Set firstPaymentDate cho payment ĐẦU TIÊN (tự động)
+      const existingPaymentCount = await Payment.countDocuments({ registrationId: transaction.registrationId });
+      if (existingPaymentCount <= 1) {
+        const registration = await Registration.findById(transaction.registrationId).select('_id firstPaymentDate status');
+        if (registration) {
+          if (!registration.firstPaymentDate) {
+            await Registration.findByIdAndUpdate(registration._id, {
+              firstPaymentDate: transaction.paidAt || new Date()
+            });
+          }
+          // Auto-enroll khi xác nhận thanh toán đầu tiên
+          if (['NEW', 'WAITING'].includes(registration.status)) {
+            await Registration.findByIdAndUpdate(registration._id, { status: 'PROCESSING' });
+            await enrollSingleStudent(registration._id);
+          }
+        }
       }
     }
 

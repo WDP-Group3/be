@@ -31,7 +31,37 @@ const buildTuitionItems = (registrations, payments) => {
 
     const regPayments = payments.filter((p) => String(p.registrationId) === String(registration._id));
     const paidAmount = regPayments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
-    const remaining = Math.max(totalFee - paidAmount, 0);
+
+    // Tính số tháng khóa học từ batch
+    let courseMonths = 0;
+    if (batch?.startDate && batch?.estimatedEndDate) {
+      const start = new Date(batch.startDate);
+      const end = new Date(batch.estimatedEndDate);
+      if (!isNaN(start.getTime()) && !isNaN(end.getTime())) {
+        courseMonths = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth());
+        courseMonths = Math.max(courseMonths, 1); // Tối thiểu 1 tháng
+      }
+    }
+
+    // Tính công nợ real-time dựa trên firstPaymentDate
+    let remaining = 0;
+    let monthsElapsed = 0;
+    if (registration.firstPaymentDate && courseMonths > 0) {
+      const firstPayment = new Date(registration.firstPaymentDate);
+      const now = new Date();
+      if (!isNaN(firstPayment.getTime())) {
+        monthsElapsed = (now.getFullYear() - firstPayment.getFullYear()) * 12 + (now.getMonth() - firstPayment.getMonth());
+        monthsElapsed = Math.max(monthsElapsed, 0);
+        // Công nợ = (Tổng học phí / Số tháng) * Số tháng đã học - Đã đóng
+        const tuitionPerMonth = totalFee / courseMonths;
+        const calculatedDebt = tuitionPerMonth * monthsElapsed;
+        remaining = Math.max(calculatedDebt - paidAmount, 0);
+      } else {
+        remaining = Math.max(totalFee - paidAmount, 0);
+      }
+    } else {
+      remaining = Math.max(totalFee - paidAmount, 0);
+    }
 
     let accumulated = 0;
     let nextSchedule = null;
@@ -56,6 +86,9 @@ const buildTuitionItems = (registrations, payments) => {
       courseName: course?.name || 'Khóa học',
       courseStartDate: batch?.startDate || null,
       courseEndDate: batch?.estimatedEndDate || null,
+      courseMonths,
+      firstPaymentDate: registration.firstPaymentDate || null,
+      monthsElapsed,
       paymentPlanType: registration.paymentPlanType || 'INSTALLMENT',
       totalFee,
       paidAmount,
@@ -144,10 +177,12 @@ export const createPayment = async (req, res) => {
       return res.status(400).json({ status: 'error', message: 'registrationId và amount là bắt buộc' });
     }
 
-    const registration = await Registration.findById(registrationId).populate({
-      path: 'batchId',
-      populate: { path: 'courseId', model: Course },
-    });
+    const registration = await Registration.findById(registrationId)
+      .populate({
+        path: 'batchId',
+        populate: { path: 'courseId', model: Course },
+      })
+      .select('+firstPaymentDate');
 
     if (!registration) {
       return res.status(404).json({ status: 'error', message: 'Registration not found' });
@@ -180,6 +215,13 @@ export const createPayment = async (req, res) => {
 
     const result = await Payment.findById(payment._id).populate('registrationId', 'studentId batchId status');
 
+    // 🔄 Tự động set firstPaymentDate nếu chưa có (thanh toán đợt 1)
+    if (!registration.firstPaymentDate) {
+      await Registration.findByIdAndUpdate(registrationId, {
+        firstPaymentDate: paidAt ? new Date(paidAt) : new Date()
+      });
+    }
+
     // 🔄 Tự động cập nhật trạng thái và gán học viên vào lớp nếu chưa được gán
     // Chuyển NEW/WAITING -> PROCESSING khi đã thanh toán
     if (['NEW', 'WAITING'].includes(registration.status)) {
@@ -209,7 +251,8 @@ export const getTuitionInfo = async (req, res) => {
 
     const registrations = await Registration.find(filter)
       .populate('studentId', 'fullName phone email')
-      .populate({ path: 'batchId', populate: { path: 'courseId', model: Course } });
+      .populate({ path: 'batchId', populate: { path: 'courseId', model: Course } })
+      .select('+firstPaymentDate');
 
     if (!registrations.length) {
       return res.json({
