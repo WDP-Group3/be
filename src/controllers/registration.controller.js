@@ -1,8 +1,10 @@
+import mongoose from 'mongoose';
 import Registration from '../models/Registration.js';
 import Document from '../models/Document.js';
 import Batch from '../models/Batch.js';
 import Course from '../models/Course.js';
 import User from '../models/User.js';
+import Booking from '../models/Booking.js';
 
 const buildFeePlanSnapshot = (course, paymentPlanType = 'INSTALLMENT') => {
   const feePayments = Array.isArray(course?.feePayments) ? course.feePayments : [];
@@ -354,5 +356,155 @@ export const getCourseParticipants = async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// ==========================================
+// [MỚI] API lấy danh sách khóa học đã đăng ký và tiến độ học tập
+// Giờ hoàn thành = tổng ca học đã được điểm danh (status COMPLETED / attendance PRESENT)
+// ==========================================
+export const getMyCoursesWithProgress = async (req, res) => {
+  try {
+    const studentId = req.userId;
+    const studentObjId = new mongoose.Types.ObjectId(studentId);
+
+    // Lấy tất cả registration để map batchId -> courseId (dùng khi batch trong booking không tồn tại hoặc bị xóa)
+    const registrations = await Registration.find({
+      studentId,
+      status: { $in: ['NEW', 'PROCESSING', 'STUDYING', 'COMPLETED'] }
+    })
+      .populate('courseId', 'code name requiredPracticeHours')
+      .populate('batchId', 'location startDate courseId')
+      .lean();
+
+    // Map batchId từ registration -> courseId (dùng để map khi batch trong booking không tồn tại)
+    const regBatchToCourse = {};
+    registrations.forEach((reg) => {
+      if (reg.batchId?._id) {
+        const bid = reg.batchId._id.toString();
+        const cid = reg.courseId?._id?.toString();
+        if (bid && cid) regBatchToCourse[bid] = cid;
+      }
+    });
+
+    // Đếm số giờ đã hoàn thành theo từng courseId
+    // Với mỗi booking, ưu tiên lấy courseId từ batch, nếu batch không tồn tại thì map qua registration
+    const completedBookingsWithBatch = await Booking.find({
+      studentId: studentObjId,
+      $or: [
+        { attendance: 'PRESENT' },
+        { status: 'COMPLETED', attendance: { $exists: false } }
+      ]
+    })
+      .select('batchId')
+      .lean();
+
+    const tempProgressMap = {};
+    let countNoBatch = 0;
+    for (const b of completedBookingsWithBatch) {
+      if (!b.batchId) {
+        countNoBatch++;
+        continue;
+      }
+      // Lookup batch để lấy courseId (batch phải tồn tại trong DB)
+      const Batch = mongoose.model('Batch');
+      const batch = await Batch.findById(b.batchId).select('courseId').lean();
+      if (batch?.courseId) {
+        const cid = batch.courseId.toString();
+        tempProgressMap[cid] = (tempProgressMap[cid] || 0) + 1;
+      } else {
+        // Batch không tồn tại trong DB, thử map qua registration
+        const cidFromReg = regBatchToCourse[b.batchId.toString()];
+        if (cidFromReg) {
+          tempProgressMap[cidFromReg] = (tempProgressMap[cidFromReg] || 0) + 1;
+        } else {
+          countNoBatch++;
+        }
+      }
+    }
+
+    // Các ca không có batch hoặc không map được: gán vào khóa đầu tiên có requiredPracticeHours > 0
+    if (countNoBatch > 0) {
+      const firstCourseWithRequired = registrations.find(
+        (r) => r.courseId && (r.courseId.requiredPracticeHours || 0) > 0
+      );
+      if (firstCourseWithRequired) {
+        const cid = firstCourseWithRequired.courseId._id.toString();
+        tempProgressMap[cid] = (tempProgressMap[cid] || 0) + countNoBatch;
+      }
+    }
+
+    const progressMapByCourseId = tempProgressMap;
+
+    // Số giờ đã hoàn thành theo từng khóa (theo courseId) — mỗi khóa chỉ 1 giá trị, không cộng dồn theo số registration
+    const completedByCourseId = { ...progressMapByCourseId };
+
+    // [DEBUG] Log để fix tiến độ học tập - xóa sau khi ổn định
+    console.log('[getMyCoursesWithProgress] studentId:', studentId);
+    console.log('[getMyCoursesWithProgress] completedBookings count:', completedBookingsWithBatch.length);
+    console.log('[getMyCoursesWithProgress] progressMapByCourseId:', JSON.stringify(progressMapByCourseId));
+    console.log('[getMyCoursesWithProgress] completedByCourseId:', JSON.stringify(completedByCourseId));
+    console.log('[getMyCoursesWithProgress] regBatchToCourse:', JSON.stringify(regBatchToCourse));
+    console.log(
+      '[getMyCoursesWithProgress] registrations:',
+      registrations.map((r) => ({
+        courseId: r.courseId?._id?.toString(),
+        courseCode: r.courseId?.code,
+        requiredHours: r.courseId?.requiredPracticeHours,
+        batchId: r.batchId?._id?.toString(),
+        batchLocation: r.batchId?.location
+      }))
+    );
+
+    const courseMap = new Map();
+    registrations.forEach((reg) => {
+      const course = reg.courseId;
+      if (!course) return;
+      const cid = course._id.toString();
+      if (courseMap.has(cid)) return;
+      const requiredHours = course.requiredPracticeHours || 0;
+      const completedHours = completedByCourseId[cid] || 0;
+      const remainingHours = Math.max(0, requiredHours - completedHours);
+      courseMap.set(cid, {
+        _id: course._id,
+        code: course.code,
+        name: course.name,
+        requiredPracticeHours: requiredHours,
+        completedHours,
+        remainingHours,
+        isCompleted: requiredHours > 0 && remainingHours === 0,
+        registrationStatus: reg.status,
+        batchLocation: reg.batchId?.location,
+        startDate: reg.batchId?.startDate
+      });
+    });
+
+    const courses = Array.from(courseMap.values());
+
+    console.log(
+      '[getMyCoursesWithProgress] final courses (completedHours):',
+      courses.map((c) => ({ name: c.name, code: c.code, completedHours: c.completedHours, required: c.requiredPracticeHours }))
+    );
+
+    const progress = {};
+    courses.forEach((c) => {
+      progress[c._id] = {
+        required: c.requiredPracticeHours,
+        completed: c.completedHours,
+        remaining: c.remainingHours,
+        isCompleted: c.isCompleted
+      };
+    });
+
+    res.json({
+      status: 'success',
+      data: {
+        courses,
+        progress
+      }
+    });
+  } catch (error) {
+    console.error('Error getMyCoursesWithProgress:', error);
+    res.status(500).json({ status: 'error', message: error.message });
   }
 };

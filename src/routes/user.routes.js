@@ -1,17 +1,17 @@
 import express from 'express';
-import { 
-  getAllUsers, 
-  getUserById, 
-  createUser, 
-  updateUser, 
+import {
+  getAllUsers,
+  getUserById,
+  createUser,
+  updateUser,
   deactivateUser,
-  // Bổ sung 2 hàm mới này vào import để không bị lỗi undefined
   getLocations,
-  changeUserRole, 
-  restoreUser, 
+  changeUserRole,
+  restoreUser,
   getUserStats,
-  getInstructorsByLocation 
+  getInstructorsByLocation,
 } from '../controllers/user.controller.js';
+import { authenticate } from '../middleware/auth.middleware.js';
 
 const router = express.Router();
 
