@@ -207,27 +207,24 @@ export const enrollSingleStudent = async (registrationId) => {
       return { success: false, message: 'Không tìm thấy khoá học' };
     }
 
-    // 4. Tìm hoặc tạo Batch
-    let batch = await Batch.findOne({ 
-      courseId, 
-      status: 'OPEN' 
-    });
+    // 4. Tìm Batch OPEN gần nhất theo startDate (không tự tạo lớp mới)
+    // Yêu cầu: chỉ auto-add vào lớp đang mở của khóa đó
+    const batch = await Batch.findOne({
+      courseId,
+      status: 'OPEN',
+    }).sort({ startDate: 1 });
 
     if (!batch) {
-      const defaultStartDate = new Date();
-      defaultStartDate.setDate(defaultStartDate.getDate() + 7);
-
-      const defaultEndDate = new Date(defaultStartDate);
-      defaultEndDate.setMonth(defaultEndDate.getMonth() + 3);
-
-      batch = await Batch.create({
-        courseId,
-        startDate: defaultStartDate,
-        estimatedEndDate: defaultEndDate,
-        location: course.location?.[0] || 'Hà Nội',
-        status: 'OPEN',
-        instructorIds: []
+      await Registration.findByIdAndUpdate(registrationId, {
+        status: 'WAITING',
+        courseId: courseId,
       });
+
+      return {
+        success: false,
+        message: 'Chưa có lớp (batch) OPEN cho khoá học này, bạn đang ở danh sách chờ',
+        waitingList: true,
+      };
     }
 
     const maxStudents = batch.maxStudents || course.maxStudents || 50;

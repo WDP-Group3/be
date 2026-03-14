@@ -40,6 +40,10 @@ const registrationSchema = new mongoose.Schema({
       note: String,
     },
   ],
+  firstPaymentDate: {
+    type: Date,
+    default: null,
+  },
   createdAt: {
     type: Date,
     default: Date.now,
