@@ -229,37 +229,35 @@ export const forgotPassword = async (req, res) => {
       return res.json({
         status: "success",
         message:
-          "Nếu email tồn tại trong hệ thống, chúng tôi sẽ gửi link đặt lại mật khẩu đến email của bạn.",
+          "Nếu email tồn tại trong hệ thống, chúng tôi sẽ gửi mật khẩu mới đến email của bạn.",
       });
     }
 
-    // Generate reset token
-    const resetToken = crypto.randomBytes(32).toString("hex");
-    const resetTokenExpires = new Date();
-    resetTokenExpires.setHours(resetTokenExpires.getHours() + 1); // Token expires in 1 hour
+    // Generate random 8-character password (UPPERCASE for clarity)
+    const newPassword = crypto.randomBytes(4).toString("hex").toUpperCase();
+    
+    // Hash the new password
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(newPassword, salt);
 
+    // Update user password
+    user.password = hashedPassword;
     await user.save();
 
-    // Create reset URL
-    const resetUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}/reset-password?token=${resetToken}`;
-
     try {
-      // Send password reset email
-      await sendPasswordResetEmail(user.email, resetToken, resetUrl);
+      // Send the new password via email
+      await sendPasswordResetEmail(user.email, newPassword);
 
       res.json({
         status: "success",
         message:
-          "Chúng tôi đã gửi link đặt lại mật khẩu đến email của bạn. Vui lòng kiểm tra hộp thư.",
+          "Chúng tôi đã cấp lại mật khẩu mới và gửi đến email của bạn. Vui lòng kiểm tra hộp thư.",
       });
     } catch (emailError) {
       console.error("Email sending error:", emailError);
-      // Even if email fails, don't reveal to user
-      // In production, you might want to log this for admin
-      res.json({
-        status: "success",
-        message:
-          "Nếu email tồn tại trong hệ thống, chúng tôi sẽ gửi link đặt lại mật khẩu đến email của bạn.",
+      res.status(500).json({
+        status: "error",
+        message: "Không thể gửi email. Vui lòng thử lại sau.",
       });
     }
   } catch (error) {

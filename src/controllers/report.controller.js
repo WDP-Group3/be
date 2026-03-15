@@ -11,9 +11,9 @@ const currentYear = () => new Date().getFullYear();
 // Get Stats (Admin)
 export const getStats = async (req, res) => {
     try {
-        // 1. Enrollment Count (Active Students)
-        // Assuming 'STUDENT' role or Registration count
-        const studentCount = await User.countDocuments({ role: 'STUDENT', status: 'ACTIVE' });
+        // 1. Enrollment Count (Active LEARNERs)
+        // Assuming 'LEARNER' role or Registration count
+        const LEARNERCount = await User.countDocuments({ role: 'LEARNER', status: 'ACTIVE' });
 
         // 2. Revenue (Sum of paid courses - mock logic via Course Price * Registrations)
         // Since we don't have a Payment Transaction model fully visible, we estimate via Registration * Course Price
@@ -30,7 +30,7 @@ export const getStats = async (req, res) => {
         res.json({
             status: 'success',
             data: {
-                students: studentCount,
+                LEARNERs: LEARNERCount,
                 registration: registrationCount,
                 revenue: revenueEstimate,
                 passRate: parseFloat(passRate),
@@ -175,7 +175,7 @@ export const getTopCourses = async (req, res) => {
                     name: { $first: '$course.name' },
                     code: { $first: '$course.code' },
                     revenue: { $sum: '$amount' },
-                    students: { $addToSet: '$reg.studentId' }
+                    LEARNERs: { $addToSet: '$reg.LEARNERId' }
                 }
             },
             {
@@ -183,7 +183,7 @@ export const getTopCourses = async (req, res) => {
                     name: 1,
                     code: 1,
                     revenue: 1,
-                    studentCount: { $size: '$students' }
+                    LEARNERCount: { $size: '$LEARNERs' }
                 }
             },
             { $sort: { revenue: -1 } },
@@ -258,12 +258,12 @@ export const getRecentTransactions = async (req, res) => {
             {
                 $lookup: {
                     from: 'users',
-                    localField: 'reg.studentId',
+                    localField: 'reg.LEARNERId',
                     foreignField: '_id',
-                    as: 'student'
+                    as: 'LEARNER'
                 }
             },
-            { $unwind: { path: '$student', preserveNullAndEmptyArrays: true } },
+            { $unwind: { path: '$LEARNER', preserveNullAndEmptyArrays: true } },
             {
                 $lookup: {
                     from: 'batches',
@@ -289,8 +289,8 @@ export const getRecentTransactions = async (req, res) => {
                     method: 1,
                     paidAt: 1,
                     note: 1,
-                    studentName: { $concat: ['$student.firstName', ' ', '$student.lastName'] },
-                    studentEmail: '$student.email',
+                    LEARNERName: { $concat: ['$LEARNER.firstName', ' ', '$LEARNER.lastName'] },
+                    LEARNEREmail: '$LEARNER.email',
                     courseName: '$course.name',
                     courseCode: '$course.code',
                 }

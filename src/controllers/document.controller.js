@@ -3,13 +3,13 @@ import Registration from '../models/Registration.js';
 import User from '../models/User.js';
 
 const documentPopulate = [
-  { path: 'studentId', select: 'fullName phone email role status' },
+  { path: 'LEARNERId', select: 'fullName phone email role status' },
   { path: 'consultantId', select: 'fullName phone email role avatar' },
   {
     path: 'registrationId',
-    select: 'studentId batchId status registerMethod createdAt',
+    select: 'LEARNERId batchId status registerMethod createdAt',
     populate: [
-      { path: 'studentId', select: 'fullName phone email role status' },
+      { path: 'LEARNERId', select: 'fullName phone email role status' },
       {
         path: 'batchId',
         select: 'location startDate status courseId',
@@ -123,7 +123,7 @@ export const updateDocumentStatus = async (req, res) => {
 
     const document = await Document.findById(id).populate({
       path: 'registrationId',
-      select: 'registerMethod studentId batchId',
+      select: 'registerMethod LEARNERId batchId',
     });
 
     if (!document) return res.status(404).json({ status: 'error', message: 'Document not found' });
@@ -154,11 +154,11 @@ export const updateDocumentStatus = async (req, res) => {
 
 export const getAllDocuments = async (req, res) => {
   try {
-    const { registrationId, status, studentId } = req.query;
+    const { registrationId, status, LEARNERId } = req.query;
     const filter = { isDeleted: { $ne: true } };
 
     if (registrationId) filter.registrationId = registrationId;
-    if (studentId) filter.studentId = studentId;
+    if (LEARNERId) filter.LEARNERId = LEARNERId;
     if (status) filter.status = status;
 
     const documents = await Document.find(filter).populate(documentPopulate).sort({ _id: -1 });
@@ -181,11 +181,11 @@ export const getDocumentById = async (req, res) => {
 
 export const getMyDocument = async (req, res) => {
   try {
-    const studentId = req.userId;
+    const LEARNERId = req.userId;
 
-    let document = await Document.findOne({ studentId, isDeleted: { $ne: true } }).populate(documentPopulate);
+    let document = await Document.findOne({ LEARNERId, isDeleted: { $ne: true } }).populate(documentPopulate);
     if (!document) {
-      document = await Document.create({ studentId, status: 'PENDING' });
+      document = await Document.create({ LEARNERId, status: 'PENDING' });
       document = await Document.findById(document._id).populate(documentPopulate);
     }
 
@@ -198,19 +198,19 @@ export const getMyDocument = async (req, res) => {
 export const uploadDocuments = async (req, res) => {
   try {
     const { registrationId, cccdImage, healthCertificate, photo, cccdNumber, consultantEmail } = req.body;
-    const studentId = req.userId;
+    const LEARNERId = req.userId;
 
     let registration = null;
     if (registrationId) {
       registration = await Registration.findById(registrationId);
       if (!registration) return res.status(404).json({ status: 'error', message: 'Không tìm thấy hồ sơ đăng ký' });
-      if (registration.studentId.toString() !== studentId) {
+      if (registration.LEARNERId.toString() !== LEARNERId) {
         return res.status(403).json({ status: 'error', message: 'Bạn không có quyền upload hồ sơ này' });
       }
     }
 
-    let document = await Document.findOne({ studentId, isDeleted: { $ne: true } });
-    if (!document) document = new Document({ studentId, status: 'PENDING' });
+    let document = await Document.findOne({ LEARNERId, isDeleted: { $ne: true } });
+    if (!document) document = new Document({ LEARNERId, status: 'PENDING' });
 
     if (registration?._id) document.registrationId = registration._id;
     if (cccdImage) document.cccdImage = cccdImage;
@@ -247,18 +247,18 @@ export const uploadDocuments = async (req, res) => {
 export const getDocumentsByRegistration = async (req, res) => {
   try {
     const { registrationId } = req.params;
-    const studentId = req.userId;
+    const LEARNERId = req.userId;
 
     const registration = await Registration.findById(registrationId);
     if (!registration) return res.status(404).json({ status: 'error', message: 'Không tìm thấy hồ sơ đăng ký' });
 
-    if (registration.studentId.toString() !== studentId && req.user?.role !== 'ADMIN' && req.user?.role !== 'CONSULTANT') {
+    if (registration.LEARNERId.toString() !== LEARNERId && req.user?.role !== 'ADMIN' && req.user?.role !== 'CONSULTANT') {
       return res.status(403).json({ status: 'error', message: 'Bạn không có quyền xem hồ sơ này' });
     }
 
-    let document = await Document.findOne({ studentId: registration.studentId, isDeleted: { $ne: true } }).populate(documentPopulate);
+    let document = await Document.findOne({ LEARNERId: registration.LEARNERId, isDeleted: { $ne: true } }).populate(documentPopulate);
     if (!document) {
-      document = await Document.create({ studentId: registration.studentId, registrationId, status: 'PENDING' });
+      document = await Document.create({ LEARNERId: registration.LEARNERId, registrationId, status: 'PENDING' });
       document = await Document.findById(document._id).populate(documentPopulate);
     }
 

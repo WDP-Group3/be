@@ -84,12 +84,12 @@ app.get('/test-email-attendance', async (req, res) => {
         { attendance: { $exists: false } }, // Chưa từng có attendance
         { attendance: 'PENDING' }            // Đã có nhưng chưa điểm danh
       ]
-    }).populate('studentId', 'fullName email phone')
+    }).populate('LEARNERId', 'fullName email phone')
       .populate('instructorId', 'fullName email phone');
 
     let reminderCount = 0;
     let instructorEmails = [];
-    let studentEmails = [];
+    let LEARNEREmails = [];
 
     for (const booking of bookings) {
       const { hour, minute } = SLOT_END_TIMES[String(booking.timeSlot)] || { hour: 17, minute: 0 };
@@ -115,8 +115,8 @@ Buổi học ngày ${classDateStr} ${SLOT_LABELS[String(booking.timeSlot)] || 'C
 Thông tin buổi học:
 - Ngày: ${classDateStr}
 - Ca: ${SLOT_LABELS[String(booking.timeSlot)] || 'Ca ' + booking.timeSlot}
-- Học viên: ${booking.studentId?.fullName || 'N/A'}
-- SĐT học viên: ${booking.studentId?.phone || 'N/A'}
+- Học viên: ${booking.LEARNERId?.fullName || 'N/A'}
+- SĐT học viên: ${booking.LEARNERId?.phone || 'N/A'}
 
 Truy cập hệ thống để điểm danh: https://drivecenter.com/portal/instructor-schedule
 
@@ -127,7 +127,7 @@ Trân trọng!`;
         }
 
         // Email cho HV
-        if (booking.studentId?.email) {
+        if (booking.LEARNERId?.email) {
           const title = '⏰ [TEST] Nhắc nhở: Buổi học chưa được điểm danh';
           const message = `Kính gửi Học viên,
 
@@ -138,9 +138,9 @@ Buổi học ngày ${classDateStr} đã kết thúc nhưng chưa được điể
 Vui lòng liên hệ giáo viên để được điểm danh.
 
 Trân trọng!`;
-          await sendNotificationEmail(booking.studentId.email, title, message);
-          studentEmails.push(booking.studentId.email);
-          console.log(`✅ [TEST] Đã gửi email cho HV: ${booking.studentId.email}`);
+          await sendNotificationEmail(booking.LEARNERId.email, title, message);
+          LEARNEREmails.push(booking.LEARNERId.email);
+          console.log(`✅ [TEST] Đã gửi email cho HV: ${booking.LEARNERId.email}`);
         }
 
         // Đánh dấu đã gửi email nhắc nhở (chỉ gửi 1 lần duy nhất)
@@ -156,7 +156,7 @@ Trân trọng!`;
       totalBookingsFound: bookings.length,
       emailsSent: reminderCount,
       instructorEmails,
-      studentEmails
+      LEARNEREmails
     });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });

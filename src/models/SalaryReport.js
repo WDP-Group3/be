@@ -73,7 +73,7 @@ const salaryReportSchema = new mongoose.Schema({
   teachingDetails: [{
     date: Date,
     timeSlot: String,
-    studentName: String,
+    LEARNERName: String,
     hours: Number,
     amount: Number,
   }],
@@ -82,7 +82,7 @@ const salaryReportSchema = new mongoose.Schema({
   commissionDetails: [{
     courseCode: String,
     courseName: String,
-    studentName: String,
+    LEARNERName: String,
     registrationDate: Date,
     commissionAmount: Number,
   }],

@@ -21,8 +21,6 @@ const createTransporter = () => {
       },
     });
   }
-  console.log("SMTP HOST:", process.env.SMTP_HOST);
-  console.log("SMTP USER:", process.env.SMTP_USER);
   // Nếu không có cấu hình, sử dụng mock transporter (chỉ để test, không gửi email thật)
   // Trong production, bắt buộc phải có SMTP config
   if (process.env.NODE_ENV !== "production") {
@@ -125,7 +123,6 @@ export const sendPasswordResetEmail = async (email, newPassword) => {
 
     return { success: true, messageId: info.messageId };
   } catch (error) {
-    console.error("Error sending email:", error);
     throw new Error("Không thể gửi email. Vui lòng thử lại sau.");
   }
 };
@@ -214,7 +211,6 @@ export const sendNotificationEmail = async (email, title, message) => {
 
     return { success: true, messageId: info.messageId };
   } catch (error) {
-    console.error(`❌ [Notification] Lỗi gửi email tới ${email}:`, error);
     // Không throw error để tránh làm gián đoạn luồng chính nếu gửi mail thất bại
     return { success: false, error: error.message };
   }
@@ -231,9 +227,6 @@ export const sendNotificationMailToRoles = async ({
       role: { $in: roles },
     }).select("email");
 
-    console.log(
-      `📢 Sending notification email to ${users.length} users with roles: ${roles.join(", ")}`,
-    );
 
     for (const user of users) {
       if (user.email) {
@@ -241,7 +234,6 @@ export const sendNotificationMailToRoles = async ({
       }
     }
   } catch (error) {
-    console.error("❌ Error sending notification emails:", error);
     throw error;
   }
 };

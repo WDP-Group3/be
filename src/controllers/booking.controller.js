@@ -95,10 +95,10 @@ const checkNextWeekBookingTime = (slotDateStr) => {
 // 1. Lấy tất cả bookings
 export const getAllBookings = async (req, res) => {
   try {
-    const { studentId, instructorId, status } = req.query;
+    const { LEARNERId, instructorId, status } = req.query;
     const filter = {};
     
-    if (studentId) filter.studentId = studentId;
+    if (LEARNERId) filter.LEARNERId = LEARNERId;
     if (instructorId) filter.instructorId = instructorId;
     
     if (status) {
@@ -108,7 +108,7 @@ export const getAllBookings = async (req, res) => {
     }
     
     const bookings = await Booking.find(filter)
-      .populate('studentId', 'fullName phone')
+      .populate('LEARNERId', 'fullName phone')
       .populate('instructorId', 'fullName phone')
       .populate('batchId', 'startDate location')
       .sort({ date: 1, timeSlot: 1 });
@@ -124,7 +124,7 @@ export const getBookingById = async (req, res) => {
   try {
     const { id } = req.params;
     const booking = await Booking.findById(id)
-      .populate('studentId').populate('instructorId').populate('batchId');
+      .populate('LEARNERId').populate('instructorId').populate('batchId');
     if (!booking) return res.status(404).json({ status: 'error', message: 'Booking not found' });
     res.json({ status: 'success', data: booking });
   } catch (error) {
@@ -134,9 +134,9 @@ export const getBookingById = async (req, res) => {
 
 // [HELPER] Kiểm tra tiến độ học tập của học viên theo khóa học
 // Trả về: { allowed: boolean, message?: string, required?: number, completed?: number, remaining?: number }
-const checkStudentCourseProgress = async (studentId, courseId) => {
+const checkLEARNERCourseProgress = async (LEARNERId, courseId) => {
   try {
-    const studentObjId = new mongoose.Types.ObjectId(studentId);
+    const LEARNERObjId = new mongoose.Types.ObjectId(LEARNERId);
     const courseObjId = new mongoose.Types.ObjectId(courseId);
 
     // Lấy thông tin khóa học
@@ -147,7 +147,7 @@ const checkStudentCourseProgress = async (studentId, courseId) => {
 
     // Lấy registration của học viên với khóa học này
     const registration = await Registration.findOne({
-      studentId: studentObjId,
+      LEARNERId: LEARNERObjId,
       courseId: courseObjId,
       status: { $in: ['NEW', 'PROCESSING', 'STUDYING', 'COMPLETED'] }
     }).populate('batchId', 'courseId').lean();
@@ -156,7 +156,7 @@ const checkStudentCourseProgress = async (studentId, courseId) => {
 
     // Đếm số giờ đã hoàn thành (attendance PRESENT hoặc status COMPLETED)
     const completedBookings = await Booking.find({
-      studentId: studentObjId,
+      LEARNERId: LEARNERObjId,
       $or: [
         { attendance: 'PRESENT' },
         { status: 'COMPLETED', attendance: { $exists: false } }
@@ -195,7 +195,7 @@ const checkStudentCourseProgress = async (studentId, courseId) => {
       remaining: remainingHours
     };
   } catch (error) {
-    console.error('[checkStudentCourseProgress] Error:', error);
+    console.error('[checkLEARNERCourseProgress] Error:', error);
     return { allowed: true }; // Lỗi thì bỏ qua check
   }
 };
@@ -204,7 +204,7 @@ const checkStudentCourseProgress = async (studentId, courseId) => {
 export const createBooking = async (req, res) => {
   try {
     const { instructorId, date, timeSlot, type, courseId } = req.body;
-    const studentId = req.userId;
+    const LEARNERId = req.userId;
 
     // A. CHECK 12H (Quy tắc quan trọng nhất)
     const hoursUntilClass = checkTimeDistance(date, timeSlot);
@@ -229,7 +229,7 @@ export const createBooking = async (req, res) => {
 
     // C1. [MỚI] CHECK TIẾN ĐỘ HỌC TẬP - Nếu đủ giờ thì không cho đăng ký
     if (courseId) {
-      const progressCheck = await checkStudentCourseProgress(studentId, courseId);
+      const progressCheck = await checkLEARNERCourseProgress(LEARNERId, courseId);
       if (!progressCheck.allowed) {
         return res.status(400).json({ status: 'error', message: progressCheck.message });
       }
@@ -254,7 +254,7 @@ export const createBooking = async (req, res) => {
 
     // E. CÁC CHECK LOGIC KHÁC
     const registration = await Registration.findOne({
-      studentId,
+      LEARNERId,
       status: { $in: ['STUDYING', 'PROCESSING', 'NEW'] } 
     });
 
@@ -286,7 +286,7 @@ export const createBooking = async (req, res) => {
     if (existingBooking) return res.status(400).json({ status: 'error', message: 'Giáo viên đã có lịch dạy slot này.' });
 
     const newBooking = new Booking({
-      studentId, 
+      LEARNERId, 
       instructorId, 
       batchId,
       date: bookingDate,
@@ -372,7 +372,7 @@ export const takeAttendance = async (req, res) => {
     const { attendance, instructorNote } = req.body; 
 
     const booking = await Booking.findById(id)
-      .populate('studentId', 'fullName email phone')
+      .populate('LEARNERId', 'fullName email phone')
       .populate('instructorId', 'fullName phone');
     if (!booking) return res.status(404).json({ status: 'error', message: 'Không tìm thấy lịch học' });
 
@@ -437,10 +437,10 @@ Cảm ơn bạn đã tham gia buổi học!
 
 Trân trọng!`;
 
-    if (booking.studentId?.email) {
+    if (booking.LEARNERId?.email) {
       try {
-        await sendNotificationEmail(booking.studentId.email, title, message);
-        console.log(`✅ [ATTENDANCE] Đã gửi email điểm danh CÓ MẶT cho học viên: ${booking.studentId.email}`);
+        await sendNotificationEmail(booking.LEARNERId.email, title, message);
+        console.log(`✅ [ATTENDANCE] Đã gửi email điểm danh CÓ MẶT cho học viên: ${booking.LEARNERId.email}`);
       } catch (error) {
         console.error(`❌ [ATTENDANCE] Lỗi gửi email điểm danh:`, error.message);
       }
@@ -463,10 +463,10 @@ Lưu ý: Vắng mặt không có lý do sẽ mất buổi học. Vui liên hệ 
 
 Trân trọng!`;
 
-    if (booking.studentId?.email) {
+    if (booking.LEARNERId?.email) {
       try {
-        await sendNotificationEmail(booking.studentId.email, title, message);
-        console.log(`✅ [ATTENDANCE] Đã gửi email điểm danh VẮNG MẶT cho học viên: ${booking.studentId.email}`);
+        await sendNotificationEmail(booking.LEARNERId.email, title, message);
+        console.log(`✅ [ATTENDANCE] Đã gửi email điểm danh VẮNG MẶT cho học viên: ${booking.LEARNERId.email}`);
       } catch (error) {
         console.error(`❌ [ATTENDANCE] Lỗi gửi email điểm danh:`, error.message);
       }
@@ -478,7 +478,7 @@ Trân trọng!`;
 export const submitFeedback = async (req, res) => {
   try {
     const { id } = req.params;
-    const { rating, studentFeedback } = req.body;
+    const { rating, LEARNERFeedback } = req.body;
 
     const booking = await Booking.findById(id);
     
@@ -507,7 +507,7 @@ export const submitFeedback = async (req, res) => {
     }
 
     booking.rating = rating;
-    booking.studentFeedback = studentFeedback;
+    booking.LEARNERFeedback = LEARNERFeedback;
     booking.feedbackDate = new Date();
     await booking.save();
 
@@ -605,12 +605,12 @@ export const testSendAttendanceReminder = async (req, res) => {
         { attendance: { $exists: false } }, // Chưa từng có attendance
         { attendance: 'PENDING' }            // Đã có nhưng chưa điểm danh
       ]
-    }).populate('studentId', 'fullName email phone')
+    }).populate('LEARNERId', 'fullName email phone')
       .populate('instructorId', 'fullName email phone');
 
     let reminderCount = 0;
     let instructorEmailsSent = [];
-    let studentEmailsSent = [];
+    let LEARNEREmailsSent = [];
 
     for (const booking of bookings) {
       const { hour, minute } = SLOT_END_TIMES[String(booking.timeSlot)] || { hour: 17, minute: 0 };
@@ -644,8 +644,8 @@ Vui lòng điểm danh ngay để hoàn tất buổi học.
 Thông tin buổi học:
 - Ngày: ${classDateStr}
 - Ca: ${SLOT_LABELS[String(booking.timeSlot)] || 'Ca ' + booking.timeSlot}
-- Học viên: ${booking.studentId?.fullName || 'N/A'}
-- SĐT học viên: ${booking.studentId?.phone || 'N/A'}
+- Học viên: ${booking.LEARNERId?.fullName || 'N/A'}
+- SĐT học viên: ${booking.LEARNERId?.phone || 'N/A'}
 
 Truy cập hệ thống để điểm danh: https://drivecenter.com/portal/instructor-schedule
 
@@ -658,8 +658,8 @@ Trân trọng!`;
         }
 
         // === GỬI EMAIL CHO HỌC VIÊN ===
-        const titleStudent = '⏰ [TEST] Nhắc nhở: Buổi học chưa được điểm danh';
-        const messageStudent = `Kính gửi Học viên,
+        const titleLEARNER = '⏰ [TEST] Nhắc nhở: Buổi học chưa được điểm danh';
+        const messageLEARNER = `Kính gửi Học viên,
 
 Đây là email TEST nhắc nhở điểm danh từ hệ thống.
 
@@ -677,10 +677,10 @@ Truy cập hệ thống để xem lịch: https://drivecenter.com/portal/schedul
 
 Trân trọng!`;
 
-        if (booking.studentId?.email) {
-          await sendNotificationEmail(booking.studentId.email, titleStudent, messageStudent);
-          console.log(`✅ [TEST] Đã gửi email nhắc điểm danh cho học viên: ${booking.studentId.fullName} - ${booking.studentId.email}`);
-          studentEmailsSent.push(booking.studentId.email);
+        if (booking.LEARNERId?.email) {
+          await sendNotificationEmail(booking.LEARNERId.email, titleLEARNER, messageLEARNER);
+          console.log(`✅ [TEST] Đã gửi email nhắc điểm danh cho học viên: ${booking.LEARNERId.fullName} - ${booking.LEARNERId.email}`);
+          LEARNEREmailsSent.push(booking.LEARNERId.email);
         }
 
         // Đánh dấu đã gửi email nhắc nhở (chỉ gửi 1 lần duy nhất)
@@ -697,7 +697,7 @@ Trân trọng!`;
         totalBookingsFound: bookings.length,
         emailsSent: reminderCount,
         instructorEmails: instructorEmailsSent,
-        studentEmails: studentEmailsSent
+        LEARNEREmails: LEARNEREmailsSent
       }
     });
   } catch (error) {
@@ -726,31 +726,49 @@ export const getAllFeedbacks = async (req, res) => {
       if (endDate) filter.date.$lte = new Date(endDate);
     }
 
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
     const feedbacks = await Booking.find(filter)
-      .select('rating studentFeedback feedbackDate date timeSlot')
-      .populate('studentId', 'fullName email phone')
+      .select('rating LEARNERFeedback feedbackDate date timeSlot')
+      .populate('LEARNERId', 'fullName email phone')
       .populate('instructorId', 'fullName email')
-      .sort({ feedbackDate: -1 });
+      .sort({ feedbackDate: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const total = await Booking.countDocuments(filter);
 
     // Tính thống kê
-    const totalFeedbacks = feedbacks.length;
-    const avgRating = totalFeedbacks > 0 
-      ? (feedbacks.reduce((sum, f) => sum + f.rating, 0) / totalFeedbacks).toFixed(1) 
-      : 0;
-    
+    // Lưu ý: Thống kê nên tính dựa trên tổng số (không phân trang) 
+    // Nếu muốn chính xác 100% thì nên chạy 1 query aggregation cho statistics riêng.
+    // Nhưng ở đây nếu filter giữ nguyên, ta có thể dùng total.
+    const avgRatingResult = await Booking.aggregate([
+      { $match: filter },
+      { $group: { _id: null, avg: { $avg: "$rating" } } }
+    ]);
+    const avgRating = avgRatingResult.length > 0 ? avgRatingResult[0].avg.toFixed(1) : 0;
+
     const ratingDistribution = {
-      5: feedbacks.filter(f => f.rating === 5).length,
-      4: feedbacks.filter(f => f.rating === 4).length,
-      3: feedbacks.filter(f => f.rating === 3).length,
-      2: feedbacks.filter(f => f.rating === 2).length,
-      1: feedbacks.filter(f => f.rating === 1).length,
+      5: await Booking.countDocuments({ ...filter, rating: 5 }),
+      4: await Booking.countDocuments({ ...filter, rating: 4 }),
+      3: await Booking.countDocuments({ ...filter, rating: 3 }),
+      2: await Booking.countDocuments({ ...filter, rating: 2 }),
+      1: await Booking.countDocuments({ ...filter, rating: 1 }),
     };
 
     res.json({
       status: 'success',
       data: feedbacks,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit)
+      },
       statistics: {
-        totalFeedbacks,
+        totalFeedbacks: total,
         avgRating: parseFloat(avgRating),
         ratingDistribution
       }

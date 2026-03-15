@@ -16,12 +16,30 @@ export const getLocations = async (req, res) => {
 // CRUD: List
 export const getAll = async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
     const list = await LearningLocation.find()
       .populate('instructors.instructorId', 'fullName email phone')
       .populate('instructors.courseId', 'code name')
       .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
       .lean();
-    res.json({ status: 'success', data: list });
+
+    const total = await LearningLocation.countDocuments();
+
+    res.json({
+      status: 'success',
+      data: list,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }

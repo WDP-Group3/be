@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 
 const registrationSchema = new mongoose.Schema({
-  studentId: {
+  LEARNERId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
@@ -53,7 +53,7 @@ const registrationSchema = new mongoose.Schema({
 });
 
 // Indexes
-registrationSchema.index({ studentId: 1 });
+registrationSchema.index({ LEARNERId: 1 });
 registrationSchema.index({ batchId: 1 });
 registrationSchema.index({ courseId: 1 });
 registrationSchema.index({ status: 1 });
