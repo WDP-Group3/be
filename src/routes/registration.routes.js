@@ -13,8 +13,8 @@ import { requireRole } from '../middleware/role.middleware.js';
 
 const router = express.Router();
 
-router.get('/', authenticate, requireRole('ADMIN', 'CONSULTANT', 'STUDENT'), getAllRegistrations);
-router.get('/my-courses', authenticate, requireRole('STUDENT'), getMyCoursesWithProgress);
+router.get('/', authenticate, requireRole('ADMIN', 'CONSULTANT', 'LEARNER'), getAllRegistrations);
+router.get('/my-courses', authenticate, requireRole('LEARNER'), getMyCoursesWithProgress);
 router.get('/:id', authenticate, getRegistrationById);
 router.post('/', authenticate, createRegistration); // learner tự enroll
 router.post('/assign', authenticate, requireRole('ADMIN'), assignRegistrationByAdmin); // admin gán

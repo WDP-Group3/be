@@ -3,8 +3,8 @@ import User from '../models/User.js';
 import { sendNotificationEmail } from '../services/email.service.js';
 
 // Helper: Gửi email thông báo lịch nghỉ
-// - Toàn hệ thống: gửi cho tất cả INSTRUCTOR + STUDENT + SALES
-// - Theo khu vực: gửi cho INSTRUCTOR (workingLocation) + STUDENT (registration batch location) + SALES của khu vực đó
+// - Toàn hệ thống: gửi cho tất cả INSTRUCTOR + LEARNER + SALES
+// - Theo khu vực: gửi cho INSTRUCTOR (workingLocation) + LEARNER (registration batch location) + SALES của khu vực đó
 const sendHolidayNotification = async (holiday, action = 'CREATE') => {
   try {
     const actionText = action === 'CREATE' ? 'tạo mới' : (action === 'UPDATE' ? 'cập nhật' : 'xóa');
@@ -43,10 +43,10 @@ Ban Quản lý Drive Center`;
     let targetUserIds = new Set();
 
     if (!holiday.location) {
-      // Toàn hệ thống: tất cả INSTRUCTOR + STUDENT + SALES
+      // Toàn hệ thống: tất cả INSTRUCTOR + LEARNER + SALES
       const allUsers = await User.find({
         email: { $exists: true, $ne: '' },
-        role: { $in: ['INSTRUCTOR', 'STUDENT', 'SALES'] }
+        role: { $in: ['INSTRUCTOR', 'LEARNER', 'SALES'] }
       }).select('_id');
       allUsers.forEach(u => targetUserIds.add(u._id.toString()));
     } else {
@@ -84,12 +84,12 @@ Ban Quản lý Drive Center`;
         areaName: { $regex: new RegExp(`^${holiday.location.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
       }).lean();
       
-      // Lấy student đăng ký các batch này
-      const studentsInBatches = await Registration.find({
+      // Lấy LEARNER đăng ký các batch này
+      const LEARNERsInBatches = await Registration.find({
         batchId: { $in: batchIdsInLocation },
         status: { $in: ['NEW', 'PROCESSING', 'STUDYING'] }
-      }).distinct('studentId');
-      studentsInBatches.forEach(id => targetUserIds.add(id.toString()));
+      }).distinct('LEARNERId');
+      LEARNERsInBatches.forEach(id => targetUserIds.add(id.toString()));
     }
 
     // Lấy thông tin email của các user
@@ -123,8 +123,27 @@ Ban Quản lý Drive Center`;
 // 1. Lấy tất cả lịch nghỉ
 export const getAllHolidays = async (req, res) => {
   try {
-    const holidays = await SystemHoliday.find().sort({ startDate: -1 });
-    res.json({ status: 'success', data: holidays });
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const holidays = await SystemHoliday.find()
+      .sort({ startDate: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const total = await SystemHoliday.countDocuments();
+
+    res.json({
+      status: 'success',
+      data: holidays,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }

@@ -15,12 +15,10 @@ export const getAllNotifications = async (req, res) => {
       filter.$or = [{ userId }, { userId: null }];
     }
 
-    // Filter by Type
     if (type) {
       filter.type = type;
     }
 
-    // Search by Title
     if (search) {
       filter.title = { $regex: search, $options: "i" };
     }
@@ -29,9 +27,16 @@ export const getAllNotifications = async (req, res) => {
       filter.isRead = false;
     }
 
-    const notifications = await Notification.find(filter).sort({
-      createdAt: -1,
-    });
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const notifications = await Notification.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const total = await Notification.countDocuments(filter);
 
     const unreadCount = await Notification.countDocuments({
       ...(filter.$or ? { $or: filter.$or } : {}),
@@ -42,7 +47,12 @@ export const getAllNotifications = async (req, res) => {
     res.json({
       status: "success",
       data: notifications,
-      count: notifications.length,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit)
+      },
       unreadCount,
     });
   } catch (error) {

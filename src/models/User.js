@@ -26,7 +26,7 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ["ADMIN", "STUDENT", "INSTRUCTOR", "CONSULTANT", "SALES"],
+      enum: ["ADMIN", "LEARNER", "INSTRUCTOR", "CONSULTANT", "SALES", "USER"],
       required: true,
     },
     status: {
@@ -91,14 +91,6 @@ const userSchema = new mongoose.Schema(
     createdAt: {
       type: Date,
       default: Date.now,
-    },
-    resetPasswordToken: {
-      type: String,
-      default: null,
-    },
-    resetPasswordExpires: {
-      type: Date,
-      default: null,
     },
   },
   {

@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 
 const documentSchema = new mongoose.Schema({
-  studentId: {
+  LEARNERId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
@@ -63,7 +63,7 @@ const documentSchema = new mongoose.Schema({
 });
 
 // Indexes
-// studentId already has unique: true in schema definition, so no extra index here
+// LEARNERId already has unique: true in schema definition, so no extra index here
 
 documentSchema.index({ registrationId: 1 });
 documentSchema.index({ consultantId: 1 });

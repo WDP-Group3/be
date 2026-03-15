@@ -73,7 +73,7 @@ const calculateSalary = async (userId, month, year, config, options = {}) => {
       date: { $gte: startDate, $lte: endDate },
       attendance: 'PRESENT',
       status: 'COMPLETED'
-    }).populate('studentId', 'fullName').populate('batchId', 'courseId').lean();
+    }).populate('LEARNERId', 'fullName').populate('batchId', 'courseId').lean();
 
     const filteredBookings = applyCourseFilter
       ? bookings.filter(b => b.batchId?.courseId?.toString() === courseIdFilter.toString())
@@ -86,7 +86,7 @@ const calculateSalary = async (userId, month, year, config, options = {}) => {
       teachingDetails.push({
         date: booking.date,
         timeSlot: booking.timeSlot,
-        studentName: booking.studentId?.fullName || 'N/A',
+        LEARNERName: booking.LEARNERId?.fullName || 'N/A',
         hours: 1,
         amount: hourlyRate
       });
@@ -102,7 +102,7 @@ const calculateSalary = async (userId, month, year, config, options = {}) => {
       isDeleted: false
     }).populate({
       path: 'registrationId',
-      populate: { path: 'courseId studentId' }
+      populate: { path: 'courseId LEARNERId' }
     }).lean();
 
     // Lọc documents trong tháng (dựa vào createdAt của document)
@@ -147,7 +147,7 @@ const calculateSalary = async (userId, month, year, config, options = {}) => {
       commissionDetails.push({
         courseCode: courseMap[courseId]?.code || 'N/A',
         courseName: courseMap[courseId]?.name || 'N/A',
-        studentName: reg.studentId?.fullName || 'N/A',
+        LEARNERName: reg.LEARNERId?.fullName || 'N/A',
         registrationDate: reg.firstPaymentDate || reg.createdAt || doc.createdAt,
         commissionAmount: commission
       });
@@ -650,7 +650,7 @@ export const exportSalaryCSV = async (req, res) => {
       csv += `Ngày,Ca,Học viên,Số giờ,Số tiền\n`;
       salaryData.teachingDetails.forEach(d => {
         const date = new Date(d.date).toLocaleDateString('vi-VN');
-        csv += `${date},${d.timeSlot},${d.studentName},${d.hours},${d.amount}\n`;
+        csv += `${date},${d.timeSlot},${d.LEARNERName},${d.hours},${d.amount}\n`;
       });
       csv += `\n`;
     }
@@ -661,7 +661,7 @@ export const exportSalaryCSV = async (req, res) => {
       csv += `Khóa học,Tên học viên,Ngày nhận hồ sơ,Hoa hồng\n`;
       salaryData.commissionDetails.forEach(d => {
         const date = new Date(d.registrationDate).toLocaleDateString('vi-VN');
-        csv += `${d.courseCode} - ${d.courseName},${d.studentName},${date},${d.commissionAmount}\n`;
+        csv += `${d.courseCode} - ${d.courseName},${d.LEARNERName},${date},${d.commissionAmount}\n`;
       });
     }
 

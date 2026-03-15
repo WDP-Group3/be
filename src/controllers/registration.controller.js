@@ -51,13 +51,13 @@ const hasCompleteDocumentProfile = (doc) => !!(
 
 export const getAllRegistrations = async (req, res) => {
   try {
-    const { studentId, batchId, status, courseId, unassigned } = req.query;
+    const { LEARNERId, batchId, status, courseId, unassigned } = req.query;
     const filter = {};
 
-    if (req.user?.role === 'STUDENT') {
-      filter.studentId = req.userId;
-    } else if (studentId) {
-      filter.studentId = studentId;
+    if (req.user?.role === 'LEARNER') {
+      filter.LEARNERId = req.userId;
+    } else if (LEARNERId) {
+      filter.LEARNERId = LEARNERId;
     }
 
     if (courseId) filter.courseId = courseId;
@@ -77,7 +77,7 @@ export const getAllRegistrations = async (req, res) => {
     }
 
     const registrations = await Registration.find(filter)
-      .populate('studentId', 'fullName phone email')
+      .populate('LEARNERId', 'fullName phone email')
       .populate({
         path: 'batchId',
         populate: { path: 'courseId', select: 'code name estimatedCost feePayments' },
@@ -94,7 +94,7 @@ export const getRegistrationById = async (req, res) => {
   try {
     const { id } = req.params;
     const registration = await Registration.findById(id)
-      .populate('studentId')
+      .populate('LEARNERId')
       .populate({
         path: 'batchId',
         populate: { path: 'courseId', select: 'code name estimatedCost feePayments' },
@@ -118,7 +118,7 @@ export const createRegistration = async (req, res) => {
       registerMethod = 'ONLINE', 
       paymentPlanType = 'INSTALLMENT' 
     } = req.body;
-    const studentId = req.userId;
+    const LEARNERId = req.userId;
 
     // Cho phép đăng ký với courseId hoặc batchId
     if (!batchId && !courseId) {
@@ -143,8 +143,8 @@ export const createRegistration = async (req, res) => {
     }
 
     // Yêu cầu hồ sơ cá nhân phải có trước khi đăng ký
-    const studentDocument = await Document.findOne({ studentId });
-    if (!hasCompleteDocumentProfile(studentDocument)) {
+    const LEARNERDocument = await Document.findOne({ LEARNERId });
+    if (!hasCompleteDocumentProfile(LEARNERDocument)) {
       return res.status(400).json({
         status: 'error',
         message: 'Bạn cần nộp đầy đủ hồ sơ (CCCD, khám sức khỏe, ảnh 3x4) trước khi đăng ký lớp',
@@ -153,7 +153,7 @@ export const createRegistration = async (req, res) => {
 
     // Kiểm tra đăng ký trùng
     const existingRegistration = await Registration.findOne({
-      studentId,
+      LEARNERId,
       status: { $in: ['NEW', 'PROCESSING', 'STUDYING', 'WAITING'] },
       $or: [
         { batchId: batchId || null },
@@ -174,7 +174,7 @@ export const createRegistration = async (req, res) => {
     const feePlanSnapshot = buildFeePlanSnapshot(course, paymentPlanType);
 
     const registration = new Registration({
-      studentId,
+      LEARNERId,
       courseId: actualCourseId,
       batchId: batchId || null, // Có thể null nếu đăng ký theo course
       registerMethod,
@@ -186,16 +186,16 @@ export const createRegistration = async (req, res) => {
     await registration.save();
 
     await Document.findOneAndUpdate(
-      { studentId },
+      { LEARNERId },
       {
         $set: { registrationId: registration._id },
-        $setOnInsert: { studentId, status: 'PENDING' },
+        $setOnInsert: { LEARNERId, status: 'PENDING' },
       },
       { upsert: true, new: true }
     );
 
     const result = await Registration.findById(registration._id)
-      .populate('studentId', 'fullName phone email')
+      .populate('LEARNERId', 'fullName phone email')
       .populate('courseId', 'code name estimatedCost')
       .populate('batchId', 'startDate estimatedEndDate location');
 
@@ -209,30 +209,30 @@ export const createRegistration = async (req, res) => {
 export const assignRegistrationByAdmin = async (req, res) => {
   try {
     const {
-      studentId,
+      LEARNERId,
       batchId,
       registerMethod = 'CONSULTANT',
       status = 'PROCESSING',
       paymentPlanType = 'INSTALLMENT',
     } = req.body;
 
-    if (!studentId || !batchId) {
-      return res.status(400).json({ status: 'error', message: 'studentId và batchId là bắt buộc' });
+    if (!LEARNERId || !batchId) {
+      return res.status(400).json({ status: 'error', message: 'LEARNERId và batchId là bắt buộc' });
     }
 
-    const [student, batch] = await Promise.all([
-      User.findById(studentId),
+    const [LEARNER, batch] = await Promise.all([
+      User.findById(LEARNERId),
       Batch.findById(batchId).populate('courseId'),
     ]);
 
-    if (!student) return res.status(404).json({ status: 'error', message: 'Không tìm thấy học viên' });
-    if (student.role !== 'STUDENT') {
+    if (!LEARNER) return res.status(404).json({ status: 'error', message: 'Không tìm thấy học viên' });
+    if (LEARNER.role !== 'LEARNER') {
       return res.status(400).json({ status: 'error', message: 'User được chọn không phải học viên' });
     }
     if (!batch) return res.status(404).json({ status: 'error', message: 'Không tìm thấy lớp học (batch)' });
 
     const existingRegistration = await Registration.findOne({
-      studentId,
+      LEARNERId,
       batchId,
       status: { $in: ['NEW', 'PROCESSING', 'STUDYING'] },
     });
@@ -243,7 +243,7 @@ export const assignRegistrationByAdmin = async (req, res) => {
 
     // Tìm xem người này đã đăng ký khoá học này chưa (nhưng chưa có batch)
     let registration = await Registration.findOne({
-      studentId,
+      LEARNERId,
       courseId: batch.courseId._id,
       $or: [
         { batchId: null },
@@ -268,7 +268,7 @@ export const assignRegistrationByAdmin = async (req, res) => {
       const feePlanSnapshot = buildFeePlanSnapshot(batch.courseId, paymentPlanType);
 
       registration = new Registration({
-        studentId,
+        LEARNERId,
         courseId: batch.courseId._id,
         batchId,
         registerMethod,
@@ -281,16 +281,16 @@ export const assignRegistrationByAdmin = async (req, res) => {
     }
 
     await Document.findOneAndUpdate(
-      { studentId },
+      { LEARNERId },
       {
         $set: { registrationId: registration._id },
-        $setOnInsert: { studentId, status: 'PENDING' },
+        $setOnInsert: { LEARNERId, status: 'PENDING' },
       },
       { upsert: true, new: true }
     );
 
     const result = await Registration.findById(registration._id)
-      .populate('studentId', 'fullName phone email')
+      .populate('LEARNERId', 'fullName phone email')
       .populate({
         path: 'batchId',
         populate: { path: 'courseId', model: Course, select: 'code name estimatedCost feePayments' },
@@ -311,7 +311,7 @@ export const getBatchParticipants = async (req, res) => {
     const { batchId } = req.params;
 
     const registrations = await Registration.find({ batchId })
-      .populate('studentId', 'fullName phone email status')
+      .populate('LEARNERId', 'fullName phone email status')
       .populate({
         path: 'batchId',
         select: 'location startDate estimatedEndDate status courseId',
@@ -341,7 +341,7 @@ export const getCourseParticipants = async (req, res) => {
     }
 
     const registrations = await Registration.find({ batchId: { $in: batchIds } })
-      .populate('studentId', 'fullName phone email status')
+      .populate('LEARNERId', 'fullName phone email status')
       .populate({
         path: 'batchId',
         select: 'location startDate estimatedEndDate status courseId',
@@ -365,12 +365,12 @@ export const getCourseParticipants = async (req, res) => {
 // ==========================================
 export const getMyCoursesWithProgress = async (req, res) => {
   try {
-    const studentId = req.userId;
-    const studentObjId = new mongoose.Types.ObjectId(studentId);
+    const LEARNERId = req.userId;
+    const LEARNERObjId = new mongoose.Types.ObjectId(LEARNERId);
 
     // Lấy tất cả registration để map batchId -> courseId (dùng khi batch trong booking không tồn tại hoặc bị xóa)
     const registrations = await Registration.find({
-      studentId,
+      LEARNERId,
       status: { $in: ['NEW', 'PROCESSING', 'STUDYING', 'COMPLETED'] }
     })
       .populate('courseId', 'code name requiredPracticeHours')
@@ -390,7 +390,7 @@ export const getMyCoursesWithProgress = async (req, res) => {
     // Đếm số giờ đã hoàn thành theo từng courseId
     // Với mỗi booking, ưu tiên lấy courseId từ batch, nếu batch không tồn tại thì map qua registration
     const completedBookingsWithBatch = await Booking.find({
-      studentId: studentObjId,
+      LEARNERId: LEARNERObjId,
       $or: [
         { attendance: 'PRESENT' },
         { status: 'COMPLETED', attendance: { $exists: false } }
@@ -440,7 +440,7 @@ export const getMyCoursesWithProgress = async (req, res) => {
     const completedByCourseId = { ...progressMapByCourseId };
 
     // [DEBUG] Log để fix tiến độ học tập - xóa sau khi ổn định
-    console.log('[getMyCoursesWithProgress] studentId:', studentId);
+    console.log('[getMyCoursesWithProgress] LEARNERId:', LEARNERId);
     console.log('[getMyCoursesWithProgress] completedBookings count:', completedBookingsWithBatch.length);
     console.log('[getMyCoursesWithProgress] progressMapByCourseId:', JSON.stringify(progressMapByCourseId));
     console.log('[getMyCoursesWithProgress] completedByCourseId:', JSON.stringify(completedByCourseId));

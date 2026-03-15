@@ -23,7 +23,7 @@ const formatUserResponse = (user) => {
 export const getUserStats = async (req, res) => {
   try {
     const totalUsers = await User.countDocuments({
-      role: { $in: ['STUDENT', 'INSTRUCTOR', 'CONSULTANT'] }
+      role: { $in: ['LEARNER', 'INSTRUCTOR', 'CONSULTANT'] }
     });
 
     res.json({
@@ -40,7 +40,7 @@ export const getUserStats = async (req, res) => {
 // Lấy tất cả users
 export const getAllUsers = async (req, res) => {
   try {
-    const { role, status, search } = req.query;
+    const { role, status, search, page = 1, limit = 10 } = req.query;
     const filter = {};
 
     if (role) filter.role = role;
@@ -55,20 +55,22 @@ export const getAllUsers = async (req, res) => {
       ];
     }
 
-    // Search by name or email
-    if (search) {
-      filter.$or = [
-        { fullName: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } }
-      ];
-    }
+    const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    const users = await User.find(filter).sort({ createdAt: -1 });
+    const [users, total] = await Promise.all([
+      User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit)),
+      User.countDocuments(filter)
+    ]);
     
     res.json({
       status: 'success',
       data: formatUserResponse(users),
-      count: users.length,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalPages: Math.ceil(total / parseInt(limit))
+      }
     });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
@@ -223,7 +225,7 @@ export const changeUserRole = async (req, res) => {
     }
 
     // Validate role
-    const validRoles = ['ADMIN', 'STUDENT', 'INSTRUCTOR', 'CONSULTANT'];
+    const validRoles = ['ADMIN', 'LEARNER', 'INSTRUCTOR', 'CONSULTANT'];
     if (!validRoles.includes(role)) {
       return res.status(400).json({ status: 'error', message: 'Invalid role' });
     }
