@@ -95,10 +95,10 @@ const checkNextWeekBookingTime = (slotDateStr) => {
 // 1. Lấy tất cả bookings
 export const getAllBookings = async (req, res) => {
   try {
-    const { LEARNERId, instructorId, status } = req.query;
+    const { learnerId, instructorId, status } = req.query;
     const filter = {};
     
-    if (LEARNERId) filter.LEARNERId = LEARNERId;
+    if (learnerId) filter.learnerId = learnerId;
     if (instructorId) filter.instructorId = instructorId;
     
     if (status) {
@@ -108,7 +108,7 @@ export const getAllBookings = async (req, res) => {
     }
     
     const bookings = await Booking.find(filter)
-      .populate('LEARNERId', 'fullName phone')
+      .populate('learnerId', 'fullName phone')
       .populate('instructorId', 'fullName phone')
       .populate('batchId', 'startDate location')
       .sort({ date: 1, timeSlot: 1 });
@@ -124,7 +124,7 @@ export const getBookingById = async (req, res) => {
   try {
     const { id } = req.params;
     const booking = await Booking.findById(id)
-      .populate('LEARNERId').populate('instructorId').populate('batchId');
+      .populate('learnerId').populate('instructorId').populate('batchId');
     if (!booking) return res.status(404).json({ status: 'error', message: 'Booking not found' });
     res.json({ status: 'success', data: booking });
   } catch (error) {
@@ -134,9 +134,9 @@ export const getBookingById = async (req, res) => {
 
 // [HELPER] Kiểm tra tiến độ học tập của học viên theo khóa học
 // Trả về: { allowed: boolean, message?: string, required?: number, completed?: number, remaining?: number }
-const checkLEARNERCourseProgress = async (LEARNERId, courseId) => {
+const checklearnerCourseProgress = async (learnerId, courseId) => {
   try {
-    const LEARNERObjId = new mongoose.Types.ObjectId(LEARNERId);
+    const learnerObjId = new mongoose.Types.ObjectId(learnerId);
     const courseObjId = new mongoose.Types.ObjectId(courseId);
 
     // Lấy thông tin khóa học
@@ -147,7 +147,7 @@ const checkLEARNERCourseProgress = async (LEARNERId, courseId) => {
 
     // Lấy registration của học viên với khóa học này
     const registration = await Registration.findOne({
-      LEARNERId: LEARNERObjId,
+      learnerId: learnerObjId,
       courseId: courseObjId,
       status: { $in: ['NEW', 'PROCESSING', 'STUDYING', 'COMPLETED'] }
     }).populate('batchId', 'courseId').lean();
@@ -156,7 +156,7 @@ const checkLEARNERCourseProgress = async (LEARNERId, courseId) => {
 
     // Đếm số giờ đã hoàn thành (attendance PRESENT hoặc status COMPLETED)
     const completedBookings = await Booking.find({
-      LEARNERId: LEARNERObjId,
+      learnerId: learnerObjId,
       $or: [
         { attendance: 'PRESENT' },
         { status: 'COMPLETED', attendance: { $exists: false } }
@@ -195,7 +195,7 @@ const checkLEARNERCourseProgress = async (LEARNERId, courseId) => {
       remaining: remainingHours
     };
   } catch (error) {
-    console.error('[checkLEARNERCourseProgress] Error:', error);
+    console.error('[checklearnerCourseProgress] Error:', error);
     return { allowed: true }; // Lỗi thì bỏ qua check
   }
 };
@@ -204,7 +204,7 @@ const checkLEARNERCourseProgress = async (LEARNERId, courseId) => {
 export const createBooking = async (req, res) => {
   try {
     const { instructorId, date, timeSlot, type, courseId } = req.body;
-    const LEARNERId = req.userId;
+    const learnerId = req.userId;
 
     // A. CHECK 12H (Quy tắc quan trọng nhất)
     const hoursUntilClass = checkTimeDistance(date, timeSlot);
@@ -229,7 +229,7 @@ export const createBooking = async (req, res) => {
 
     // C1. [MỚI] CHECK TIẾN ĐỘ HỌC TẬP - Nếu đủ giờ thì không cho đăng ký
     if (courseId) {
-      const progressCheck = await checkLEARNERCourseProgress(LEARNERId, courseId);
+      const progressCheck = await checklearnerCourseProgress(learnerId, courseId);
       if (!progressCheck.allowed) {
         return res.status(400).json({ status: 'error', message: progressCheck.message });
       }
@@ -254,7 +254,7 @@ export const createBooking = async (req, res) => {
 
     // E. CÁC CHECK LOGIC KHÁC
     const registration = await Registration.findOne({
-      LEARNERId,
+      learnerId,
       status: { $in: ['STUDYING', 'PROCESSING', 'NEW'] } 
     });
 
@@ -286,7 +286,7 @@ export const createBooking = async (req, res) => {
     if (existingBooking) return res.status(400).json({ status: 'error', message: 'Giáo viên đã có lịch dạy slot này.' });
 
     const newBooking = new Booking({
-      LEARNERId, 
+      learnerId, 
       instructorId, 
       batchId,
       date: bookingDate,
@@ -372,7 +372,7 @@ export const takeAttendance = async (req, res) => {
     const { attendance, instructorNote } = req.body; 
 
     const booking = await Booking.findById(id)
-      .populate('LEARNERId', 'fullName email phone')
+      .populate('learnerId', 'fullName email phone')
       .populate('instructorId', 'fullName phone');
     if (!booking) return res.status(404).json({ status: 'error', message: 'Không tìm thấy lịch học' });
 
@@ -437,10 +437,10 @@ Cảm ơn bạn đã tham gia buổi học!
 
 Trân trọng!`;
 
-    if (booking.LEARNERId?.email) {
+    if (booking.learnerId?.email) {
       try {
-        await sendNotificationEmail(booking.LEARNERId.email, title, message);
-        console.log(`✅ [ATTENDANCE] Đã gửi email điểm danh CÓ MẶT cho học viên: ${booking.LEARNERId.email}`);
+        await sendNotificationEmail(booking.learnerId.email, title, message);
+        console.log(`✅ [ATTENDANCE] Đã gửi email điểm danh CÓ MẶT cho học viên: ${booking.learnerId.email}`);
       } catch (error) {
         console.error(`❌ [ATTENDANCE] Lỗi gửi email điểm danh:`, error.message);
       }
@@ -463,10 +463,10 @@ Lưu ý: Vắng mặt không có lý do sẽ mất buổi học. Vui liên hệ 
 
 Trân trọng!`;
 
-    if (booking.LEARNERId?.email) {
+    if (booking.learnerId?.email) {
       try {
-        await sendNotificationEmail(booking.LEARNERId.email, title, message);
-        console.log(`✅ [ATTENDANCE] Đã gửi email điểm danh VẮNG MẶT cho học viên: ${booking.LEARNERId.email}`);
+        await sendNotificationEmail(booking.learnerId.email, title, message);
+        console.log(`✅ [ATTENDANCE] Đã gửi email điểm danh VẮNG MẶT cho học viên: ${booking.learnerId.email}`);
       } catch (error) {
         console.error(`❌ [ATTENDANCE] Lỗi gửi email điểm danh:`, error.message);
       }
@@ -478,7 +478,7 @@ Trân trọng!`;
 export const submitFeedback = async (req, res) => {
   try {
     const { id } = req.params;
-    const { rating, LEARNERFeedback } = req.body;
+    const { rating, learnerFeedback } = req.body;
 
     const booking = await Booking.findById(id);
     
@@ -507,7 +507,7 @@ export const submitFeedback = async (req, res) => {
     }
 
     booking.rating = rating;
-    booking.LEARNERFeedback = LEARNERFeedback;
+    booking.learnerFeedback = learnerFeedback;
     booking.feedbackDate = new Date();
     await booking.save();
 
@@ -605,12 +605,12 @@ export const testSendAttendanceReminder = async (req, res) => {
         { attendance: { $exists: false } }, // Chưa từng có attendance
         { attendance: 'PENDING' }            // Đã có nhưng chưa điểm danh
       ]
-    }).populate('LEARNERId', 'fullName email phone')
+    }).populate('learnerId', 'fullName email phone')
       .populate('instructorId', 'fullName email phone');
 
     let reminderCount = 0;
     let instructorEmailsSent = [];
-    let LEARNEREmailsSent = [];
+    let learnerEmailsSent = [];
 
     for (const booking of bookings) {
       const { hour, minute } = SLOT_END_TIMES[String(booking.timeSlot)] || { hour: 17, minute: 0 };
@@ -644,8 +644,8 @@ Vui lòng điểm danh ngay để hoàn tất buổi học.
 Thông tin buổi học:
 - Ngày: ${classDateStr}
 - Ca: ${SLOT_LABELS[String(booking.timeSlot)] || 'Ca ' + booking.timeSlot}
-- Học viên: ${booking.LEARNERId?.fullName || 'N/A'}
-- SĐT học viên: ${booking.LEARNERId?.phone || 'N/A'}
+- Học viên: ${booking.learnerId?.fullName || 'N/A'}
+- SĐT học viên: ${booking.learnerId?.phone || 'N/A'}
 
 Truy cập hệ thống để điểm danh: https://drivecenter.com/portal/instructor-schedule
 
@@ -658,8 +658,8 @@ Trân trọng!`;
         }
 
         // === GỬI EMAIL CHO HỌC VIÊN ===
-        const titleLEARNER = '⏰ [TEST] Nhắc nhở: Buổi học chưa được điểm danh';
-        const messageLEARNER = `Kính gửi Học viên,
+        const titlelearner = '⏰ [TEST] Nhắc nhở: Buổi học chưa được điểm danh';
+        const messagelearner = `Kính gửi Học viên,
 
 Đây là email TEST nhắc nhở điểm danh từ hệ thống.
 
@@ -677,10 +677,10 @@ Truy cập hệ thống để xem lịch: https://drivecenter.com/portal/schedul
 
 Trân trọng!`;
 
-        if (booking.LEARNERId?.email) {
-          await sendNotificationEmail(booking.LEARNERId.email, titleLEARNER, messageLEARNER);
-          console.log(`✅ [TEST] Đã gửi email nhắc điểm danh cho học viên: ${booking.LEARNERId.fullName} - ${booking.LEARNERId.email}`);
-          LEARNEREmailsSent.push(booking.LEARNERId.email);
+        if (booking.learnerId?.email) {
+          await sendNotificationEmail(booking.learnerId.email, titlelearner, messagelearner);
+          console.log(`✅ [TEST] Đã gửi email nhắc điểm danh cho học viên: ${booking.learnerId.fullName} - ${booking.learnerId.email}`);
+          learnerEmailsSent.push(booking.learnerId.email);
         }
 
         // Đánh dấu đã gửi email nhắc nhở (chỉ gửi 1 lần duy nhất)
@@ -697,7 +697,7 @@ Trân trọng!`;
         totalBookingsFound: bookings.length,
         emailsSent: reminderCount,
         instructorEmails: instructorEmailsSent,
-        LEARNEREmails: LEARNEREmailsSent
+        learnerEmails: learnerEmailsSent
       }
     });
   } catch (error) {
@@ -731,8 +731,8 @@ export const getAllFeedbacks = async (req, res) => {
     const skip = (page - 1) * limit;
 
     const feedbacks = await Booking.find(filter)
-      .select('rating LEARNERFeedback feedbackDate date timeSlot')
-      .populate('LEARNERId', 'fullName email phone')
+      .select('rating learnerFeedback feedbackDate date timeSlot')
+      .populate('learnerId', 'fullName email phone')
       .populate('instructorId', 'fullName email')
       .sort({ feedbackDate: -1 })
       .skip(skip)

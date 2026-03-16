@@ -23,7 +23,7 @@ const formatUserResponse = (user) => {
 export const getUserStats = async (req, res) => {
   try {
     const totalUsers = await User.countDocuments({
-      role: { $in: ['LEARNER', 'INSTRUCTOR', 'CONSULTANT'] }
+      role: { $in: ['learner', 'INSTRUCTOR', 'CONSULTANT'] }
     });
 
     res.json({
@@ -225,7 +225,7 @@ export const changeUserRole = async (req, res) => {
     }
 
     // Validate role
-    const validRoles = ['ADMIN', 'LEARNER', 'INSTRUCTOR', 'CONSULTANT'];
+    const validRoles = ['ADMIN', 'learner', 'INSTRUCTOR', 'CONSULTANT'];
     if (!validRoles.includes(role)) {
       return res.status(400).json({ status: 'error', message: 'Invalid role' });
     }

@@ -79,7 +79,7 @@ export const updateUserRole = async (req, res) => {
     const { id } = req.params;
     const { role } = req.body;
 
-    if (!role || !['ADMIN', 'LEARNER', 'INSTRUCTOR', 'CONSULTANT'].includes(role)) {
+    if (!role || !['ADMIN', 'learner', 'INSTRUCTOR', 'CONSULTANT'].includes(role)) {
       return res.status(400).json({
         status: 'error',
         message: 'Role không hợp lệ',

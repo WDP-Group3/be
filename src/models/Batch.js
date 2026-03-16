@@ -34,7 +34,7 @@ const batchSchema = new mongoose.Schema({
     ref: 'User',
     default: [],
   },
-  maxLEARNERs: {
+  maxlearners: {
     type: Number,
     default: 30,
   },

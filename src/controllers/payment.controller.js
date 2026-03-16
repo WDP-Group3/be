@@ -2,7 +2,7 @@ import Payment from '../models/Payment.js';
 import Registration from '../models/Registration.js';
 import Course from '../models/Course.js';
 import Invoice from '../models/Invoice.js';
-import { enrollSingleLEARNER } from '../services/enrollment.service.js';
+import { enrollSinglelearner } from '../services/enrollment.service.js';
 
 const getFeePlanFromRegistration = (registration) => {
   const course = registration?.batchId?.courseId;
@@ -78,10 +78,10 @@ const buildTuitionItems = (registrations, payments) => {
 
     return {
       registrationId: registration._id,
-      LEARNERId: registration.LEARNERId?._id || registration.LEARNERId,
-      LEARNERName: registration.LEARNERId?.fullName || '',
-      phone: registration.LEARNERId?.phone || '',
-      email: registration.LEARNERId?.email || '',
+      learnerId: registration.learnerId?._id || registration.learnerId,
+      learnerName: registration.learnerId?.fullName || '',
+      phone: registration.learnerId?.phone || '',
+      email: registration.learnerId?.email || '',
       batchId: batch?._id || null,
       batchName: batch?.name || 'Chưa gán lớp',
       courseId: course?._id || null,
@@ -111,8 +111,8 @@ export const getAllPayments = async (req, res) => {
     if (registrationId) filter.registrationId = registrationId;
     if (method) filter.method = method;
 
-    if (!registrationId && req.user?.role === 'LEARNER') {
-      const registrations = await Registration.find({ LEARNERId: req.userId }).select('_id');
+    if (!registrationId && req.user?.role === 'learner') {
+      const registrations = await Registration.find({ learnerId: req.userId }).select('_id');
       const registrationIds = registrations.map((r) => r._id);
       if (registrationIds.length === 0) {
         return res.json({ status: 'success', data: [], count: 0 });
@@ -124,7 +124,7 @@ export const getAllPayments = async (req, res) => {
       .populate({
         path: 'registrationId',
         populate: [
-          { path: 'LEARNERId', select: 'fullName phone email' },
+          { path: 'learnerId', select: 'fullName phone email' },
           { path: 'batchId', populate: { path: 'courseId', select: 'code name' } },
         ],
       })
@@ -216,7 +216,7 @@ export const createPayment = async (req, res) => {
       note,
     });
 
-    const result = await Payment.findById(payment._id).populate('registrationId', 'LEARNERId batchId status');
+    const result = await Payment.findById(payment._id).populate('registrationId', 'learnerId batchId status');
 
     // 🔄 Tự động set firstPaymentDate nếu chưa có (thanh toán đợt 1)
     if (!registration.firstPaymentDate) {
@@ -231,7 +231,7 @@ export const createPayment = async (req, res) => {
       await Registration.findByIdAndUpdate(registrationId, { status: 'PROCESSING' });
     }
 
-    const enrollResult = await enrollSingleLEARNER(registrationId);
+    const enrollResult = await enrollSinglelearner(registrationId);
     console.log('💰 [PAYMENT] Kết quả auto-enroll:', enrollResult);
 
     return res.status(201).json({ 
@@ -248,7 +248,7 @@ export const createPayment = async (req, res) => {
 export const getTuitionInfo = async (req, res) => {
   try {
     const isAdminOrSale = ['ADMIN', 'CONSULTANT'].includes(req.user?.role);
-    const targetLEARNERId = !isAdminOrSale ? req.userId : (req.query.LEARNERId || undefined);
+    const targetlearnerId = !isAdminOrSale ? req.userId : (req.query.learnerId || undefined);
 
     const { 
       search, 
@@ -264,7 +264,7 @@ export const getTuitionInfo = async (req, res) => {
     const limit = parseInt(qLimit) || 10;
     const skip = (page - 1) * limit;
 
-    const filter = targetLEARNERId ? { LEARNERId: targetLEARNERId } : {};
+    const filter = targetlearnerId ? { learnerId: targetlearnerId } : {};
 
     // Note: Filtering by Learner name/Course name requires populating or aggregation.
     // To keep it simple but functional, let's fetch matching Learner IDs if search is provided.
@@ -287,7 +287,7 @@ export const getTuitionInfo = async (req, res) => {
       const courseIds = matchingCourses.map(c => c._id);
 
       filter.$or = [
-        { LEARNERId: { $in: userIds } },
+        { learnerId: { $in: userIds } },
         { courseId: { $in: courseIds } }
       ];
     }
@@ -295,7 +295,7 @@ export const getTuitionInfo = async (req, res) => {
     if (courseId) filter.courseId = courseId;
 
     let registrations = await Registration.find(filter)
-      .populate('LEARNERId', 'fullName phone email')
+      .populate('learnerId', 'fullName phone email')
       .populate({ path: 'batchId', populate: { path: 'courseId', model: Course } })
       .select('+firstPaymentDate')
       .sort({ createdAt: -1 });
@@ -411,7 +411,7 @@ export const getAiTuitionSuggestion = async (req, res) => {
   }
 };
 
-export const extendDueDateByLEARNER = async (req, res) => {
+export const extendDueDateBylearner = async (req, res) => {
   try {
     const { registrationId, scheduleIndex, extendedDays = 7, reason = '' } = req.body;
 
@@ -419,7 +419,7 @@ export const extendDueDateByLEARNER = async (req, res) => {
       return res.status(400).json({ status: 'error', message: 'registrationId là bắt buộc' });
     }
 
-    const registration = await Registration.findOne({ _id: registrationId, LEARNERId: req.userId });
+    const registration = await Registration.findOne({ _id: registrationId, learnerId: req.userId });
     if (!registration) {
       return res.status(404).json({ status: 'error', message: 'Không tìm thấy hồ sơ của học viên' });
     }
@@ -442,7 +442,7 @@ export const extendDueDateByLEARNER = async (req, res) => {
     baseDate.setDate(baseDate.getDate() + days);
 
     registration.feePlanSnapshot[index].dueDate = baseDate;
-    registration.feePlanSnapshot[index].note = `${registration.feePlanSnapshot[index].note || ''} | LEARNER xin gia hạn ${days} ngày${reason ? `: ${reason}` : ''}`.trim();
+    registration.feePlanSnapshot[index].note = `${registration.feePlanSnapshot[index].note || ''} | learner xin gia hạn ${days} ngày${reason ? `: ${reason}` : ''}`.trim();
     await registration.save();
 
     return res.json({ status: 'success', message: 'Gia hạn hạn thanh toán thành công', data: registration.feePlanSnapshot[index] });

@@ -4,9 +4,9 @@ import { getQuestionByNumber } from '../services/externalApi.js';
 // Nộp bài và chấm điểm
 export const submitExam = async (req, res) => {
   try {
-    const { LEARNERId, questions, duration, category } = req.body;
+    const { learnerId, questions, duration, category } = req.body;
 
-    if (!LEARNERId || !questions || !Array.isArray(questions)) {
+    if (!learnerId || !questions || !Array.isArray(questions)) {
       return res.status(400).json({
         status: 'error',
         message: 'Invalid request data',
@@ -78,7 +78,7 @@ export const submitExam = async (req, res) => {
 
     // Lưu kết quả
     const examResult = new ExamResult({
-      LEARNERId,
+      learnerId,
       questions: examQuestions,
       totalQuestions,
       correctAnswers: correctCount,
@@ -92,7 +92,7 @@ export const submitExam = async (req, res) => {
 
     // Populate để trả về thông tin đầy đủ
     const result = await ExamResult.findById(examResult._id)
-      .populate('LEARNERId', 'fullName phone');
+      .populate('learnerId', 'fullName phone');
 
     res.json({
       status: 'success',
@@ -111,13 +111,13 @@ export const submitExam = async (req, res) => {
 // Lấy tất cả exam results
 export const getAllExamResults = async (req, res) => {
   try {
-    const { LEARNERId } = req.query;
+    const { learnerId } = req.query;
     const filter = {};
 
-    if (LEARNERId) filter.LEARNERId = LEARNERId;
+    if (learnerId) filter.learnerId = learnerId;
 
     const results = await ExamResult.find(filter)
-      .populate('LEARNERId', 'fullName phone')
+      .populate('learnerId', 'fullName phone')
       .sort({ createdAt: -1 });
 
     res.json({
@@ -138,7 +138,7 @@ export const getExamResultById = async (req, res) => {
   try {
     const { id } = req.params;
     const result = await ExamResult.findById(id)
-      .populate('LEARNERId');
+      .populate('learnerId');
 
     if (!result) {
       return res.status(404).json({

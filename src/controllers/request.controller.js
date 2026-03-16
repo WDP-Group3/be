@@ -1,10 +1,11 @@
 import Request from '../models/Request.js';
 import User from '../models/User.js';
+import Registration from '../models/Registration.js';
 
 // Create a new request
 export const createRequest = async (req, res) => {
     try {
-        const { type, reason, expectedPayDate, paymentDate, LEARNERName, courseName, metadata } = req.body;
+        const { type, reason, expectedPayDate, paymentBatch, batchCourse, registrationId, metadata } = req.body;
         const userId = req.userId;
 
         if (!type || !reason) {
@@ -21,29 +22,8 @@ export const createRequest = async (req, res) => {
             if (!expectedPayDate) {
                 return res.status(400).json({ status: 'error', message: 'Thời gian nộp không được để trống đối với đơn xin nộp muộn' });
             }
-            if (user.role !== 'STUDENT' && user.role !== 'ADMIN') {
+            if (user.role !== 'learner' && user.role !== 'ADMIN') {
                 return res.status(403).json({ status: 'error', message: 'Chỉ học viên mới có quyền tạo đơn xin nộp muộn' });
-            }
-        }
-
-        // Validate specific fields and role for OFFLINE_PAYMENT
-        if (type === 'OFFLINE_PAYMENT') {
-            if (user.role !== 'CONSULTANT' && user.role !== 'ADMIN') {
-                return res.status(403).json({ status: 'error', message: 'Chỉ tư vấn viên hoặc admin mới có quyền tạo đơn xác nhận nộp tiền offline' });
-            }
-
-            if (!paymentDate || !LEARNERName || !courseName) {
-                return res.status(400).json({ status: 'error', message: 'Vui lòng điền đầy đủ thông tin: ngày nộp, học viên và khóa học' });
-            }
-        }
-
-        // Validate CANCEL_SESSION (instructor only)
-        if (type === 'CANCEL_SESSION') {
-            if (user.role !== 'INSTRUCTOR' && user.role !== 'ADMIN') {
-                return res.status(403).json({ status: 'error', message: 'Chỉ giảng viên mới có quyền tạo đơn hủy dạy đột xuất' });
-            }
-            if (!sessionInfo) {
-                return res.status(400).json({ status: 'error', message: 'Vui lòng nhập thông tin ca dạy cần hủy' });
             }
         }
 
@@ -55,17 +35,26 @@ export const createRequest = async (req, res) => {
             expectedPayDate,
             paymentBatch,
             batchCourse,
-            // OFFLINE_PAYMENT fields
-            paymentDate,
-            LEARNERName,
-            courseName,
-            // CANCEL_SESSION fields
-            sessionInfo,
+            registrationId,
             status: user.role === 'ADMIN' ? 'APPROVED' : 'PENDING',
             metadata
         });
 
         await newRequest.save();
+
+        // Admin auto-approve logic
+        if (newRequest.status === 'APPROVED' && newRequest.type === 'LATE_PAYMENT' && newRequest.registrationId) {
+            const reg = await Registration.findById(newRequest.registrationId);
+            if (reg && reg.feePlanSnapshot) {
+                const index = reg.feePlanSnapshot.findIndex(f => f.name === newRequest.paymentBatch);
+                if (index !== -1) {
+                    reg.feePlanSnapshot[index].dueDate = newRequest.expectedPayDate;
+                    reg.feePlanSnapshot[index].note = `${reg.feePlanSnapshot[index].note || ''} | Gia hạn nộp muộn: ${newRequest.reason}`.trim();
+                    reg.markModified('feePlanSnapshot');
+                    await reg.save();
+                }
+            }
+        }
 
         res.status(201).json({
             status: 'success',
@@ -141,14 +130,29 @@ export const updateRequestStatus = async (req, res) => {
             return res.status(400).json({ status: 'error', message: 'Trạng thái không hợp lệ' });
         }
 
+        // Check current status
+        const requestToUpdate = await Request.findById(id);
+        if (!requestToUpdate) {
+            return res.status(404).json({ status: 'error', message: 'Không tìm thấy yêu cầu' });
+        }
+
         const request = await Request.findByIdAndUpdate(
             id,
             { status },
             { new: true }
         );
 
-        if (!request) {
-            return res.status(404).json({ status: 'error', message: 'Không tìm thấy yêu cầu' });
+        if (status === 'APPROVED' && request.type === 'LATE_PAYMENT' && request.registrationId && requestToUpdate.status !== 'APPROVED') {
+            const reg = await Registration.findById(request.registrationId);
+            if (reg && reg.feePlanSnapshot) {
+                const index = reg.feePlanSnapshot.findIndex(f => f.name === request.paymentBatch);
+                if (index !== -1) {
+                    reg.feePlanSnapshot[index].dueDate = request.expectedPayDate;
+                    reg.feePlanSnapshot[index].note = `${reg.feePlanSnapshot[index].note || ''} | Gia hạn nộp muộn: ${request.reason}`.trim();
+                    reg.markModified('feePlanSnapshot');
+                    await reg.save();
+                }
+            }
         }
 
         res.json({

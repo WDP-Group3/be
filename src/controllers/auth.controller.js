@@ -69,13 +69,13 @@ export const googleLogin = async (req, res) => {
       // User mới
       const fullName = name || email.split('@')[0];
 
-      // Lưu ý: enum role chỉ cho phép: "ADMIN", "STUDENT", "INSTRUCTOR", "CONSULTANT"
+      // Lưu ý: enum role chỉ cho phép: "ADMIN", "learner", "INSTRUCTOR", "CONSULTANT"
       const newUser = new User({
         fullName,
         email,
         googleId,
         avatar: picture || null,
-        role: 'STUDENT',
+        role: 'learner',
         status: 'ACTIVE',
       });
 

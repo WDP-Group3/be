@@ -4,6 +4,33 @@ import User from '../models/User.js';
 export const createLead = async (req, res) => {
     try {
         const { name, phone, course, timeToCall, note } = req.body;
+
+        // --- Tìm Consultant có ít lead nhất ---
+        const consultants = await User.find({ role: 'CONSULTANT', status: 'ACTIVE' });
+        let assignedConsultantId = null;
+
+        if (consultants.length > 0) {
+            const consultantIds = consultants.map(c => c._id);
+            const leadCounts = await Leads.aggregate([
+                { $match: { assignTo: { $in: consultantIds } } },
+                { $group: { _id: '$assignTo', count: { $sum: 1 } } }
+            ]);
+            
+            const countMap = {};
+            leadCounts.forEach(lc => {
+                countMap[lc._id.toString()] = lc.count;
+            });
+            
+            let minCount = Infinity;
+            for (const consultant of consultants) {
+                const count = countMap[consultant._id.toString()] || 0;
+                if (count < minCount) {
+                    minCount = count;
+                    assignedConsultantId = consultant._id;
+                }
+            }
+        }
+
         const lead = new Leads({
             name,
             phone,
@@ -11,6 +38,7 @@ export const createLead = async (req, res) => {
             note,
             timeToCall,
             status: 'pending',
+            assignTo: assignedConsultantId
         });
         await lead.save();
         return res.status(201).json(lead);
