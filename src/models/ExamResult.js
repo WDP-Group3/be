@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 
 const examResultSchema = new mongoose.Schema({
-  LEARNERId: {
+  learnerId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
@@ -57,7 +57,7 @@ const examResultSchema = new mongoose.Schema({
 });
 
 // Indexes
-examResultSchema.index({ LEARNERId: 1 });
+examResultSchema.index({ learnerId: 1 });
 examResultSchema.index({ createdAt: -1 });
 
 const ExamResult = mongoose.model('ExamResult', examResultSchema);

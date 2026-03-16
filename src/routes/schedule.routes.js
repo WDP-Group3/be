@@ -7,7 +7,7 @@ const router = express.Router();
 
 router.use(authenticate);
 
-// --- [NEW] Route cho LEARNER lấy lịch (khớp với FE gọi: apiClient.get('/schedule', ...)) ---
+// --- [NEW] Route cho learner lấy lịch (khớp với FE gọi: apiClient.get('/schedule', ...)) ---
 router.get('/', getPublicSchedule);
 
 // GV xem lịch & báo bận

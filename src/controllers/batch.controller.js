@@ -1,6 +1,6 @@
 import Batch from '../models/Batch.js';
 import Registration from '../models/Registration.js';
-import { autoEnrollLEARNERs } from '../services/enrollment.service.js';
+import { autoEnrolllearners } from '../services/enrollment.service.js';
 
 // Lấy tất cả batches
 export const getAllBatches = async (req, res) => {
@@ -25,11 +25,11 @@ export const getAllBatches = async (req, res) => {
     const total = await Batch.countDocuments(filter);
 
     const batchesWithCount = await Promise.all(batches.map(async (batch) => {
-      const LEARNERCount = await Registration.countDocuments({
+      const learnerCount = await Registration.countDocuments({
         batchId: batch._id,
         status: { $in: ['NEW', 'PROCESSING', 'STUDYING'] }
       });
-      return { ...batch.toObject(), LEARNERCount };
+      return { ...batch.toObject(), learnerCount };
     }));
 
     res.json({
@@ -65,14 +65,14 @@ export const getBatchById = async (req, res) => {
       });
     }
 
-    const LEARNERCount = await Registration.countDocuments({
+    const learnerCount = await Registration.countDocuments({
       batchId: batch._id,
       status: { $in: ['NEW', 'PROCESSING', 'STUDYING'] }
     });
 
     res.json({
       status: 'success',
-      data: { ...batch.toObject(), LEARNERCount },
+      data: { ...batch.toObject(), learnerCount },
     });
   } catch (error) {
     res.status(500).json({
@@ -84,7 +84,7 @@ export const getBatchById = async (req, res) => {
 
 export const createBatch = async (req, res) => {
   try {
-    const { courseId, name, examLocation, startDate, estimatedEndDate, location, maxLEARNERs, instructorIds = [], status = 'OPEN' } = req.body;
+    const { courseId, name, examLocation, startDate, estimatedEndDate, location, maxlearners, instructorIds = [], status = 'OPEN' } = req.body;
 
     if (!courseId || !startDate || !estimatedEndDate || !location) {
       return res.status(400).json({
@@ -100,7 +100,7 @@ export const createBatch = async (req, res) => {
       startDate,
       estimatedEndDate,
       location,
-      maxLEARNERs,
+      maxlearners,
       instructorIds,
       status,
     });
@@ -108,7 +108,7 @@ export const createBatch = async (req, res) => {
     const result = await Batch.findById(batch._id).populate('courseId', 'code name');
 
     // Tự động gán học viên đã thanh toán vào lớp mới tạo
-    const enrollResult = await autoEnrollLEARNERs(courseId, { batchId: batch._id });
+    const enrollResult = await autoEnrolllearners(courseId, { batchId: batch._id });
     console.log(`[CREATE-BATCH] Auto-enroll result:`, enrollResult.message);
 
     return res.status(201).json({

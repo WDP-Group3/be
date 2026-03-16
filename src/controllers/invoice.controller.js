@@ -34,7 +34,7 @@ export const createInvoiceFromPayment = async (req, res) => {
       invoiceNo: buildInvoiceNo(),
       paymentId: payment._id,
       registrationId: registration._id,
-      LEARNERId: registration.LEARNERId,
+      learnerId: registration.learnerId,
       amount: Number(payment.amount) || 0,
       note: payment.note || '',
       issuedAt: new Date(),
@@ -52,15 +52,15 @@ export const createInvoiceFromPayment = async (req, res) => {
 
 export const getInvoices = async (req, res) => {
   try {
-    const { registrationId, LEARNERId } = req.query;
+    const { registrationId, learnerId } = req.query;
     const filter = {};
 
     if (registrationId) filter.registrationId = registrationId;
-    if (LEARNERId) filter.LEARNERId = LEARNERId;
+    if (learnerId) filter.learnerId = learnerId;
 
     const invoices = await Invoice.find(filter)
       .populate('paymentId', 'amount method paidAt')
-      .populate('LEARNERId', 'fullName email phone')
+      .populate('learnerId', 'fullName email phone')
       .sort({ issuedAt: -1 });
 
     return res.json({

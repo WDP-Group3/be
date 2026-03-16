@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import Transaction from '../models/Transaction.js';
 import Payment from '../models/Payment.js';
 import Registration from '../models/Registration.js';
-import { enrollSingleLEARNER } from '../services/enrollment.service.js';
+import { enrollSinglelearner } from '../services/enrollment.service.js';
 
 const SEPAY_BANK_CODE = process.env.SEPAY_BANK_CODE || '';
 const SEPAY_BANK_ACCOUNT = process.env.SEPAY_BANK_ACCOUNT || '';
@@ -149,7 +149,7 @@ export const checkStatus = async (req, res) => {
           if (['NEW', 'WAITING'].includes(registration.status)) {
             await Registration.findByIdAndUpdate(registration._id, { status: 'PROCESSING' });
           }
-          enrollment = await enrollSingleLEARNER(registration._id);
+          enrollment = await enrollSinglelearner(registration._id);
         }
       }
     }
@@ -199,7 +199,7 @@ export const getTransactions = async (req, res) => {
 
     if (status) filter.status = status;
 
-    if (req.user?.role === 'LEARNER') {
+    if (req.user?.role === 'learner') {
       filter.user = req.userId;
     }
 
@@ -259,7 +259,7 @@ export const confirmTransaction = async (req, res) => {
           // Auto-enroll khi xác nhận thanh toán đầu tiên
           if (['NEW', 'WAITING'].includes(registration.status)) {
             await Registration.findByIdAndUpdate(registration._id, { status: 'PROCESSING' });
-            await enrollSingleLEARNER(registration._id);
+            await enrollSinglelearner(registration._id);
           }
         }
       }

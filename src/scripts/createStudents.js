@@ -17,8 +17,8 @@ const generatePhone = (index) => {
   return prefix + number;
 };
 
-const generateEmail = (courseIndex, LEARNERIndex) => {
-  return `LEARNER_c${courseIndex}_${LEARNERIndex}@example.com`;
+const generateEmail = (courseIndex, learnerIndex) => {
+  return `learner_c${courseIndex}_${learnerIndex}@example.com`;
 };
 
 const generateName = (index) => {
@@ -42,7 +42,7 @@ const generateRandomPayment = (courseCost) => {
   return Math.round(randomAmount / 1000) * 1000; // Làm tròn đến nghìn
 };
 
-const createLEARNERs = async () => {
+const createlearners = async () => {
   try {
     await connectDB();
 
@@ -66,7 +66,7 @@ const createLEARNERs = async () => {
 
     console.log('\n📝 Bắt đầu tạo 15 học viên cho mỗi khóa học...\n');
 
-    let totalLEARNERs = 0;
+    let totallearners = 0;
     let totalRegistrations = 0;
     let totalTransactions = 0;
 
@@ -79,33 +79,33 @@ const createLEARNERs = async () => {
       console.log(`\n📚 Khóa học: ${course.name}`);
       console.log('-----------------------------------');
 
-      for (let LEARNERIndex = 1; LEARNERIndex <= 15; LEARNERIndex++) {
-        const globalIndex = courseIndex * 15 + LEARNERIndex;
+      for (let learnerIndex = 1; learnerIndex <= 15; learnerIndex++) {
+        const globalIndex = courseIndex * 15 + learnerIndex;
 
         // Tạo user học viên
-        const LEARNER = new User({
+        const learner = new User({
           fullName: generateName(globalIndex),
           phone: generatePhone(globalIndex),
-          email: generateEmail(courseIndex + 1, LEARNERIndex),
+          email: generateEmail(courseIndex + 1, learnerIndex),
           password: '$2a$10$dummy',
-          role: 'LEARNER',
+          role: 'learner',
           status: 'ACTIVE',
           address: `Địa chỉ ${globalIndex}`,
           dateOfBirth: '2000-01-01',
           gender: globalIndex % 2 === 0 ? 'MALE' : 'FEMALE',
         });
-        await LEARNER.save();
-        totalLEARNERs++;
+        await learner.save();
+        totallearners++;
 
         // Tạo registration cho khóa học này
         // Status NEW để có thể được tự động gán vào lớp khi tạo batch
         const registration = new Registration({
-          LEARNERId: LEARNER._id,
+          learnerId: learner._id,
           courseId: course._id,
           batchId: batchId, // Có thể null nếu chưa có lớp
-          registerMethod: LEARNERIndex % 3 === 0 ? 'ONLINE' : 'CONSULTANT',
+          registerMethod: learnerIndex % 3 === 0 ? 'ONLINE' : 'CONSULTANT',
           status: 'NEW', // Đổi từ STUDYING sang NEW để được auto-enroll
-          paymentPlanType: LEARNERIndex % 2 === 0 ? 'FULL' : 'INSTALLMENT',
+          paymentPlanType: learnerIndex % 2 === 0 ? 'FULL' : 'INSTALLMENT',
           feePlanSnapshot: course.feePayments || [],
         });
         await registration.save();
@@ -117,9 +117,9 @@ const createLEARNERs = async () => {
         const transaction = new Transaction({
           amount: paymentAmount,
           orderInfo: `Thanh toán lần 1 - ${course.name}`,
-          transferContent: `C${courseIndex + 1}_ST${LEARNERIndex}_${Date.now()}_${Math.random().toString(36).substring(7)}`,
+          transferContent: `C${courseIndex + 1}_ST${learnerIndex}_${Date.now()}_${Math.random().toString(36).substring(7)}`,
           registrationId: registration._id,
-          user: LEARNER._id,
+          user: learner._id,
           paymentMethod: 'SEPAY',
           status: 'completed',
           paidAt: new Date(),
@@ -127,15 +127,15 @@ const createLEARNERs = async () => {
         await transaction.save();
         totalTransactions++;
 
-        console.log(`   ✅ ${LEARNER.fullName} - ${LEARNER.email}`);
-        console.log(`      📱 ${LEARNER.phone} | 💰 ${paymentAmount.toLocaleString()} VNĐ`);
+        console.log(`   ✅ ${learner.fullName} - ${learner.email}`);
+        console.log(`      📱 ${learner.phone} | 💰 ${paymentAmount.toLocaleString()} VNĐ`);
       }
     }
 
     console.log('\n========================================');
     console.log('✅ Hoàn thành!');
     console.log(`   📚 Tổng khóa học: 4`);
-    console.log(`   👥 Tổng học viên: ${totalLEARNERs} (15/khóa)`);
+    console.log(`   👥 Tổng học viên: ${totallearners} (15/khóa)`);
     console.log(`   📝 Tổng đăng ký: ${totalRegistrations}`);
     console.log(`   💰 Tổng giao dịch: ${totalTransactions}`);
     console.log('========================================\n');
@@ -149,4 +149,4 @@ const createLEARNERs = async () => {
   }
 };
 
-createLEARNERs();
+createlearners();

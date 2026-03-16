@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import Course from '../models/Course.js';
-import { autoEnrollLEARNERs } from '../services/enrollment.service.js';
+import { autoEnrolllearners } from '../services/enrollment.service.js';
 
 /**
  * @desc    Lấy danh sách courses (Hỗ trợ phân trang, tìm kiếm, lọc)
@@ -138,13 +138,13 @@ export const createCourse = async (req, res) => {
       image,
       location: location || [],
       note,
-      maxLEARNERs: req.body.maxLEARNERs || 50, // Số lượng học viên tối đa
+      maxlearners: req.body.maxlearners || 50, // Số lượng học viên tối đa
     });
 
     await newCourse.save();
 
     // 3. Tự động gán học viên đã đăng ký (nếu có)
-    const enrollResult = await autoEnrollLEARNERs(newCourse._id);
+    const enrollResult = await autoEnrolllearners(newCourse._id);
     console.log('🎯 [COURSE CREATE] Kết quả auto-enroll:', enrollResult);
 
     res.status(201).json({

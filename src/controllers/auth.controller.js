@@ -3,6 +3,9 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import { sendPasswordResetEmail } from "../services/email.service.js";
+import { OAuth2Client } from 'google-auth-library';
+
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 const JWT_SECRET =
   process.env.JWT_SECRET || "your-secret-key-change-in-production";
@@ -19,6 +22,80 @@ const formatUserResponse = (user) => {
   return userWithoutPassword;
 };
 
+export const googleLogin = async (req, res) => {
+  try {
+    const { token } = req.body;
+
+    const ticket = await client.verifyIdToken({
+      idToken: token,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+
+    // Lấy thông tin từ payload của Google
+    const { email, sub: googleId, name, picture } = ticket.getPayload();
+
+    let user = await User.findOne({ email });
+
+    if (user) {
+      if (user.status === "INACTIVE") {
+        return res.status(403).json({
+          status: "error",
+          message: "Tài khoản của bạn đã bị khóa. Vui lòng liên hệ quản trị viên.",
+        });
+      }
+
+      // Cập nhật bổ sung thông tin Google nếu user cũ chưa có
+      let updated = false;
+      if (!user.googleId) {
+        user.googleId = googleId;
+        updated = true;
+      }
+      if (!user.avatar && picture) {
+        user.avatar = picture;
+        updated = true;
+      }
+      if (updated) await user.save();
+
+      // Sử dụng generateToken của hệ thống để payload chứa '{ userId }'
+      const jwtToken = generateToken(user._id);
+
+      return res.json({
+        status: "success",
+        message: 'Đăng nhập Google thành công',
+        token: jwtToken,
+        user: formatUserResponse(user),
+      });
+    } else {
+      // User mới
+      const fullName = name || email.split('@')[0];
+
+      // Lưu ý: enum role chỉ cho phép: "ADMIN", "learner", "INSTRUCTOR", "CONSULTANT"
+      const newUser = new User({
+        fullName,
+        email,
+        googleId,
+        avatar: picture || null,
+        role: 'learner',
+        status: 'ACTIVE',
+      });
+
+      await newUser.save();
+
+      const jwtToken = generateToken(newUser._id);
+
+      return res.status(201).json({
+        status: "success",
+        message: 'Đăng ký bằng Google thành công',
+        token: jwtToken,
+        user: formatUserResponse(newUser),
+      });
+    }
+
+  } catch (error) {
+    console.error('Google Auth Error:', error);
+    res.status(500).json({ status: "error", message: 'Lỗi xác thực Google' });
+  }
+};
 // Login
 export const login = async (req, res) => {
   try {

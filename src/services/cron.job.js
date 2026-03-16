@@ -77,7 +77,7 @@ const checkAndSendAttendanceReminders = async () => {
       { attendance: { $exists: false } }, // Chưa từng có attendance
       { attendance: 'PENDING' }            // Đã có nhưng chưa điểm danh
     ]
-  }).populate('LEARNERId', 'fullName email phone')
+  }).populate('learnerId', 'fullName email phone')
     .populate('instructorId', 'fullName email phone');
 
   let reminderCount = 0;
@@ -128,8 +128,8 @@ Vui lòng điểm danh ngay để hoàn tất buổi học.
 Thông tin buổi học:
 - Ngày: ${classDateStr}
 - Ca: ${SLOT_LABELS[String(booking.timeSlot)] || 'Ca ' + booking.timeSlot}
-- Học viên: ${booking.LEARNERId?.fullName || 'N/A'}
-- SĐT học viên: ${booking.LEARNERId?.phone || 'N/A'}
+- Học viên: ${booking.learnerId?.fullName || 'N/A'}
+- SĐT học viên: ${booking.learnerId?.phone || 'N/A'}
 
 Truy cập hệ thống để điểm danh: https://drivecenter.com/portal/instructor-schedule
 
@@ -146,7 +146,7 @@ Trân trọng!`;
 };
 
 // Hàm gửi email nhắc nhở điểm danh cho HỌC VIÊN
-const sendAttendanceReminderToLEARNER = async (booking) => {
+const sendAttendanceReminderTolearner = async (booking) => {
   const classDateStr = new Date(booking.date).toLocaleDateString('vi-VN', {
     weekday: 'long',
     day: 'numeric',
@@ -171,10 +171,10 @@ Truy cập hệ thống để xem lịch: https://drivecenter.com/portal/schedul
 
 Trân trọng!`;
 
-  if (booking.LEARNERId?.email) {
+  if (booking.learnerId?.email) {
     try {
-      await sendNotificationEmail(booking.LEARNERId.email, title, message);
-      console.log(`✅ [CRON] Đã gửi email nhắc điểm danh cho học viên: ${booking.LEARNERId.fullName}`);
+      await sendNotificationEmail(booking.learnerId.email, title, message);
+      console.log(`✅ [CRON] Đã gửi email nhắc điểm danh cho học viên: ${booking.learnerId.fullName}`);
     } catch (error) {
       console.error(`❌ [CRON] Lỗi gửi email cho học viên:`, error.message);
     }
@@ -187,7 +187,7 @@ const sendAttendanceReminderEmail = async (booking) => {
   await sendAttendanceReminderToInstructor(booking);
   
   // Gửi email cho học viên
-  await sendAttendanceReminderToLEARNER(booking);
+  await sendAttendanceReminderTolearner(booking);
 };
 
 // Hàm gửi thông báo nhắc nhở giáo viên đăng ký lịch bận

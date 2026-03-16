@@ -170,8 +170,8 @@ const sendEmergencyBusyNotification = async (instructor, booking) => {
 Thầy/Cô đã báo bận khẩn cấp vào ngày ${classDateStr} ${slotLabel}.
 
 ⚠️ LƯU Ý: Có học viên đã đặt lịch học vào thời gian này:
-- Học viên: ${booking.LEARNERId?.fullName || 'N/A'}
-- SĐT: ${booking.LEARNERId?.phone || 'N/A'}
+- Học viên: ${booking.learnerId?.fullName || 'N/A'}
+- SĐT: ${booking.learnerId?.phone || 'N/A'}
 
 Vui lòng liên hệ học viên hoặc admin để sắp xếp lịch học bù.
 
@@ -186,9 +186,9 @@ Trân trọng!`;
   }
 
   // Gửi email cho Học viên
-  if (booking.LEARNERId?.email) {
+  if (booking.learnerId?.email) {
     const titleHV = '⚠️ Thông báo: Giáo viên đã báo bận khẩn cấp';
-    const messageHV = `Kính gửi Học viên ${booking.LEARNERId.fullName},
+    const messageHV = `Kính gửi Học viên ${booking.learnerId.fullName},
 
 Giáo viên ${instructor.fullName} đã báo bận khẩn cấp vào ngày ${classDateStr} ${slotLabel}.
 
@@ -201,8 +201,8 @@ Thông tin liên hệ:
 Trân trọng!`;
     
     try {
-      await sendNotificationEmail(booking.LEARNERId.email, titleHV, messageHV);
-      console.log(`✅ [EMERGENCY] Đã gửi email cho HV: ${booking.LEARNERId.email}`);
+      await sendNotificationEmail(booking.learnerId.email, titleHV, messageHV);
+      console.log(`✅ [EMERGENCY] Đã gửi email cho HV: ${booking.learnerId.email}`);
     } catch (error) {
       console.error(`❌ [EMERGENCY] Lỗi gửi email cho HV:`, error.message);
     }
@@ -238,9 +238,9 @@ const sendBookingCancelledNotification = async (instructor, booking) => {
 Thầy/Cô đã báo bận khẩn cấp vào ngày ${classDateStr} ${slotLabel}.
 
 Hệ thống đã tự động huỷ lịch học của học viên:
-- Học viên: ${booking.LEARNERId?.fullName || 'N/A'}
-- SĐT: ${booking.LEARNERId?.phone || 'N/A'}
-- Email: ${booking.LEARNERId?.email || 'N/A'}
+- Học viên: ${booking.learnerId?.fullName || 'N/A'}
+- SĐT: ${booking.learnerId?.phone || 'N/A'}
+- Email: ${booking.learnerId?.email || 'N/A'}
 
 📊 Thông tin nghỉ phép khẩn cấp:
 - Số lần đã sử dụng: Đã được cập nhật
@@ -259,9 +259,9 @@ Trân trọng!`;
   }
 
   // Gửi email cho Học viên
-  if (booking.LEARNERId?.email) {
+  if (booking.learnerId?.email) {
     const titleHV = '🔔 Thông báo: Lịch học đã bị huỷ do giáo viên báo bận khẩn cấp';
-    const messageHV = `Kính gửi Học viên ${booking.LEARNERId.fullName},
+    const messageHV = `Kính gửi Học viên ${booking.learnerId.fullName},
 
 Rất tiếc, lịch học của bạn đã bị huỷ do giáo viên ${instructor.fullName} báo bận khẩn cấp.
 
@@ -282,8 +282,8 @@ Chúng tôi rất tiếc về sự bất tiện này!
 Trân trọng!`;
     
     try {
-      await sendNotificationEmail(booking.LEARNERId.email, titleHV, messageHV);
-      console.log(`✅ [CANCELLED] Đã gửi email huỷ cho HV: ${booking.LEARNERId.email}`);
+      await sendNotificationEmail(booking.learnerId.email, titleHV, messageHV);
+      console.log(`✅ [CANCELLED] Đã gửi email huỷ cho HV: ${booking.learnerId.email}`);
     } catch (error) {
       console.error(`❌ [CANCELLED] Lỗi gửi email cho HV:`, error.message);
     }
@@ -509,7 +509,7 @@ export const toggleBusy = async (req, res) => {
       date: { $gte: startOfDay, $lte: endOfDay },
       timeSlot: String(slotNumber),
       status: { $nin: ['CANCELLED', 'REJECTED'] }
-    }).populate('LEARNERId', 'fullName email phone');
+    }).populate('learnerId', 'fullName email phone');
 
     // [MỚI] Nếu có booking và là emergency -> huỷ booking
     if (existingBooking && isEmergency) {
@@ -567,7 +567,7 @@ export const toggleBusy = async (req, res) => {
       } else {
         // Nếu không phải emergency nhưng vẫn có booking -> thông báo cho GV biết
         if (existingBooking) {
-          console.log(`⚠️ [SCHEDULE] GV báo bận (không phải emergency) trùng với booking của HV: ${existingBooking.LEARNERId?.fullName}`);
+          console.log(`⚠️ [SCHEDULE] GV báo bận (không phải emergency) trùng với booking của HV: ${existingBooking.learnerId?.fullName}`);
         }
       }
 
@@ -631,7 +631,7 @@ export const getMySchedule = async (req, res) => {
       date: filterDate,
       status: { $ne: 'CANCELLED' } // Không lấy lịch đã hủy
     })
-    .populate('LEARNERId', 'fullName phone')
+    .populate('learnerId', 'fullName phone')
     .lean();
 
     // 4. Gộp dữ liệu trả về
@@ -713,7 +713,7 @@ export const getPublicSchedule = async (req, res) => {
         category: 'BOOKED', // Đã có người học
         timeSlot: Number(b.timeSlot),
         // Đánh dấu nếu đây là lịch do chính người đang xem đặt (để hiện màu xanh thay vì xám)
-        isMyBooking: req.userId && b.LEARNERId.toString() === req.userId.toString()
+        isMyBooking: req.userId && b.learnerId.toString() === req.userId.toString()
       }))
     ];
 
@@ -750,7 +750,7 @@ export const testEmergencyBusy = async (req, res) => {
       date: { $gte: startOfDay, $lte: endOfDay },
       timeSlot: String(slotNumber),
       status: { $nin: ['CANCELLED', 'REJECTED'] }
-    }).populate('LEARNERId', 'fullName email phone');
+    }).populate('learnerId', 'fullName email phone');
 
     // Kiểm tra giới hạn
     const limitCheck = await checkEmergencyLeaveLimit(targetInstructorId);
@@ -867,7 +867,7 @@ export const toggleBusyAllDay = async (req, res) => {
         date: { $gte: startOfDay, $lte: endOfDay },
         timeSlot: String(slotNumber),
         status: { $nin: ['CANCELLED', 'REJECTED'] }
-      }).populate('LEARNERId', 'fullName email phone');
+      }).populate('learnerId', 'fullName email phone');
 
       if (existingBooking) {
         // [MỚI] Nếu là emergency -> HUỶ booking và thông báo
