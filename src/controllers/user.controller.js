@@ -1,4 +1,5 @@
 import User from '../models/User.js';
+import LearningLocation from '../models/LearningLocation.js';
 import bcrypt from 'bcryptjs';
 
 // Helper function to format user response (remove password)
@@ -22,7 +23,7 @@ const formatUserResponse = (user) => {
 export const getUserStats = async (req, res) => {
   try {
     const totalUsers = await User.countDocuments({
-      role: { $in: ['STUDENT', 'INSTRUCTOR', 'CONSULTANT'] }
+      role: { $in: ['LEARNER', 'INSTRUCTOR', 'CONSULTANT'] }
     });
 
     res.json({
@@ -39,7 +40,7 @@ export const getUserStats = async (req, res) => {
 // Lấy tất cả users
 export const getAllUsers = async (req, res) => {
   try {
-    const { role, status, search } = req.query;
+    const { role, status, search, page = 1, limit = 10 } = req.query;
     const filter = {};
 
     if (role) filter.role = role;
@@ -54,20 +55,22 @@ export const getAllUsers = async (req, res) => {
       ];
     }
 
-    // Search by name or email
-    if (search) {
-      filter.$or = [
-        { fullName: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } }
-      ];
-    }
+    const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    const users = await User.find(filter).sort({ createdAt: -1 });
+    const [users, total] = await Promise.all([
+      User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit)),
+      User.countDocuments(filter)
+    ]);
     
     res.json({
       status: 'success',
       data: formatUserResponse(users),
-      count: users.length,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        totalPages: Math.ceil(total / parseInt(limit))
+      }
     });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
@@ -194,19 +197,20 @@ export const deactivateUser = async (req, res) => {
 // [NEW FEATURES] API CHO VIỆC LỌC GIÁO VIÊN
 // ==========================================
 
-// 6. Lấy danh sách các Khu vực hoạt động (Distinct Locations)
+// 6. Lấy danh sách các Khu vực (từ Địa điểm học; fallback từ User.workingLocation)
 export const getLocations = async (req, res) => {
   try {
-    // Lấy tất cả các workingLocation khác null/rỗng của Instructor đang Active
-    const locations = await User.find({ 
-      role: 'INSTRUCTOR', 
+    const fromLearning = await LearningLocation.find().distinct('areaName');
+    if (fromLearning && fromLearning.length > 0) {
+      return res.json({ status: 'success', data: fromLearning });
+    }
+    const locations = await User.find({
+      role: 'INSTRUCTOR',
       status: 'ACTIVE',
-      workingLocation: { $ne: null } 
+      workingLocation: { $ne: null },
     }).distinct('workingLocation');
-    
     res.json({ status: 'success', data: locations });
-
-    } catch (error) {
+  } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
@@ -221,7 +225,7 @@ export const changeUserRole = async (req, res) => {
     }
 
     // Validate role
-    const validRoles = ['ADMIN', 'STUDENT', 'INSTRUCTOR', 'CONSULTANT'];
+    const validRoles = ['ADMIN', 'LEARNER', 'INSTRUCTOR', 'CONSULTANT'];
     if (!validRoles.includes(role)) {
       return res.status(400).json({ status: 'error', message: 'Invalid role' });
     }
@@ -247,20 +251,44 @@ export const changeUserRole = async (req, res) => {
 };
   
 
-// 7. Lấy Giáo viên theo Khu vực
+// 7. Lấy Giáo viên theo Khu vực và Khóa học (từ Địa điểm học - LearningLocation)
+// Luồng: học viên chọn khu vực → chọn khóa đã đăng ký → lọc giáo viên dạy khóa đó tại khu vực đó
 export const getInstructorsByLocation = async (req, res) => {
   try {
-    const { location } = req.query;
-    
-    if (!location) {
-      return res.status(400).json({ status: 'error', message: 'Vui lòng chọn khu vực' });
+    const { location, courseId, courses } = req.query;
+    const courseIds = courseId ? [courseId] : (courses && typeof courses === 'string' ? courses.split(',').map(s => s.trim()).filter(Boolean) : []);
+
+    // Ưu tiên: lấy từ LearningLocation (địa điểm học có gán thầy + khóa)
+    if (location && location.trim() && courseIds.length > 0) {
+      const locDocs = await LearningLocation.find({
+        areaName: { $regex: new RegExp(`^${String(location).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
+      }).lean();
+      const allInstructorIds = new Set();
+      for (const locDoc of locDocs) {
+        if (locDoc.instructors && locDoc.instructors.length > 0) {
+          locDoc.instructors
+            .filter((i) => courseIds.some((cid) => (i.courseId?.toString?.() || i.courseId) === cid))
+            .forEach((i) => allInstructorIds.add(i.instructorId?.toString?.() || i.instructorId));
+        }
+      }
+      if (allInstructorIds.size > 0) {
+        const users = await User.find({ _id: { $in: [...allInstructorIds] }, role: 'INSTRUCTOR', status: 'ACTIVE' });
+        return res.json({ status: 'success', data: formatUserResponse(users) });
+      }
     }
 
-    const instructors = await User.find({
-      role: 'INSTRUCTOR',
-      status: 'ACTIVE',
-      workingLocation: location
-    });
+    // Fallback: lọc User theo workingLocation + taughtCourses
+    let filter = { role: 'INSTRUCTOR', status: 'ACTIVE' };
+    if (location && location.trim()) {
+      filter.workingLocation = { $regex: new RegExp(`^${String(location).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') };
+    }
+    if (courseIds.length > 0) filter.taughtCourses = { $in: courseIds };
+
+    let instructors = await User.find(filter);
+    if (instructors.length === 0 && courseIds.length > 0) {
+      delete filter.taughtCourses;
+      instructors = await User.find(filter);
+    }
 
     res.json({ status: 'success', data: formatUserResponse(instructors) });
   } catch (error) {
@@ -286,3 +314,4 @@ export const restoreUser = async (req, res) => {
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
+

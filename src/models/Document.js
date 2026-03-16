@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 
 const documentSchema = new mongoose.Schema({
-  studentId: {
+  LEARNERId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
@@ -29,6 +29,17 @@ const documentSchema = new mongoose.Schema({
     type: String,
     trim: true,
   },
+  consultantId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+  },
+  consultantEmail: {
+    type: String,
+    trim: true,
+    lowercase: true,
+    default: null,
+  },
   status: {
     type: String,
     enum: ['PENDING', 'APPROVED', 'REJECTED'],
@@ -42,13 +53,20 @@ const documentSchema = new mongoose.Schema({
     type: Date,
     default: null,
   },
+  // Ngày tạo hồ sơ (dùng để tính hoa hồng)
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
 }, {
-  timestamps: false,
+  timestamps: true,
 });
 
 // Indexes
-documentSchema.index({ studentId: 1 }, { unique: true });
+// LEARNERId already has unique: true in schema definition, so no extra index here
+
 documentSchema.index({ registrationId: 1 });
+documentSchema.index({ consultantId: 1 });
 documentSchema.index({ status: 1 });
 documentSchema.index({ isDeleted: 1 });
 

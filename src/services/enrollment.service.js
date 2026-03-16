@@ -12,7 +12,7 @@ import Payment from '../models/Payment.js';
  * @param {String} courseId - ID của khoá học
  * @returns {Object} Kết quả gán học viên
  */
-export const autoEnrollStudents = async (courseId, options = {}) => {
+export const autoEnrollLEARNERs = async (courseId, options = {}) => {
   const { batchId: targetBatchId } = options;
   try {
     // 1. Lấy thông tin khoá học
@@ -20,8 +20,6 @@ export const autoEnrollStudents = async (courseId, options = {}) => {
     if (!course) {
       return { success: false, message: 'Không tìm thấy khoá học' };
     }
-
-    const maxStudents = course.maxStudents || 50;
 
     // 2. Tìm batch phù hợp
     let batch = null;
@@ -62,20 +60,22 @@ export const autoEnrollStudents = async (courseId, options = {}) => {
       console.log(`✅ [AUTO-ENROLL] Đã tạo batch mới cho khoá học: ${course.name}`);
     }
 
+    const maxLEARNERs = batch.maxLEARNERs || course.maxLEARNERs || 50;
+
     // 3. Tính số slot còn trống
     const enrolledCount = await Registration.countDocuments({
       batchId: batch._id,
       status: { $in: ['NEW', 'PROCESSING', 'STUDYING'] }
     });
 
-    const openSlots = Math.max(maxStudents - enrolledCount, 0);
+    const openSlots = Math.max(maxLEARNERs - enrolledCount, 0);
     if (openSlots <= 0) {
-      console.log(`⚠️ [AUTO-ENROLL] Lớp học ${course.name} đã đầy (${enrolledCount}/${maxStudents})`);
+      console.log(`⚠️ [AUTO-ENROLL] Lớp học ${batch.name || course.name} đã đầy (${enrolledCount}/${maxLEARNERs})`);
       return {
         success: false,
-        message: `Lớp học đã đầy (${enrolledCount}/${maxStudents})`,
+        message: `Lớp học đã đầy (${enrolledCount}/${maxLEARNERs})`,
         enrolledCount,
-        maxStudents,
+        maxLEARNERs,
         isFull: true,
         batchId: batch._id
       };
@@ -91,7 +91,7 @@ export const autoEnrollStudents = async (courseId, options = {}) => {
         { batchId: batch._id } // Có batch nhưng là batch hiện tại
       ]
     })
-      .populate('studentId', 'fullName email')
+      .populate('LEARNERId', 'fullName email')
       .sort({ createdAt: 1 });
 
     const pendingIds = pendingRegistrations.map((reg) => reg._id);
@@ -101,7 +101,7 @@ export const autoEnrollStudents = async (courseId, options = {}) => {
         success: true,
         message: 'Không có học viên chờ được gán',
         enrolledCount,
-        maxStudents,
+        maxLEARNERs,
         newlyEnrolled: 0,
         batchId: batch._id
       };
@@ -123,7 +123,7 @@ export const autoEnrollStudents = async (courseId, options = {}) => {
         success: true,
         message: 'Không có học viên đã thanh toán để gán',
         enrolledCount,
-        maxStudents,
+        maxLEARNERs,
         newlyEnrolled: 0,
         batchId: batch._id
       };
@@ -140,22 +140,22 @@ export const autoEnrollStudents = async (courseId, options = {}) => {
 
       newlyEnrolled.push({
         registrationId: reg._id,
-        studentName: reg.studentId?.fullName,
-        studentEmail: reg.studentId?.email
+        LEARNERName: reg.LEARNERId?.fullName,
+        LEARNEREmail: reg.LEARNERId?.email
       });
 
-      console.log(`✅ [AUTO-ENROLL] Đã gán HV ${reg.studentId?.fullName} vào lớp ${batch._id}`);
+      console.log(`✅ [AUTO-ENROLL] Đã gán HV ${reg.LEARNERId?.fullName} vào lớp ${batch._id}`);
     }
 
     const newEnrolledCount = enrolledCount + newlyEnrolled.length;
 
-    console.log(`🎉 [AUTO-ENROLL] Hoàn tất! Đã gán ${newlyEnrolled.length} học viên vào lớp ${course.name} (${newEnrolledCount}/${maxStudents})`);
+    console.log(`🎉 [AUTO-ENROLL] Hoàn tất! Đã gán ${newlyEnrolled.length} học viên vào lớp ${batch.name || course.name} (${newEnrolledCount}/${maxLEARNERs})`);
 
     return {
       success: true,
-      message: `Đã gán ${newlyEnrolled.length} học viên vào lớp`,
+      message: `Đã gán ${newlyEnrolled.length} học viên vào lớp ${batch.name || "mới tạo"}`,
       enrolledCount: newEnrolledCount,
-      maxStudents,
+      maxLEARNERs,
       newlyEnrolled,
       batchId: batch._id
     };
@@ -171,7 +171,7 @@ export const autoEnrollStudents = async (courseId, options = {}) => {
  * @param {String} registrationId - ID của đăng ký
  * @returns {Object} Kết quả gán
  */
-export const enrollSingleStudent = async (registrationId) => {
+export const enrollSingleLEARNER = async (registrationId) => {
   try {
     // 1. Lấy thông tin registration (đã populate batchId)
     const registration = await Registration.findById(registrationId)
@@ -207,30 +207,27 @@ export const enrollSingleStudent = async (registrationId) => {
       return { success: false, message: 'Không tìm thấy khoá học' };
     }
 
-    const maxStudents = course.maxStudents || 50;
-
-    // 4. Tìm hoặc tạo Batch
-    let batch = await Batch.findOne({ 
-      courseId, 
-      status: 'OPEN' 
-    });
+    // 4. Tìm Batch OPEN gần nhất theo startDate (không tự tạo lớp mới)
+    // Yêu cầu: chỉ auto-add vào lớp đang mở của khóa đó
+    const batch = await Batch.findOne({
+      courseId,
+      status: 'OPEN',
+    }).sort({ startDate: 1 });
 
     if (!batch) {
-      const defaultStartDate = new Date();
-      defaultStartDate.setDate(defaultStartDate.getDate() + 7);
-
-      const defaultEndDate = new Date(defaultStartDate);
-      defaultEndDate.setMonth(defaultEndDate.getMonth() + 3);
-
-      batch = await Batch.create({
-        courseId,
-        startDate: defaultStartDate,
-        estimatedEndDate: defaultEndDate,
-        location: course.location?.[0] || 'Hà Nội',
-        status: 'OPEN',
-        instructorIds: []
+      await Registration.findByIdAndUpdate(registrationId, {
+        status: 'WAITING',
+        courseId: courseId,
       });
+
+      return {
+        success: false,
+        message: 'Chưa có lớp (batch) OPEN cho khoá học này, bạn đang ở danh sách chờ',
+        waitingList: true,
+      };
     }
+
+    const maxLEARNERs = batch.maxLEARNERs || course.maxLEARNERs || 50;
 
     // 5. Đếm số HV hiện tại
     const enrolledCount = await Registration.countDocuments({
@@ -239,20 +236,20 @@ export const enrollSingleStudent = async (registrationId) => {
     });
 
     // 6. Kiểm tra còn slot không
-    if (enrolledCount >= maxStudents) {
+    if (enrolledCount >= maxLEARNERs) {
       // Cập nhật trạng thái chờ
       await Registration.findByIdAndUpdate(registrationId, {
         status: 'WAITING',
         courseId: courseId
       });
       
-      console.log(`⚠️ [AUTO-ENROLL] HV ${registration.studentId} vào danh sách chờ (lớp đã đầy)`);
+      console.log(`⚠️ [AUTO-ENROLL] HV ${registration.LEARNERId} vào danh sách chờ (lớp đã đầy)`);
       
       return {
         success: false,
         message: 'Lớp học đã đầy, bạn được thêm vào danh sách chờ',
         enrolledCount,
-        maxStudents,
+        maxLEARNERs,
         isFull: true,
         waitingList: true
       };
@@ -267,13 +264,13 @@ export const enrollSingleStudent = async (registrationId) => {
 
     const newCount = enrolledCount + 1;
 
-    console.log(`✅ [AUTO-ENROLL] Đã gán HV ${registration.studentId} vào lớp ${batch._id} (${newCount}/${maxStudents})`);
+    console.log(`✅ [AUTO-ENROLL] Đã gán HV ${registration.LEARNERId} vào lớp ${batch._id} (${newCount}/${maxLEARNERs})`);
 
     return {
       success: true,
       message: 'Đã gán vào lớp thành công',
       enrolledCount: newCount,
-      maxStudents,
+      maxLEARNERs,
       batchId: batch._id,
       waitingList: false
     };

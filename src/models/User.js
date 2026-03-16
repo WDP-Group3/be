@@ -31,7 +31,7 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ["ADMIN", "STUDENT", "INSTRUCTOR", "CONSULTANT"],
+      enum: ["ADMIN", "LEARNER", "INSTRUCTOR", "CONSULTANT", "SALES", "USER"],
       required: true,
     },
     status: {
@@ -39,6 +39,22 @@ const userSchema = new mongoose.Schema(
       enum: ['ACTIVE', 'INACTIVE'],
       default: 'ACTIVE',
     },
+
+    // --- [MỚI] Ghi đè lương/hoa hồng theo từng nhân sự ---
+    salaryHourlyRate: {
+      type: Number,
+      default: null,
+    },
+    commissionOverrides: [{
+      courseId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Course',
+      },
+      commissionAmount: {
+        type: Number,
+        default: 0,
+      },
+    }],
 
     // --- [MỚI] Khu vực hoạt động (Dành cho Giáo viên) ---
     workingLocation: {
@@ -80,14 +96,6 @@ const userSchema = new mongoose.Schema(
     createdAt: {
       type: Date,
       default: Date.now,
-    },
-    resetPasswordToken: {
-      type: String,
-      default: null,
-    },
-    resetPasswordExpires: {
-      type: Date,
-      default: null,
     },
   },
   {

@@ -41,7 +41,7 @@ const requestSchema = new mongoose.Schema(
                 return this.type === 'OFFLINE_PAYMENT';
             },
         },
-        studentName: {
+        LEARNERName: {
             type: String,
             trim: true,
             required: function () {

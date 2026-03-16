@@ -4,7 +4,7 @@ import User from '../models/User.js';
 // Create a new request
 export const createRequest = async (req, res) => {
     try {
-        const { type, reason, expectedPayDate, paymentBatch, batchCourse, paymentDate, studentName, courseName, sessionInfo, metadata } = req.body;
+        const { type, reason, expectedPayDate, paymentDate, LEARNERName, courseName, metadata } = req.body;
         const userId = req.userId;
 
         if (!type || !reason) {
@@ -31,7 +31,8 @@ export const createRequest = async (req, res) => {
             if (user.role !== 'CONSULTANT' && user.role !== 'ADMIN') {
                 return res.status(403).json({ status: 'error', message: 'Chỉ tư vấn viên hoặc admin mới có quyền tạo đơn xác nhận nộp tiền offline' });
             }
-            if (!paymentDate || !studentName || !courseName) {
+
+            if (!paymentDate || !LEARNERName || !courseName) {
                 return res.status(400).json({ status: 'error', message: 'Vui lòng điền đầy đủ thông tin: ngày nộp, học viên và khóa học' });
             }
         }
@@ -56,7 +57,7 @@ export const createRequest = async (req, res) => {
             batchCourse,
             // OFFLINE_PAYMENT fields
             paymentDate,
-            studentName,
+            LEARNERName,
             courseName,
             // CANCEL_SESSION fields
             sessionInfo,
@@ -80,17 +81,31 @@ export const createRequest = async (req, res) => {
 export const getAllRequests = async (req, res) => {
     try {
         const { type, status } = req.query;
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = (page - 1) * limit;
+
         const filter = {};
         if (type) filter.type = type;
         if (status) filter.status = status;
 
         const requests = await Request.find(filter)
             .populate('user', 'fullName email phone')
-            .sort({ createdAt: -1 });
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit);
+
+        const total = await Request.countDocuments(filter);
 
         res.json({
             status: 'success',
             data: requests,
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
         });
     } catch (error) {
         res.status(500).json({ status: 'error', message: error.message });
@@ -145,3 +160,4 @@ export const updateRequestStatus = async (req, res) => {
         res.status(500).json({ status: 'error', message: error.message });
     }
 };
+

@@ -24,11 +24,25 @@ const checkIsHoliday = async (date) => {
 const VALID_TIME_SLOTS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 // [HELPER] Lấy danh sách ngày nghỉ lễ trong khoảng thời gian
-const getHolidaysInRange = async (startDate, endDate) => {
-  const holidays = await SystemHoliday.find({
+// location: null/undefined = lấy tất cả; có giá trị = chỉ lấy nghỉ toàn hệ thống + nghỉ của khu vực đó
+const getHolidaysInRange = async (startDate, endDate, location = null) => {
+  const baseFilter = {
     startDate: { $lte: endDate },
-    endDate: { $gte: startDate }
-  }).lean();
+    endDate: { $gte: startDate },
+    isActive: true
+  };
+  let filter = baseFilter;
+  if (location && location.trim()) {
+    const locRegex = new RegExp(`^${String(location).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+    filter = {
+      ...baseFilter,
+      $or: [
+        { location: null },
+        { location: { $regex: locRegex } }
+      ]
+    };
+  }
+  const holidays = await SystemHoliday.find(filter).lean();
   return holidays;
 };
 
@@ -156,8 +170,8 @@ const sendEmergencyBusyNotification = async (instructor, booking) => {
 Thầy/Cô đã báo bận khẩn cấp vào ngày ${classDateStr} ${slotLabel}.
 
 ⚠️ LƯU Ý: Có học viên đã đặt lịch học vào thời gian này:
-- Học viên: ${booking.studentId?.fullName || 'N/A'}
-- SĐT: ${booking.studentId?.phone || 'N/A'}
+- Học viên: ${booking.LEARNERId?.fullName || 'N/A'}
+- SĐT: ${booking.LEARNERId?.phone || 'N/A'}
 
 Vui lòng liên hệ học viên hoặc admin để sắp xếp lịch học bù.
 
@@ -172,9 +186,9 @@ Trân trọng!`;
   }
 
   // Gửi email cho Học viên
-  if (booking.studentId?.email) {
+  if (booking.LEARNERId?.email) {
     const titleHV = '⚠️ Thông báo: Giáo viên đã báo bận khẩn cấp';
-    const messageHV = `Kính gửi Học viên ${booking.studentId.fullName},
+    const messageHV = `Kính gửi Học viên ${booking.LEARNERId.fullName},
 
 Giáo viên ${instructor.fullName} đã báo bận khẩn cấp vào ngày ${classDateStr} ${slotLabel}.
 
@@ -187,8 +201,8 @@ Thông tin liên hệ:
 Trân trọng!`;
     
     try {
-      await sendNotificationEmail(booking.studentId.email, titleHV, messageHV);
-      console.log(`✅ [EMERGENCY] Đã gửi email cho HV: ${booking.studentId.email}`);
+      await sendNotificationEmail(booking.LEARNERId.email, titleHV, messageHV);
+      console.log(`✅ [EMERGENCY] Đã gửi email cho HV: ${booking.LEARNERId.email}`);
     } catch (error) {
       console.error(`❌ [EMERGENCY] Lỗi gửi email cho HV:`, error.message);
     }
@@ -224,9 +238,9 @@ const sendBookingCancelledNotification = async (instructor, booking) => {
 Thầy/Cô đã báo bận khẩn cấp vào ngày ${classDateStr} ${slotLabel}.
 
 Hệ thống đã tự động huỷ lịch học của học viên:
-- Học viên: ${booking.studentId?.fullName || 'N/A'}
-- SĐT: ${booking.studentId?.phone || 'N/A'}
-- Email: ${booking.studentId?.email || 'N/A'}
+- Học viên: ${booking.LEARNERId?.fullName || 'N/A'}
+- SĐT: ${booking.LEARNERId?.phone || 'N/A'}
+- Email: ${booking.LEARNERId?.email || 'N/A'}
 
 📊 Thông tin nghỉ phép khẩn cấp:
 - Số lần đã sử dụng: Đã được cập nhật
@@ -245,9 +259,9 @@ Trân trọng!`;
   }
 
   // Gửi email cho Học viên
-  if (booking.studentId?.email) {
+  if (booking.LEARNERId?.email) {
     const titleHV = '🔔 Thông báo: Lịch học đã bị huỷ do giáo viên báo bận khẩn cấp';
-    const messageHV = `Kính gửi Học viên ${booking.studentId.fullName},
+    const messageHV = `Kính gửi Học viên ${booking.LEARNERId.fullName},
 
 Rất tiếc, lịch học của bạn đã bị huỷ do giáo viên ${instructor.fullName} báo bận khẩn cấp.
 
@@ -268,8 +282,8 @@ Chúng tôi rất tiếc về sự bất tiện này!
 Trân trọng!`;
     
     try {
-      await sendNotificationEmail(booking.studentId.email, titleHV, messageHV);
-      console.log(`✅ [CANCELLED] Đã gửi email huỷ cho HV: ${booking.studentId.email}`);
+      await sendNotificationEmail(booking.LEARNERId.email, titleHV, messageHV);
+      console.log(`✅ [CANCELLED] Đã gửi email huỷ cho HV: ${booking.LEARNERId.email}`);
     } catch (error) {
       console.error(`❌ [CANCELLED] Lỗi gửi email cho HV:`, error.message);
     }
@@ -429,12 +443,15 @@ export const toggleBusy = async (req, res) => {
       return res.status(400).json({ status: 'error', message: 'Ngày không hợp lệ' });
     }
 
-    // [MỚI] Kiểm tra ngày nghỉ lễ - không cho báo bận vào ngày nghỉ lễ
-    const holidayCheck = await checkIsHoliday(inputDate);
+    // [MỚI] Kiểm tra ngày nghỉ lễ (toàn hệ thống hoặc theo khu vực của thầy)
+    const instructor = await User.findById(instructorId).select('workingLocation').lean();
+    const instructorLocation = instructor?.workingLocation || null;
+    const holidayCheck = await checkIsHoliday(inputDate, instructorLocation);
     if (holidayCheck) {
+      const locationMsg = holidayCheck.location ? `tại khu vực ${holidayCheck.location}` : 'toàn hệ thống';
       return res.status(400).json({
         status: 'error',
-        message: `Ngày ${inputDate.toLocaleDateString('vi-VN')} thuộc lịch nghỉ "${holidayCheck.title}". Không thể báo bận trong ngày nghỉ lễ.`
+        message: `Ngày ${inputDate.toLocaleDateString('vi-VN')} thuộc lịch nghỉ "${holidayCheck.title}" ${locationMsg}. Không thể báo bận trong ngày nghỉ.`
       });
     }
 
@@ -492,7 +509,7 @@ export const toggleBusy = async (req, res) => {
       date: { $gte: startOfDay, $lte: endOfDay },
       timeSlot: String(slotNumber),
       status: { $nin: ['CANCELLED', 'REJECTED'] }
-    }).populate('studentId', 'fullName email phone');
+    }).populate('LEARNERId', 'fullName email phone');
 
     // [MỚI] Nếu có booking và là emergency -> huỷ booking
     if (existingBooking && isEmergency) {
@@ -502,8 +519,8 @@ export const toggleBusy = async (req, res) => {
       await existingBooking.save();
       
       // Gửi email thông báo huỷ
-      const instructor = await User.findById(instructorId);
-      await sendBookingCancelledNotification(instructor, existingBooking);
+      const instructorForNotify = await User.findById(instructorId);
+      await sendBookingCancelledNotification(instructorForNotify, existingBooking);
     }
 
     // 5. Tìm lịch bận (Schedule) trong CẢ NGÀY hôm đó
@@ -550,7 +567,7 @@ export const toggleBusy = async (req, res) => {
       } else {
         // Nếu không phải emergency nhưng vẫn có booking -> thông báo cho GV biết
         if (existingBooking) {
-          console.log(`⚠️ [SCHEDULE] GV báo bận (không phải emergency) trùng với booking của HV: ${existingBooking.studentId?.fullName}`);
+          console.log(`⚠️ [SCHEDULE] GV báo bận (không phải emergency) trùng với booking của HV: ${existingBooking.LEARNERId?.fullName}`);
         }
       }
 
@@ -596,8 +613,10 @@ export const getMySchedule = async (req, res) => {
       $lte: new Date(endDate) 
     };
 
-    // 1. Lấy lịch nghỉ lễ trong khoảng
-    const holidays = await getHolidaysInRange(new Date(startDate), new Date(endDate));
+    // 1. Lấy lịch nghỉ lễ trong khoảng (chỉ nghỉ toàn hệ thống + nghỉ khu vực của thầy)
+    const instructorInfo = await User.findById(instructorId).select('workingLocation').lean();
+    const instructorLocation = instructorInfo?.workingLocation || null;
+    const holidays = await getHolidaysInRange(new Date(startDate), new Date(endDate), instructorLocation);
     const holidaySlots = generateHolidaySlots(holidays);
 
     // 2. Lấy lịch bận (Busy) từ bảng Schedule
@@ -612,7 +631,7 @@ export const getMySchedule = async (req, res) => {
       date: filterDate,
       status: { $ne: 'CANCELLED' } // Không lấy lịch đã hủy
     })
-    .populate('studentId', 'fullName phone')
+    .populate('LEARNERId', 'fullName phone')
     .lean();
 
     // 4. Gộp dữ liệu trả về
@@ -671,8 +690,10 @@ export const getPublicSchedule = async (req, res) => {
       status: { $nin: ['CANCELLED', 'REJECTED'] }
     }).lean();
 
-    // 3. Lấy các ngày nghỉ lễ trong khoảng thời gian
-    const holidays = await getHolidaysInRange(filterStart, filterEnd);
+    // 3. Lấy các ngày nghỉ lễ trong khoảng (chỉ nghỉ toàn hệ thống + nghỉ khu vực của thầy)
+    const instructorInfo = await User.findById(instructorId).select('workingLocation').lean();
+    const instructorLocation = instructorInfo?.workingLocation || null;
+    const holidays = await getHolidaysInRange(filterStart, filterEnd, instructorLocation);
     const holidaySlots = generateHolidaySlots(holidays);
 
     // 4. Trả về format thống nhất
@@ -692,7 +713,7 @@ export const getPublicSchedule = async (req, res) => {
         category: 'BOOKED', // Đã có người học
         timeSlot: Number(b.timeSlot),
         // Đánh dấu nếu đây là lịch do chính người đang xem đặt (để hiện màu xanh thay vì xám)
-        isMyBooking: req.userId && b.studentId.toString() === req.userId.toString()
+        isMyBooking: req.userId && b.LEARNERId.toString() === req.userId.toString()
       }))
     ];
 
@@ -729,7 +750,7 @@ export const testEmergencyBusy = async (req, res) => {
       date: { $gte: startOfDay, $lte: endOfDay },
       timeSlot: String(slotNumber),
       status: { $nin: ['CANCELLED', 'REJECTED'] }
-    }).populate('studentId', 'fullName email phone');
+    }).populate('LEARNERId', 'fullName email phone');
 
     // Kiểm tra giới hạn
     const limitCheck = await checkEmergencyLeaveLimit(targetInstructorId);
@@ -793,12 +814,15 @@ export const toggleBusyAllDay = async (req, res) => {
       return res.status(400).json({ status: 'error', message: 'Ngày không hợp lệ' });
     }
 
-    // [MỚI] Kiểm tra ngày nghỉ lễ - không cho báo bận cả ngày vào ngày nghỉ lễ
-    const holidayCheck = await checkIsHoliday(inputDate);
+    // [MỚI] Kiểm tra ngày nghỉ lễ (toàn hệ thống hoặc theo khu vực)
+    const instructorBasic = await User.findById(instructorId).select('workingLocation').lean();
+    const instructorLocation = instructorBasic?.workingLocation || null;
+    const holidayCheck = await checkIsHoliday(inputDate, instructorLocation);
     if (holidayCheck) {
+      const locationMsg = holidayCheck.location ? `tại khu vực ${holidayCheck.location}` : 'toàn hệ thống';
       return res.status(400).json({
         status: 'error',
-        message: `Ngày ${inputDate.toLocaleDateString('vi-VN')} thuộc lịch nghỉ "${holidayCheck.title}". Không thể báo bận trong ngày nghỉ lễ.`
+        message: `Ngày ${inputDate.toLocaleDateString('vi-VN')} thuộc lịch nghỉ "${holidayCheck.title}" ${locationMsg}. Không thể báo bận trong ngày nghỉ.`
       });
     }
 
@@ -831,7 +855,7 @@ export const toggleBusyAllDay = async (req, res) => {
     const endOfDay = new Date(inputDate);
     endOfDay.setHours(23, 59, 59, 999);
 
-    const instructor = await User.findById(instructorId);
+    const instructorForNotify = await User.findById(instructorId);
     const allSlots = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     let successCount = 0;
     let cancelledBookings = [];
@@ -843,7 +867,7 @@ export const toggleBusyAllDay = async (req, res) => {
         date: { $gte: startOfDay, $lte: endOfDay },
         timeSlot: String(slotNumber),
         status: { $nin: ['CANCELLED', 'REJECTED'] }
-      }).populate('studentId', 'fullName email phone');
+      }).populate('LEARNERId', 'fullName email phone');
 
       if (existingBooking) {
         // [MỚI] Nếu là emergency -> HUỶ booking và thông báo
@@ -856,7 +880,7 @@ export const toggleBusyAllDay = async (req, res) => {
           cancelledBookings.push(existingBooking);
           
           // Gửi email thông báo huỷ
-          await sendBookingCancelledNotification(instructor, existingBooking);
+          await sendBookingCancelledNotification(instructorForNotify, existingBooking);
         } else {
           // Không phải emergency -> bỏ qua
           continue;
@@ -916,6 +940,71 @@ export const toggleBusyAllDay = async (req, res) => {
 
   } catch (error) {
     console.error("🔥 Error toggleBusyAllDay:", error);
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// ==========================================
+// [MỚI] API lấy thống kê thời gian dạy theo tháng cho giáo viên
+// ==========================================
+export const getInstructorMonthlyStats = async (req, res) => {
+  try {
+    const instructorId = req.userId;
+    const currentMonth = getCurrentMonth();
+    
+    // Lấy ngày đầu tháng và cuối tháng
+    const [year, month] = currentMonth.split('-').map(Number);
+    const startOfMonth = new Date(year, month - 1, 1);
+    const endOfMonth = new Date(year, month, 0, 23, 59, 59, 999);
+    
+    // Lấy tất cả booking đã hoàn thành trong tháng
+    const completedBookings = await Booking.find({
+      instructorId,
+      status: 'COMPLETED',
+      date: { $gte: startOfMonth, $lte: endOfMonth }
+    }).lean();
+    
+    const totalSessionsThisMonth = completedBookings.length;
+    const totalHoursThisMonth = totalSessionsThisMonth; // Mỗi ca = 1 tiếng
+    
+    // Lấy lịch sử các tháng trước (12 tháng gần nhất)
+    const monthlyHistory = [];
+    const today = new Date();
+    
+    for (let i = 1; i <= 12; i++) {
+      const targetDate = new Date(today.getFullYear(), today.getMonth() - i, 1);
+      const histYear = targetDate.getFullYear();
+      const histMonth = targetDate.getMonth() + 1;
+      const histMonthStr = `${histYear}-${String(histMonth).padStart(2, '0')}`;
+      
+      const histStart = new Date(histYear, histMonth - 1, 1);
+      const histEnd = new Date(histYear, histMonth, 0, 23, 59, 59, 999);
+      
+      const histBookings = await Booking.find({
+        instructorId,
+        status: 'COMPLETED',
+        date: { $gte: histStart, $lte: histEnd }
+      }).lean();
+      
+      monthlyHistory.push({
+        month: histMonthStr,
+        sessions: histBookings.length,
+        hours: histBookings.length
+      });
+    }
+    
+    res.json({
+      status: 'success',
+      data: {
+        currentMonth,
+        totalHoursThisMonth,
+        totalSessionsThisMonth,
+        monthlyHistory: monthlyHistory.reverse() // Đảo ngược để hiển thị từ cũ đến mới
+      }
+    });
+    
+  } catch (error) {
+    console.error("🔥 Error getInstructorMonthlyStats:", error);
     res.status(500).json({ status: 'error', message: error.message });
   }
 };

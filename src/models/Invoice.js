@@ -17,7 +17,7 @@ const invoiceSchema = new mongoose.Schema({
     ref: 'Registration',
     required: true,
   },
-  studentId: {
+  LEARNERId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
@@ -41,7 +41,7 @@ const invoiceSchema = new mongoose.Schema({
 });
 
 invoiceSchema.index({ registrationId: 1 });
-invoiceSchema.index({ studentId: 1 });
+invoiceSchema.index({ LEARNERId: 1 });
 invoiceSchema.index({ issuedAt: -1 });
 
 const Invoice = mongoose.model('Invoice', invoiceSchema);

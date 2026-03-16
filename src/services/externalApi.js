@@ -12,7 +12,6 @@ export const getQuestionByNumber = async (number) => {
     const response = await axios.get(`${EXTERNAL_API_URL}?number=${number}`);
     return response.data;
   } catch (error) {
-    console.error(`Error fetching question ${number}:`, error.message);
     throw new Error(`Không thể lấy câu hỏi số ${number}`);
   }
 };
@@ -29,7 +28,6 @@ export const getQuestionsByCategory = async (category) => {
     const data = Array.isArray(response.data) ? response.data : [response.data];
     return data;
   } catch (error) {
-    console.error(`Error fetching questions by category ${category}:`, error.message);
     throw new Error(`Không thể lấy câu hỏi theo chủ đề ${category}`);
   }
 };
@@ -86,7 +84,6 @@ export const getRandomQuestions = async (count = 35, category = null) => {
       correctAnswerIndex: q.answers.findIndex(a => a.correct),
     }));
   } catch (error) {
-    console.error('Error fetching random questions:', error);
     throw error;
   }
 };
@@ -128,7 +125,6 @@ export const getQuestionWithAnswer = async (number) => {
       correctAnswerIndex: correctIndex,
     };
   } catch (error) {
-    console.error(`Error fetching question ${number} with answer:`, error);
     throw error;
   }
 };

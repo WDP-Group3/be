@@ -57,9 +57,13 @@ const courseSchema = new mongoose.Schema(
       enum: ["Active", "Inactive"],
       default: "Active",
     },
-    maxStudents: {
+    maxLEARNERs: {
       type: Number,
       default: 50, // Số lượng học viên tối đa của khoá học
+    },
+    requiredPracticeHours: {
+      type: Number,
+      default: 0, // Số giờ thực hành bắt buộc (0 = không giới hạn)
     },
   },
   {

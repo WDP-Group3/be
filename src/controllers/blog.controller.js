@@ -121,17 +121,29 @@ export const getBlogs = async (req, res) => {
 // ADMIN LẤY TẤT CẢ BLOG (kể cả ẩn)
 export const getAllBlogsAdmin = async (req, res) => {
     try {
+        const { page = 1, limit = 10 } = req.query;
+        const skip = (parseInt(page) - 1) * parseInt(limit);
 
-        const blogs = await Blog.find()
-            .sort({ createdAt: -1 });
+        const [blogs, total] = await Promise.all([
+            Blog.find().sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit)),
+            Blog.countDocuments()
+        ]);
 
         res.json({
-            total: blogs.length,
-            blogs
+            status: 'success',
+            total,
+            blogs,
+            pagination: {
+                total,
+                page: parseInt(page),
+                limit: parseInt(limit),
+                totalPages: Math.ceil(total / parseInt(limit))
+            }
         });
 
     } catch (error) {
         res.status(500).json({
+            status: 'error',
             message: "Lỗi lấy danh sách blog",
             error: error.message
         });

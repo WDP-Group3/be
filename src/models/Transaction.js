@@ -14,12 +14,16 @@ const transactionSchema = new mongoose.Schema({
     type: String,
     trim: true,
     required: true,
-    unique: true,
   },
   registrationId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Registration',
     default: null,
+  },
+  scheduleIndex: {
+    type: Number,
+    default: null,
+    min: 0,
   },
   user: {
     type: mongoose.Schema.Types.ObjectId,

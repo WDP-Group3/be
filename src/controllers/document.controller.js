@@ -1,13 +1,15 @@
 import Document from '../models/Document.js';
 import Registration from '../models/Registration.js';
+import User from '../models/User.js';
 
 const documentPopulate = [
-  { path: 'studentId', select: 'fullName phone email role status' },
+  { path: 'LEARNERId', select: 'fullName phone email role status' },
+  { path: 'consultantId', select: 'fullName phone email role avatar' },
   {
     path: 'registrationId',
-    select: 'studentId batchId status registerMethod createdAt',
+    select: 'LEARNERId batchId status registerMethod createdAt',
     populate: [
-      { path: 'studentId', select: 'fullName phone email role status' },
+      { path: 'LEARNERId', select: 'fullName phone email role status' },
       {
         path: 'batchId',
         select: 'location startDate status courseId',
@@ -20,7 +22,6 @@ const documentPopulate = [
 const isDocumentComplete = (document) => !!(
   document?.cccdNumber
   && document?.cccdImage
-  && document?.healthCertificate
   && document?.photo
 );
 
@@ -29,7 +30,20 @@ export const getDocumentsForReview = async (req, res) => {
     const { status = 'PENDING', registerMethod } = req.query;
 
     const filter = { isDeleted: { $ne: true } };
-    if (status) filter.status = status;
+    if (req.user?.role === 'ADMIN') {
+      filter.status = 'PENDING';
+    } else if (status) {
+      filter.status = status;
+    }
+
+    if (req.user?.role === 'CONSULTANT') {
+      const email = req.user?.email?.trim();
+      const escapedEmail = email ? email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
+      filter.$or = [
+        { consultantId: req.userId },
+        ...(email ? [{ consultantEmail: new RegExp(escapedEmail, 'i') }] : []),
+      ];
+    }
 
     const documents = await Document.find(filter)
       .populate(documentPopulate)
@@ -38,15 +52,62 @@ export const getDocumentsForReview = async (req, res) => {
     const filtered = documents.filter((doc) => {
       const method = doc?.registrationId?.registerMethod;
 
-      if (req.user?.role === 'CONSULTANT') return method === 'CONSULTANT';
+      if (req.user?.role === 'CONSULTANT') return true;
       if (req.user?.role === 'ADMIN' && registerMethod) return method === registerMethod;
       return true;
     });
 
-    res.json({ status: 'success', data: filtered, count: filtered.length });
+    // Helpful diagnostics for local troubleshooting
+    // (Only included in development responses)
+    let debug = undefined;
+    if (process.env.NODE_ENV !== 'production') {
+      const role = req.user?.role;
+      const email = req.user?.email;
+      const userId = req.userId;
+
+      let consultantIdMatches = undefined;
+      let consultantEmailMatches = undefined;
+      if (role === 'CONSULTANT') {
+        consultantIdMatches = await Document.countDocuments({ consultantId: userId, isDeleted: { $ne: true } });
+        consultantEmailMatches = email
+          ? await Document.countDocuments({ consultantEmail: new RegExp(email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), isDeleted: { $ne: true } })
+          : 0;
+      }
+
+      debug = {
+        role,
+        userId,
+        email,
+        appliedFilter: filter,
+        consultantIdMatches,
+        consultantEmailMatches,
+      };
+    }
+
+    res.json({ status: 'success', data: filtered, count: filtered.length, ...(debug ? { debug } : {}) });
   } catch (error) {
     console.error('Get documents for review error:', error);
     res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+export const lookupConsultantByEmail = async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) {
+      return res.status(400).json({ status: 'error', message: 'email là bắt buộc' });
+    }
+
+    const consultant = await User.findOne({ role: 'CONSULTANT', email: email.trim().toLowerCase() })
+      .select('fullName phone email role avatar');
+
+    if (!consultant) {
+      return res.status(404).json({ status: 'error', message: 'Không tìm thấy tư vấn viên' });
+    }
+
+    return res.json({ status: 'success', data: consultant });
+  } catch (error) {
+    return res.status(500).json({ status: 'error', message: error.message });
   }
 };
 
@@ -62,13 +123,22 @@ export const updateDocumentStatus = async (req, res) => {
 
     const document = await Document.findById(id).populate({
       path: 'registrationId',
-      select: 'registerMethod studentId batchId',
+      select: 'registerMethod LEARNERId batchId',
     });
 
     if (!document) return res.status(404).json({ status: 'error', message: 'Document not found' });
 
-    if (req.user?.role === 'CONSULTANT' && document.registrationId?.registerMethod !== 'CONSULTANT') {
-      return res.status(403).json({ status: 'error', message: 'Bạn không có quyền duyệt hồ sơ này' });
+    if (req.user?.role === 'ADMIN') {
+      return res.status(403).json({ status: 'error', message: 'Admin chỉ được xem hồ sơ, không có quyền duyệt' });
+    }
+
+    if (req.user?.role === 'CONSULTANT') {
+      const consultantIdMatch = document?.consultantId?.toString() === req.userId;
+      const consultantEmailMatch = document?.consultantEmail && req.user?.email
+        && document.consultantEmail.toLowerCase() === req.user.email.toLowerCase();
+      if (!consultantIdMatch && !consultantEmailMatch) {
+        return res.status(403).json({ status: 'error', message: 'Bạn không có quyền duyệt hồ sơ này' });
+      }
     }
 
     document.status = status;
@@ -84,11 +154,11 @@ export const updateDocumentStatus = async (req, res) => {
 
 export const getAllDocuments = async (req, res) => {
   try {
-    const { registrationId, status, studentId } = req.query;
+    const { registrationId, status, LEARNERId } = req.query;
     const filter = { isDeleted: { $ne: true } };
 
     if (registrationId) filter.registrationId = registrationId;
-    if (studentId) filter.studentId = studentId;
+    if (LEARNERId) filter.LEARNERId = LEARNERId;
     if (status) filter.status = status;
 
     const documents = await Document.find(filter).populate(documentPopulate).sort({ _id: -1 });
@@ -111,11 +181,11 @@ export const getDocumentById = async (req, res) => {
 
 export const getMyDocument = async (req, res) => {
   try {
-    const studentId = req.userId;
+    const LEARNERId = req.userId;
 
-    let document = await Document.findOne({ studentId, isDeleted: { $ne: true } }).populate(documentPopulate);
+    let document = await Document.findOne({ LEARNERId, isDeleted: { $ne: true } }).populate(documentPopulate);
     if (!document) {
-      document = await Document.create({ studentId, status: 'PENDING' });
+      document = await Document.create({ LEARNERId, status: 'PENDING' });
       document = await Document.findById(document._id).populate(documentPopulate);
     }
 
@@ -127,20 +197,20 @@ export const getMyDocument = async (req, res) => {
 
 export const uploadDocuments = async (req, res) => {
   try {
-    const { registrationId, cccdImage, healthCertificate, photo, cccdNumber } = req.body;
-    const studentId = req.userId;
+    const { registrationId, cccdImage, healthCertificate, photo, cccdNumber, consultantEmail } = req.body;
+    const LEARNERId = req.userId;
 
     let registration = null;
     if (registrationId) {
       registration = await Registration.findById(registrationId);
       if (!registration) return res.status(404).json({ status: 'error', message: 'Không tìm thấy hồ sơ đăng ký' });
-      if (registration.studentId.toString() !== studentId) {
+      if (registration.LEARNERId.toString() !== LEARNERId) {
         return res.status(403).json({ status: 'error', message: 'Bạn không có quyền upload hồ sơ này' });
       }
     }
 
-    let document = await Document.findOne({ studentId, isDeleted: { $ne: true } });
-    if (!document) document = new Document({ studentId, status: 'PENDING' });
+    let document = await Document.findOne({ LEARNERId, isDeleted: { $ne: true } });
+    if (!document) document = new Document({ LEARNERId, status: 'PENDING' });
 
     if (registration?._id) document.registrationId = registration._id;
     if (cccdImage) document.cccdImage = cccdImage;
@@ -148,7 +218,16 @@ export const uploadDocuments = async (req, res) => {
     if (photo) document.photo = photo;
     if (cccdNumber) document.cccdNumber = cccdNumber;
 
-    if (cccdImage || healthCertificate || photo || cccdNumber) document.status = 'PENDING';
+    if (consultantEmail) {
+      const consultant = await User.findOne({ role: 'CONSULTANT', email: consultantEmail.trim().toLowerCase() });
+      if (!consultant) {
+        return res.status(400).json({ status: 'error', message: 'Không tìm thấy tư vấn viên theo email đã nhập' });
+      }
+      document.consultantId = consultant._id;
+      document.consultantEmail = consultant.email;
+    }
+
+    if (cccdImage || healthCertificate || photo || cccdNumber || consultantEmail) document.status = 'PENDING';
 
     await document.save();
 
@@ -168,18 +247,18 @@ export const uploadDocuments = async (req, res) => {
 export const getDocumentsByRegistration = async (req, res) => {
   try {
     const { registrationId } = req.params;
-    const studentId = req.userId;
+    const LEARNERId = req.userId;
 
     const registration = await Registration.findById(registrationId);
     if (!registration) return res.status(404).json({ status: 'error', message: 'Không tìm thấy hồ sơ đăng ký' });
 
-    if (registration.studentId.toString() !== studentId && req.user?.role !== 'ADMIN' && req.user?.role !== 'CONSULTANT') {
+    if (registration.LEARNERId.toString() !== LEARNERId && req.user?.role !== 'ADMIN' && req.user?.role !== 'CONSULTANT') {
       return res.status(403).json({ status: 'error', message: 'Bạn không có quyền xem hồ sơ này' });
     }
 
-    let document = await Document.findOne({ studentId: registration.studentId, isDeleted: { $ne: true } }).populate(documentPopulate);
+    let document = await Document.findOne({ LEARNERId: registration.LEARNERId, isDeleted: { $ne: true } }).populate(documentPopulate);
     if (!document) {
-      document = await Document.create({ studentId: registration.studentId, registrationId, status: 'PENDING' });
+      document = await Document.create({ LEARNERId: registration.LEARNERId, registrationId, status: 'PENDING' });
       document = await Document.findById(document._id).populate(documentPopulate);
     }
 
@@ -200,7 +279,25 @@ export const softDeleteDocument = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const updated = await Document.findByIdAndUpdate(
+    if (req.user?.role === 'ADMIN') {
+      return res.status(403).json({ status: 'error', message: 'Admin không có quyền xóa ảo hồ sơ' });
+    }
+
+    const document = await Document.findById(id).select('consultantId consultantEmail');
+    if (!document) {
+      return res.status(404).json({ status: 'error', message: 'Document not found' });
+    }
+
+    if (req.user?.role === 'CONSULTANT') {
+      const consultantIdMatch = document?.consultantId?.toString() === req.userId;
+      const consultantEmailMatch = document?.consultantEmail && req.user?.email
+        && document.consultantEmail.toLowerCase() === req.user.email.toLowerCase();
+      if (!consultantIdMatch && !consultantEmailMatch) {
+        return res.status(403).json({ status: 'error', message: 'Bạn không có quyền xóa hồ sơ này' });
+      }
+    }
+
+    await Document.findByIdAndUpdate(
       id,
       {
         $set: {
@@ -210,10 +307,6 @@ export const softDeleteDocument = async (req, res) => {
       },
       { new: true, runValidators: false }
     );
-
-    if (!updated) {
-      return res.status(404).json({ status: 'error', message: 'Document not found' });
-    }
 
     return res.json({ status: 'success', message: 'Đã xóa ảo hồ sơ' });
   } catch (error) {
