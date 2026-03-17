@@ -122,7 +122,7 @@ export const createUser = async (req, res) => {
       email: email.toLowerCase(),
       phone: finalPhone,
       role,
-      password: finalPassword, // Nên hash password ở đây hoặc trong pre-save hook của Model
+      password: hashedPassword,
       status: 'ACTIVE',
       // Chỉ lưu workingLocation nếu role là INSTRUCTOR
       workingLocation: role === 'INSTRUCTOR' ? workingLocation : undefined
@@ -140,28 +140,49 @@ export const createUser = async (req, res) => {
   }
 };
 
-// 4. Update User (Admin) - Cập nhật để sửa workingLocation
+// 4. Update User (Admin) - Cập nhật để sửa email, password, role, name...
 export const updateUser = async (req, res) => {
   try {
     const { id } = req.params;
-    const { fullName, phone, address, gender, dateOfBirth, avatar, workingLocation, role } = req.body;
+    const { fullName, name, phone, address, gender, dateOfBirth, avatar, workingLocation, role, email, password } = req.body;
     
-    // Tạo object update data để kiểm soát những gì được sửa
-    const updateData = { fullName, phone, address, gender, dateOfBirth, avatar };
-
-    // Nếu có gửi role lên thì cập nhật role
-    if (role) updateData.role = role;
-
-    // Cập nhật workingLocation
-    if (workingLocation) {
-        updateData.workingLocation = workingLocation;
-    }
-
-    const user = await User.findByIdAndUpdate(id, updateData, { new: true });
-
+    // Tìm user trước để kiểm tra tồn tại
+    const user = await User.findById(id);
     if (!user) {
       return res.status(404).json({ status: 'error', message: 'User not found' });
     }
+
+    // Nếu cập nhật email, kiểm tra xem email mới có bị trùng không
+    if (email && email.toLowerCase() !== user.email.toLowerCase()) {
+      const existingEmail = await User.findOne({ email: email.toLowerCase() });
+      if (existingEmail) {
+        return res.status(400).json({ status: 'error', message: 'Email đã được sử dụng bởi tài khoản khác' });
+      }
+      user.email = email.toLowerCase();
+    }
+
+    // Cập nhật các trường thông tin cơ bản
+    if (fullName) user.fullName = fullName;
+    if (name) user.fullName = name; // Map từ 'name' của frontend sang 'fullName'
+    if (phone) user.phone = phone;
+    if (address) user.address = address;
+    if (gender) user.gender = gender;
+    if (dateOfBirth) user.dateOfBirth = dateOfBirth;
+    if (avatar) user.avatar = avatar;
+    if (role) user.role = role;
+    
+    // Cập nhật workingLocation nếu có
+    if (workingLocation) {
+      user.workingLocation = workingLocation;
+    }
+
+    // Nếu có đổi mật khẩu thì hash
+    if (password) {
+      const salt = await bcrypt.genSalt(10);
+      user.password = await bcrypt.hash(password, salt);
+    }
+
+    await user.save();
 
     res.json({
       status: 'success',
