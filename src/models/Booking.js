@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 
 const bookingSchema = new mongoose.Schema({
-  LEARNERId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  learnerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   instructorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   batchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Batch', required: true },
   date: { type: Date, required: true },
@@ -35,7 +35,7 @@ const bookingSchema = new mongoose.Schema({
 
   // --- PHẦN ĐÁNH GIÁ (UC26) ---
   rating: { type: Number, min: 1, max: 5 },
-  LEARNERFeedback: { type: String, trim: true },
+  learnerFeedback: { type: String, trim: true },
   feedbackDate: { type: Date }
 }, {
   timestamps: true,
@@ -43,7 +43,7 @@ const bookingSchema = new mongoose.Schema({
 
 // Thêm index cho type nếu bạn muốn lọc sau này
 bookingSchema.index({ type: 1 });
-bookingSchema.index({ LEARNERId: 1 });
+bookingSchema.index({ learnerId: 1 });
 bookingSchema.index({ instructorId: 1 });
 bookingSchema.index({ date: 1 });
 bookingSchema.index({ status: 1 });

@@ -9,8 +9,13 @@ const userSchema = new mongoose.Schema(
     },
     phone: {
       type: String,
-      required: true,
+      required: false,
       trim: true,
+      default: '',
+    },
+    googleId: {
+      type: String,
+      default: null,
     },
     email: {
       type: String,
@@ -26,7 +31,7 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ["ADMIN", "LEARNER", "INSTRUCTOR", "CONSULTANT", "SALES", "USER"],
+      enum: ["ADMIN", "learner", "INSTRUCTOR", "CONSULTANT", "SALES", "USER"],
       required: true,
     },
     status: {

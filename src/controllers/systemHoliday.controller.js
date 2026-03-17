@@ -3,8 +3,8 @@ import User from '../models/User.js';
 import { sendNotificationEmail } from '../services/email.service.js';
 
 // Helper: Gửi email thông báo lịch nghỉ
-// - Toàn hệ thống: gửi cho tất cả INSTRUCTOR + LEARNER + SALES
-// - Theo khu vực: gửi cho INSTRUCTOR (workingLocation) + LEARNER (registration batch location) + SALES của khu vực đó
+// - Toàn hệ thống: gửi cho tất cả INSTRUCTOR + learner + SALES
+// - Theo khu vực: gửi cho INSTRUCTOR (workingLocation) + learner (registration batch location) + SALES của khu vực đó
 const sendHolidayNotification = async (holiday, action = 'CREATE') => {
   try {
     const actionText = action === 'CREATE' ? 'tạo mới' : (action === 'UPDATE' ? 'cập nhật' : 'xóa');
@@ -43,10 +43,10 @@ Ban Quản lý Drive Center`;
     let targetUserIds = new Set();
 
     if (!holiday.location) {
-      // Toàn hệ thống: tất cả INSTRUCTOR + LEARNER + SALES
+      // Toàn hệ thống: tất cả INSTRUCTOR + learner + SALES
       const allUsers = await User.find({
         email: { $exists: true, $ne: '' },
-        role: { $in: ['INSTRUCTOR', 'LEARNER', 'SALES'] }
+        role: { $in: ['INSTRUCTOR', 'learner', 'SALES'] }
       }).select('_id');
       allUsers.forEach(u => targetUserIds.add(u._id.toString()));
     } else {
@@ -84,12 +84,12 @@ Ban Quản lý Drive Center`;
         areaName: { $regex: new RegExp(`^${holiday.location.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
       }).lean();
       
-      // Lấy LEARNER đăng ký các batch này
-      const LEARNERsInBatches = await Registration.find({
+      // Lấy learner đăng ký các batch này
+      const learnersInBatches = await Registration.find({
         batchId: { $in: batchIdsInLocation },
         status: { $in: ['NEW', 'PROCESSING', 'STUDYING'] }
-      }).distinct('LEARNERId');
-      LEARNERsInBatches.forEach(id => targetUserIds.add(id.toString()));
+      }).distinct('learnerId');
+      learnersInBatches.forEach(id => targetUserIds.add(id.toString()));
     }
 
     // Lấy thông tin email của các user
