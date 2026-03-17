@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 import { connectDB } from './config/db.js';
 import apiRoutes from './routes/index.js';
 import { initCloudinary, isCloudinaryConfigured, pingCloudinary } from './services/cloudinary.service.js';
-import { startFridayReminderCron, startAttendanceReminderCron } from './services/cron.job.js';
+import { startFridayReminderCron, startAttendanceReminderCron, sendInstructorBusyScheduleReminder } from './services/cron.job.js';
 import Booking from './models/Booking.js';
 import { sendNotificationEmail } from './services/email.service.js';
 
@@ -56,6 +56,26 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+// [TEST] Route gửi email nhắc nhở lịch bận cho giáo viên - gọi bằng trình duyệt
+const handleTestScheduleReminder = async (req, res) => {
+  try {
+    await sendInstructorBusyScheduleReminder('Thứ 6 (test)');
+    
+    res.json({
+      status: 'success',
+      message: '✅ Test email nhắc nhở lịch bận hoàn tất!'
+    });
+  } catch (error) {
+    console.error('❌ [TEST] Lỗi gửi email nhắc nhở lịch bận:', error);
+    res.status(500).json({
+      status: 'error',
+      message: error.message
+    });
+  }
+};
+app.get('/test-email-schedule-reminder', handleTestScheduleReminder);
+app.get('/test-email-schedule-remind', handleTestScheduleReminder); // Alias (thiếu "er")
 
 // [TEST] Route gửi email nhắc nhở điểm danh - gọi bằng trình duyệt
 app.get('/test-email-attendance', async (req, res) => {

@@ -2,22 +2,37 @@ import cron from 'node-cron';
 import Notification from '../models/Notification.js';
 import Booking from '../models/Booking.js';
 import User from '../models/User.js';
+import Schedule from '../models/Schedule.js';
 import { sendNotificationEmail } from './email.service.js';
 
 // [CRON JOB] Gửi thông báo nhắc nhở giáo viên đăng ký lịch bận
-// Chạy vào lúc 17:30 (5:30 chiều) thứ 6 hàng tuần
+// Chạy vào lúc 17:30 thứ 4 và thứ 6 hàng tuần
 export const startFridayReminderCron = () => {
-  console.log('📅 Cron job "Friday Reminder" đã được khởi động - Chạy lúc 17:30 thứ 6 hàng tuần');
+  console.log('📅 Cron job "Friday Reminder" đã được khởi động - Chạy lúc 17:30 thứ 4 và thứ 6 hàng tuần');
 
   // Cron expression: giây phút giờ ngày tháng thứ
+  // 30 17 * * 4 = 17:30 thứ 4 (Wednesday)
   // 30 17 * * 5 = 17:30 thứ 6 (Friday)
-  cron.schedule('30 17 * * 5', async () => {
-    console.log('🔔 [CRON] Đang gửi thông báo nhắc nhở giáo viên đăng ký lịch bận...');
+  
+  // Gửi nhắc vào thứ 4 (trước deadline 2 ngày)
+  cron.schedule('30 17 * * 4', async () => {
+    console.log('🔔 [CRON] Đang gửi thông báo nhắc nhở giáo viên đăng ký lịch bận (thứ 4)...');
     
     try {
-      await sendInstructorBusyScheduleReminder();
+      await sendInstructorBusyScheduleReminder('Thứ 4');
     } catch (error) {
-      console.error('❌ [CRON] Lỗi khi gửi thông báo nhắc nhở:', error);
+      console.error('❌ [CRON] Lỗi khi gửi thông báo nhắc nhở (thứ 4):', error);
+    }
+  });
+
+  // Gửi nhắc vào thứ 6 (ngày deadline)
+  cron.schedule('30 17 * * 5', async () => {
+    console.log('🔔 [CRON] Đang gửi thông báo nhắc nhở giáo viên đăng ký lịch bận (thứ 6 - deadline)...');
+    
+    try {
+      await sendInstructorBusyScheduleReminder('Thứ 6');
+    } catch (error) {
+      console.error('❌ [CRON] Lỗi khi gửi thông báo nhắc nhở (thứ 6):', error);
     }
   });
 };
@@ -191,7 +206,17 @@ const sendAttendanceReminderEmail = async (booking) => {
 };
 
 // Hàm gửi thông báo nhắc nhở giáo viên đăng ký lịch bận
-const sendInstructorBusyScheduleReminder = async () => {
+// dayOfWeek: 'Thứ 4' hoặc 'Thứ 6' để tùy biến nội dung
+export const sendInstructorBusyScheduleReminder = async (dayOfWeek = 'Thứ 6') => {
+  // Tính ngày bắt đầu và kết thúc của tuần sau
+  const now = new Date();
+  const nextWeekMonday = new Date(now);
+  nextWeekMonday.setDate(now.getDate() + (7 - now.getDay() + 1)); // Thứ 2 tuần sau
+  nextWeekMonday.setHours(0, 0, 0, 0);
+  
+  const nextWeekSunday = new Date(nextWeekMonday);
+  nextWeekSunday.setDate(nextWeekMonday.getDate() + 6); // Chủ nhật tuần sau
+  
   // Tìm tất cả giáo viên (INSTRUCTOR)
   const instructors = await User.find({ role: 'INSTRUCTOR' });
   
@@ -200,8 +225,33 @@ const sendInstructorBusyScheduleReminder = async () => {
     return;
   }
 
+  // Lọc chỉ giáo viên CHƯA có lịch bận tuần sau
+  const instructorsWithoutSchedule = [];
+  
+  for (const instructor of instructors) {
+    // Kiểm tra xem giáo viên đã có lịch bận tuần sau chưa
+    const existingSchedule = await Schedule.findOne({
+      instructorId: instructor._id,
+      date: {
+        $gte: nextWeekMonday,
+        $lte: nextWeekSunday
+      },
+      isBusy: true
+    });
+    
+    if (!existingSchedule) {
+      instructorsWithoutSchedule.push(instructor);
+    }
+  }
+  
+  if (instructorsWithoutSchedule.length === 0) {
+    console.log('⚠️ [CRON] Tất cả giáo viên đã có lịch bận tuần sau, không cần gửi thông báo');
+    return;
+  }
+  
+  console.log(`📧 [CRON] Tìm thấy ${instructorsWithoutSchedule.length}/${instructors.length} giáo viên chưa có lịch bận tuần sau`);
+
   // Tính deadline (18:00 thứ 6)
-  const now = new Date();
   const friday = new Date(now);
   const currentDay = now.getDay();
   const diffToFriday = 5 - currentDay;
@@ -216,10 +266,14 @@ const sendInstructorBusyScheduleReminder = async () => {
     minute: '2-digit'
   });
 
-  const notificationTitle = '⏰ Nhắc nhở: Đăng ký lịch bận tuần sau';
-  const notificationMessage = `Kính gửi Quý Thầy/Cô,
+  // Tùy biến nội dung theo ngày gửi
+  let notificationTitle, notificationMessage;
+  
+  if (dayOfWeek === 'Thứ 4') {
+    notificationTitle = '⏰ Nhắc nhở: Đăng ký lịch bận tuần sau';
+    notificationMessage = `Kính gửi Quý Thầy/Cô,
 
-Để chuẩn bị tốt cho tuần học tới, xin vui lòng đăng ký lịch bận (nếu có) trước ${deadlineStr}.
+Tuần học mới sắp bắt đầu! Để chuẩn bị tốt, xin vui lòng đăng ký lịch bận (nếu có) TRƯỚC ${deadlineStr} (18:00 thứ 6).
 
 Sau thời gian này, hệ thống sẽ tự động mở lịch trống để học viên đăng ký.
 
@@ -228,9 +282,25 @@ Vui lòng đăng nhập vào hệ thống để đăng ký lịch bận.
 Truy cập hệ thống: https://drivecenter.com/portal/instructor-schedule
 
 Trân trọng!`;
+  } else {
+    notificationTitle = '⏰ NHẮC GẤP: Deadline đăng ký lịch bận - 18:00 hôm nay!';
+    notificationMessage = `Kính gửi Quý Thầy/Cô,
+
+Hôm nay là ${dayOfWeek} - DEADLINE đăng ký lịch bận cho tuần sau!
+
+Vui lòng đăng ký lịch bận (nếu có) TRƯỚC 18:00 HÔM NAY.
+
+Sau thời gian này, hệ thống sẽ tự động mở lịch trống để học viên đăng ký.
+
+Vui lòng đăng nhập vào hệ thống để đăng ký lịch bận NGAY.
+
+Truy cập hệ thống: https://drivecenter.com/portal/instructor-schedule
+
+Trân trọng!`;
+  }
 
   // Tạo notification cho từng giáo viên và gửi email riêng
-  for (const instructor of instructors) {
+  for (const instructor of instructorsWithoutSchedule) {
     // Tạo notification
     try {
       const notification = new Notification({
@@ -259,7 +329,7 @@ Trân trọng!`;
     }
   }
 
-  console.log(`🔔 [CRON] Hoàn tất gửi thông báo cho ${instructors.length} giáo viên`);
+  console.log(`🔔 [CRON] Hoàn tất gửi thông báo cho ${instructorsWithoutSchedule.length} giáo viên`);
 };
 
 export default { startFridayReminderCron, startAttendanceReminderCron };
