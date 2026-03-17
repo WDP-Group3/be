@@ -34,7 +34,7 @@ router.post('/', createUser);
 // Các route có tham số :id phải đặt dưới cùng
 
 router.get('/:id', getUserById);
-router.put('/:id', updateUser);
+router.patch('/:id', updateUser);
 router.patch('/:id/deactivate', deactivateUser);
 router.patch('/:id/restore', restoreUser);
 router.patch('/:id/change-role', changeUserRole);
