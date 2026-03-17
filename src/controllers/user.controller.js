@@ -40,7 +40,11 @@ export const getUserStats = async (req, res) => {
 // Lấy tất cả users
 export const getAllUsers = async (req, res) => {
   try {
-    const { role, status, search, page = 1, limit = 10 } = req.query;
+    const { role, status, search, page = 1, limit: limitQuery } = req.query;
+    // Khi chỉ lấy INSTRUCTOR (dropdown địa điểm học, v.v.) cần đủ danh sách, không phân trang nhỏ
+    const defaultLimit = role === 'INSTRUCTOR' && !limitQuery ? 500 : 10;
+    const limit = limitQuery ? parseInt(limitQuery, 10) : defaultLimit;
+    const pageNum = parseInt(page, 10) || 1;
     const filter = {};
 
     if (role) filter.role = role;
@@ -55,21 +59,21 @@ export const getAllUsers = async (req, res) => {
       ];
     }
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const skip = (pageNum - 1) * limit;
 
     const [users, total] = await Promise.all([
-      User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit)),
+      User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
       User.countDocuments(filter)
     ]);
-    
+
     res.json({
       status: 'success',
       data: formatUserResponse(users),
       pagination: {
         total,
-        page: parseInt(page),
-        limit: parseInt(limit),
-        totalPages: Math.ceil(total / parseInt(limit))
+        page: pageNum,
+        limit,
+        totalPages: Math.ceil(total / limit)
       }
     });
   } catch (error) {
