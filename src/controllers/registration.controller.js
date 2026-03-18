@@ -5,6 +5,8 @@ import Batch from '../models/Batch.js';
 import Course from '../models/Course.js';
 import User from '../models/User.js';
 import Booking from '../models/Booking.js';
+import Payment from '../models/Payment.js';
+import Leads from '../models/Leads.js';
 
 const buildFeePlanSnapshot = (course, paymentPlanType = 'INSTALLMENT') => {
   const feePayments = Array.isArray(course?.feePayments) ? course.feePayments : [];
@@ -543,6 +545,206 @@ export const updateOfflinePayment = async (req, res) => {
     });
   } catch (error) {
     console.error('Error updateOfflinePayment:', error);
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// ==========================================
+// [MỚI] API lấy danh sách đợt nộp học phí của học viên
+// ADMIN: xem tất cả | CONSULTANT: chỉ xem HV được gán qua Leads
+// ==========================================
+export const getFeeSubmissions = async (req, res) => {
+  try {
+    const userId = req.userId;
+    const user = await User.findById(userId).select('role');
+    if (!user || !['ADMIN', 'CONSULTANT'].includes(user.role)) {
+      return res.status(403).json({ status: 'error', message: 'Forbidden' });
+    }
+
+    const {
+      page: qPage = 1,
+      limit: qLimit = 10,
+      search = '',
+      courseId = '',
+      paymentStatus = '',
+      dateFrom = '',
+      dateTo = '',
+    } = req.query;
+
+    const page = parseInt(qPage);
+    const limit = parseInt(qLimit);
+    const skip = (page - 1) * limit;
+
+    // Xây dựng filter registration
+    const regFilter = {};
+
+    // Phân quyền: CONSULTANT chỉ thấy HV của mình
+    if (user.role === 'CONSULTANT') {
+      const myLeads = await Leads.find({ assignTo: userId }).select('phone');
+      const phones = myLeads.map(l => l.phone).filter(Boolean);
+      if (phones.length === 0) {
+        return res.json({
+          status: 'success',
+          data: { items: [], totalFee: 0, paidAmount: 0, remaining: 0 },
+          pagination: { total: 0, page, limit, totalPages: 0 },
+        });
+      }
+      // Tìm learner theo phone
+      const myLearners = await User.find({ phone: { $in: phones }, role: 'learner' }).select('_id');
+      const learnerIds = myLearners.map(u => u._id);
+      regFilter.learnerId = { $in: learnerIds };
+    }
+
+    if (courseId) regFilter.courseId = courseId;
+
+    // Search theo tên / phone học viên hoặc tên khoá học
+    if (search) {
+      const matchUsers = await User.find({
+        $or: [
+          { fullName: { $regex: search, $options: 'i' } },
+          { phone: { $regex: search, $options: 'i' } },
+          { email: { $regex: search, $options: 'i' } },
+        ],
+      }).select('_id');
+      const userIds = matchUsers.map(u => u._id);
+
+      const matchCourses = await Course.find({
+        $or: [
+          { name: { $regex: search, $options: 'i' } },
+          { code: { $regex: search, $options: 'i' } },
+        ],
+      }).select('_id');
+      const courseIds = matchCourses.map(c => c._id);
+
+      const searchCondition = [
+        { learnerId: { $in: userIds } },
+        { courseId: { $in: courseIds } },
+      ];
+
+      regFilter.$and = regFilter.$and || [];
+      regFilter.$and.push({ $or: searchCondition });
+    }
+
+    // Date filter by createdAt
+    if (dateFrom || dateTo) {
+      regFilter.createdAt = {};
+      if (dateFrom) regFilter.createdAt.$gte = new Date(dateFrom);
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setHours(23, 59, 59, 999);
+        regFilter.createdAt.$lte = end;
+      }
+    }
+
+    const allRegistrations = await Registration.find(regFilter)
+      .populate('learnerId', 'fullName phone email avatar')
+      .populate({
+        path: 'batchId',
+        populate: { path: 'courseId', model: Course, select: 'code name estimatedCost feePayments' },
+      })
+      .populate('courseId', 'code name estimatedCost feePayments')
+      .select('+firstPaymentDate')
+      .sort({ createdAt: -1 });
+
+    const regIds = allRegistrations.map(r => r._id);
+    const allPayments = await Payment.find({ registrationId: { $in: regIds } }).sort({ paidAt: 1 });
+
+    // Map payments by registrationId
+    const paymentsByRegId = {};
+    for (const p of allPayments) {
+      const key = String(p.registrationId);
+      if (!paymentsByRegId[key]) paymentsByRegId[key] = [];
+      paymentsByRegId[key].push(p);
+    }
+
+    // Build items
+    let items = allRegistrations.map(registration => {
+      const course = registration.batchId?.courseId || registration.courseId;
+      const batch = registration.batchId;
+      const feePlan = Array.isArray(registration.feePlanSnapshot) && registration.feePlanSnapshot.length > 0
+        ? registration.feePlanSnapshot
+        : (Array.isArray(course?.feePayments) ? course.feePayments : []);
+
+      const totalFee = feePlan.reduce((s, i) => s + (Number(i.amount) || 0), 0)
+        || Number(course?.estimatedCost) || 0;
+
+      const regPayments = paymentsByRegId[String(registration._id)] || [];
+      const paidAmount = regPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      const remaining = Math.max(totalFee - paidAmount, 0);
+
+      let accumulated = 0;
+      let nextSchedule = null;
+      for (const item of feePlan) {
+        accumulated += Number(item.amount) || 0;
+        if (paidAmount < accumulated) { nextSchedule = item; break; }
+      }
+
+      const dueDate = nextSchedule?.dueDate || null;
+      const isOverdue = remaining > 0 && !!dueDate && new Date(dueDate) < new Date();
+
+      // Tính trạng thái thanh toán
+      let status = 'unpaid';
+      if (paidAmount >= totalFee && totalFee > 0) status = 'paid';
+      else if (paidAmount > 0) status = 'partial';
+      if (isOverdue) status = 'overdue';
+
+      return {
+        registrationId: registration._id,
+        learnerId: registration.learnerId?._id || registration.learnerId,
+        learnerName: registration.learnerId?.fullName || '—',
+        learnerPhone: registration.learnerId?.phone || '—',
+        learnerEmail: registration.learnerId?.email || '—',
+        learnerAvatar: registration.learnerId?.avatar || null,
+        courseId: course?._id || null,
+        courseCode: course?.code || 'N/A',
+        courseName: course?.name || 'Khóa học',
+        batchId: batch?._id || null,
+        batchStartDate: batch?.startDate || null,
+        batchEndDate: batch?.estimatedEndDate || null,
+        registrationStatus: registration.status,
+        paymentPlanType: registration.paymentPlanType,
+        totalFee,
+        paidAmount,
+        remaining,
+        dueDate,
+        isOverdue,
+        paymentStatus: status,
+        feePlanSnapshot: feePlan,
+        payments: regPayments.map(p => ({
+          _id: p._id,
+          amount: p.amount,
+          method: p.method,
+          receivedBy: p.receivedBy,
+          paidAt: p.paidAt,
+          note: p.note,
+        })),
+        createdAt: registration.createdAt,
+      };
+    });
+
+    // Filter by paymentStatus
+    if (paymentStatus) {
+      items = items.filter(i => i.paymentStatus === paymentStatus);
+    }
+
+    const total = items.length;
+    const summary = items.reduce(
+      (acc, i) => { acc.totalFee += i.totalFee; acc.paidAmount += i.paidAmount; acc.remaining += i.remaining; return acc; },
+      { totalFee: 0, paidAmount: 0, remaining: 0 },
+    );
+
+    const paginatedItems = items.slice(skip, skip + limit);
+
+    return res.json({
+      status: 'success',
+      data: {
+        items: paginatedItems,
+        ...summary,
+      },
+      pagination: { total, page, limit, totalPages: Math.ceil(total / limit) },
+    });
+  } catch (error) {
+    console.error('Error getFeeSubmissions:', error);
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
