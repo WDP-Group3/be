@@ -33,7 +33,7 @@ export const getAll = async (req, res) => {
 // Lấy danh sách đơn giản cho dropdown
 export const getAllSimple = async (req, res) => {
   try {
-    const list = await ExamLocation.find().select('name address _id').sort({ name: 1 }).lean();
+    const list = await ExamLocation.find().select('name address googleMapUrl _id').sort({ name: 1 }).lean();
     res.json({ status: 'success', data: list });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
