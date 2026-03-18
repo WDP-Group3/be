@@ -731,9 +731,10 @@ export const getAllFeedbacks = async (req, res) => {
     const skip = (page - 1) * limit;
 
     const feedbacks = await Booking.find(filter)
-      .select('rating learnerFeedback feedbackDate date timeSlot')
+      .select('rating learnerFeedback feedbackDate date timeSlot learnerId instructorId batchId')
       .populate('learnerId', 'fullName email phone')
-      .populate('instructorId', 'fullName email')
+      .populate('instructorId', 'fullName email phone avatar')
+      .populate({ path: 'batchId', select: 'name location startDate', populate: { path: 'courseId', select: 'name code' } })
       .sort({ feedbackDate: -1 })
       .skip(skip)
       .limit(limit);

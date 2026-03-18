@@ -73,6 +73,11 @@ const userSchema = new mongoose.Schema(
       type: String, // Format: "2026-03"
       default: null
     },
+    // Số lần báo bận khẩn cấp vượt quá 2 lần/tháng (lần 3, 4, ...) - lưu để báo cáo/nghỉ không lương
+    emergencyLeaveOverflowCount: {
+      type: Number,
+      default: 0
+    },
 
     // Thông tin hồ sơ cá nhân
     address: {
