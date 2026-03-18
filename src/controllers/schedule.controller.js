@@ -2,19 +2,33 @@ import Schedule from '../models/Schedule.js';
 import Booking from '../models/Booking.js';
 import User from '../models/User.js';
 import SystemHoliday from '../models/SystemHoliday.js';
+import Request from '../models/Request.js';
 import { sendNotificationEmail } from '../services/email.service.js';
 
-// [HELPER] Kiểm tra ngày có trong lịch nghỉ không (định nghĩa trực tiếp để tránh circular dependency)
-const checkIsHoliday = async (date) => {
+// [HELPER] Kiểm tra ngày có trong lịch nghỉ không - CHỈ áp dụng nếu nghỉ toàn hệ thống HOẶC trùng khu vực GV
+// instructorLocation: khu vực dạy của GV (vd: Trung Giã). Nếu holiday.location = Thanh Xuân thì GV Trung Giã KHÔNG bị chặn.
+const checkIsHoliday = async (date, instructorLocation = null) => {
   const targetDate = new Date(date);
   targetDate.setHours(0, 0, 0, 0);
 
-  const holiday = await SystemHoliday.findOne({
+  // Chỉ lấy lịch nghỉ áp dụng cho GV: toàn hệ thống (location null) HOẶC đúng khu vực GV
+  const baseFilter = {
     startDate: { $lte: targetDate },
     endDate: { $gte: targetDate },
     isActive: true
-  });
-
+  };
+  if (instructorLocation && String(instructorLocation).trim()) {
+    const locRegex = new RegExp(`^${String(instructorLocation).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+    const holiday = await SystemHoliday.findOne({
+      ...baseFilter,
+      $or: [
+        { location: null },
+        { location: { $regex: locRegex } }
+      ]
+    });
+    return holiday;
+  }
+  const holiday = await SystemHoliday.findOne({ ...baseFilter, location: null });
   return holiday;
 };
 
@@ -320,11 +334,13 @@ export const getEmergencyLeaveInfo = async (req, res) => {
 };
 
 // [HELPER] Kiểm tra hạn chót Thứ 6 (18:00) cho việc đăng ký tuần sau
-// Logic mới:
-// - Tuần hiện tại (Thứ 2 -> Chủ nhật): Chỉ cho phép báo bận cả ngày (emergency)
-// - Tuần sau (Thứ 2 -> Chủ nhật):
-//   - Trước 18h Thứ 6 tuần này: Bình thường (theo ca hoặc cả ngày)
-//   - Sau 18h Thứ 6 tuần này: Emergency (chỉ cả ngày)
+// QUY TẮC MỚI:
+// 1. Báo bận TRONG tuần hiện tại → KHẨN CẤP
+// 2. Báo bận cho tuần sau:
+//    - Nếu hôm nay là Thứ 7 hoặc CN → KHẨN CẤP (vì đã qua deadline)
+//    - Nếu hôm nay là Thứ 2-5 và trước 18h Thứ 6 → BÌNH THƯỜNG
+//    - Nếu hôm nay là Thứ 6 sau 18h hoặc Thứ 7-CN → KHẨN CẤP
+// 3. Ngày báo bận là Thứ 7 hoặc CN → KHẨN CẤP
 const checkInstructorDeadline = (targetDateStr) => {
   const now = new Date();
   const targetDate = new Date(targetDateStr);
@@ -347,19 +363,27 @@ const checkInstructorDeadline = (targetDateStr) => {
   fridayOfThisWeek.setDate(fridayOfThisWeek.getDate() + 4); // Thứ 2 + 4 = Thứ 6
   fridayOfThisWeek.setHours(18, 0, 0, 0); // 18:00:00
   
-  console.log(`[DEADLINE CHECK] Target: ${targetDate.toDateString()}`);
+  // Lấy thứ hiện tại (0 = Chủ nhật, 6 = Thứ 7)
+  const dayOfWeek = now.getDay();
+  const isWeekendNow = dayOfWeek === 0 || dayOfWeek === 6;
+  
+  // Thứ của ngày target (0 = CN, 6 = Thứ 7)
+  const targetDayOfWeek = targetDate.getDay();
+  const isTargetWeekend = targetDayOfWeek === 0 || targetDayOfWeek === 6;
+  
+  console.log(`[DEADLINE CHECK] Target: ${targetDate.toDateString()}, Day: ${targetDayOfWeek}, isTargetWeekend: ${isTargetWeekend}`);
   console.log(`[DEADLINE CHECK] This week: ${thisWeekMonday.toDateString()} - ${thisWeekSunday.toDateString()}`);
   console.log(`[DEADLINE CHECK] Next week: ${nextWeekMonday.toDateString()} - ${nextWeekSunday.toDateString()}`);
   console.log(`[DEADLINE CHECK] Friday deadline: ${fridayOfThisWeek.toDateString()}`);
-  console.log(`[DEADLINE CHECK] Now: ${now.toDateString()}, Is before deadline: ${now < fridayOfThisWeek}`);
+  console.log(`[DEADLINE CHECK] Now: ${now.toDateString()}, DayOfWeek: ${dayOfWeek}, isWeekendNow: ${isWeekendNow}`);
+  console.log(`[DEADLINE CHECK] Is now < deadline: ${now < fridayOfThisWeek}`);
   
   // Xác định targetDate thuộc tuần nào
   const isThisWeek = targetDate >= thisWeekMonday && targetDate <= thisWeekSunday;
   const isNextWeek = targetDate >= nextWeekMonday && targetDate <= nextWeekSunday;
   
-  // Trường hợp 1: Tuần HIỆN TẠI -> Chỉ cho phép báo bận cả ngày (emergency)
+  // Trường hợp 1: Tuần HIỆN TẠI → KHẨN CẤP (emergency)
   if (isThisWeek) {
-    // Check xem ngày đó đã qua chưa
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     
@@ -384,23 +408,38 @@ const checkInstructorDeadline = (targetDateStr) => {
   
   // Trường hợp 2: Tuần SAU hoặc xa hơn
   if (isNextWeek || targetDate > thisWeekSunday) {
-    // Nếu là tuần sau (hoặc xa hơn) và TRƯỚC deadline 18h Thứ 6
-    if (now < fridayOfThisWeek) {
+    // Kiểm tra: Ngày báo bận là Thứ 7 hoặc CN -> KHÔNG CHO PHÉP
+    if (isTargetWeekend) {
+      return { 
+        allowed: false, 
+        isEmergency: false,
+        weekType: 'next',
+        message: 'Không thể báo bận vào ngày cuối tuần. Vui lòng chọn ngày trong tuần.',
+        reason: 'weekend_not_allowed'
+      };
+    }
+    
+    // Kiểm tra các điều kiện KHẨN CẤP:
+    // 1. Hôm nay là cuối tuần (Thứ 7 hoặc CN) → KHẨN CẤP
+    // 2. Đã quá deadline 18h Thứ 6 → KHẨN CẨP
+    const isAfterDeadline = now >= fridayOfThisWeek;
+    
+    if (isWeekendNow || isAfterDeadline) {
+      return { 
+        allowed: true, 
+        isEmergency: true,
+        weekType: 'next',
+        message: 'Đã quá hạn 18h Thứ 6 hoặc cuối tuần. Chỉ có thể báo bận khẩn cấp (cả ngày).',
+        reason: 'after_deadline_or_weekend'
+      };
+    } else {
+      // TRƯỚC deadline (Thứ 2-5 trước 18h Thứ 6) → BÌNH THƯỜNG
       return { 
         allowed: true, 
         isEmergency: false,
         weekType: 'next',
         message: 'Báo bận bình thường. Bạn có thể báo theo ca hoặc cả ngày.',
         reason: 'normal_before_deadline'
-      };
-    } else {
-      // Sau deadline 18h Thứ 6 -> Chỉ cho phép báo bận cả ngày (emergency)
-      return { 
-        allowed: true, 
-        isEmergency: true,
-        weekType: 'next',
-        message: 'Đã quá hạn 18h Thứ 6. Chỉ có thể báo bận khẩn cấp (cả ngày).',
-        reason: 'after_deadline_requires_all_day'
       };
     }
   }
@@ -485,13 +524,14 @@ export const toggleBusy = async (req, res) => {
     }
 
     // 2. Nếu là emergency -> kiểm tra giới hạn 2 lần/tháng
+    // Nếu đã hết quota hoặc vượt quota -> vẫn cho phép nhưng cần admin duyệt
+    let requiresAdminApproval = false;
     if (isEmergency) {
       const limitCheck = await checkEmergencyLeaveLimit(instructorId);
-      if (!limitCheck.canEmergency) {
-        return res.status(400).json({ 
-          status: 'error', 
-          message: `Bạn đã sử dụng hết 2 lần báo bận khẩn cấp trong tháng này. Vui liên hệ admin để được hỗ trợ.` 
-        });
+      
+      // Nếu đã hết quota (>=2) -> cần admin duyệt
+      if (limitCheck.count >= 2) {
+        requiresAdminApproval = true;
       }
     }
 
@@ -511,16 +551,45 @@ export const toggleBusy = async (req, res) => {
       status: { $nin: ['CANCELLED', 'REJECTED'] }
     }).populate('learnerId', 'fullName email phone');
 
-    // [MỚI] Nếu có booking và là emergency -> huỷ booking
-    if (existingBooking && isEmergency) {
-      // Cập nhật trạng thái booking thành CANCELLED
-      existingBooking.status = 'CANCELLED';
-      existingBooking.instructorNote = 'Huỷ do giáo viên báo bận khẩn cấp';
-      await existingBooking.save();
+    // [MỚI] Nếu là emergency -> luôn cần admin duyệt (không tự động huỷ booking)
+    // Tạo request cho admin
+    if (isEmergency) {
+      const instructorInfo = await User.findById(instructorId).select('fullName email workingLocation');
       
-      // Gửi email thông báo huỷ
-      const instructorForNotify = await User.findById(instructorId);
-      await sendBookingCancelledNotification(instructorForNotify, existingBooking);
+      // Lấy thông tin booking nếu có
+      const bookingInfo = existingBooking ? {
+        learnerName: existingBooking.learnerId?.fullName,
+        learnerPhone: existingBooking.learnerId?.phone,
+        learnerEmail: existingBooking.learnerId?.email
+      } : null;
+
+      // Tạo request cho admin duyệt
+      const request = await Request.create({
+        user: instructorId,
+        type: 'INSTRUCTOR_BUSY',
+        reason: `Giáo viên ${instructorInfo.fullName} báo bận khẩn cấp ngày ${inputDate.toLocaleDateString('vi-VN')} ca ${timeSlot}. ${existingBooking ? 'Có học viên đặt lịch.' : 'Không có học viên đặt lịch.'}`,
+        metadata: {
+          date: inputDate,
+          timeSlot: slotNumber,
+          isEmergency: true,
+          requiresAdminApproval: true,
+          instructorName: instructorInfo.fullName,
+          instructorEmail: instructorInfo.email,
+          instructorLocation: instructorInfo.workingLocation,
+          bookingInfo: bookingInfo,
+          action: 'CANCEL_BOOKING' // Admin duyệt sẽ huỷ booking
+        }
+      });
+
+      const limitCheck = await checkEmergencyLeaveLimit(instructorId);
+
+      return res.status(200).json({
+        status: 'pending_approval',
+        message: 'Yêu cầu báo bận khẩn cấp đã được gửi cho admin duyệt. Bạn sẽ được thông báo khi có quyết định.',
+        requestId: request._id,
+        remainingEmergency: limitCheck.remaining,
+        requiresApproval: true
+      });
     }
 
     // 5. Tìm lịch bận (Schedule) trong CẢ NGÀY hôm đó
@@ -541,7 +610,7 @@ export const toggleBusy = async (req, res) => {
         isEmergency: existingSchedule.isEmergency || false
       });
     } else {
-      // Nếu KHÔNG THẤY -> TẠO MỚI
+      // Nếu KHÔNG THẤY -> TẠO MỚI (chỉ khi không phải emergency - emergency đã return ở trên)
       
       // Lấy thông tin giáo viên
       const instructor = await User.findById(instructorId);
@@ -552,41 +621,24 @@ export const toggleBusy = async (req, res) => {
         date: startOfDay,
         timeSlot: slotNumber,
         type: 'BUSY',
-        isEmergency: isEmergency, // Đánh dấu nếu là emergency
-        note: isEmergency ? 'Báo bận khẩn cấp (vượt deadline)' : 'Giảng viên báo bận'
+        isEmergency: isEmergency,
+        note: 'Giảng viên báo bận'
       });
 
-      // Nếu là emergency -> tăng counter và gửi email (nếu có booking thì đã huỷ ở trên)
-      if (isEmergency) {
-        await incrementEmergencyLeave(instructorId);
-        
-        // Thông báo cho GV về tình trạng huỷ booking
-        if (existingBooking) {
-          console.log(`✅ [SCHEDULE] Đã huỷ booking và gửi email do báo bận khẩn cấp`);
-        }
-      } else {
-        // Nếu không phải emergency nhưng vẫn có booking -> thông báo cho GV biết
-        if (existingBooking) {
-          console.log(`⚠️ [SCHEDULE] GV báo bận (không phải emergency) trùng với booking của HV: ${existingBooking.learnerId?.fullName}`);
-        }
-      }
-
-      // [MỚI] Tạo message thông báo
-      let message = isEmergency 
-        ? 'Đã báo bận khẩn cấp thành công! Lưu ý: Bạn đã sử dụng 1 lần báo bận khẩn cấp tháng này.' 
-        : 'Đã báo bận thành công';
-      
-      if (existingBooking && isEmergency) {
-        message += ' Đã huỷ lịch học của học viên và gửi email thông báo.';
+      // Nếu không phải emergency nhưng vẫn có booking -> thông báo cho GV biết
+      if (existingBooking) {
+        console.log(`⚠️ [SCHEDULE] GV báo bận (không phải emergency) trùng với booking của HV: ${existingBooking.learnerId?.fullName}`);
       }
 
       return res.json({ 
         status: 'success', 
-        message: message,
+        message: 'Đã báo bận thành công',
         action: 'added',
-        isEmergency: isEmergency,
-        cancelledBooking: existingBooking ? !!isEmergency : false,
-        remainingEmergency: isEmergency ? (await checkEmergencyLeaveLimit(instructorId)).remaining : null
+        isEmergency: false,
+        existingBooking: existingBooking ? {
+          learnerName: existingBooking.learnerId?.fullName,
+          message: 'Có học viên đặt lịch vào ca này'
+        } : null
       });
     }
 
@@ -839,14 +891,15 @@ export const toggleBusyAllDay = async (req, res) => {
     
     const isEmergency = deadlineCheck.isEmergency;
 
-    // Nếu là emergency -> kiểm tra giới hạn 2 lần/tháng
+    // Nếu là emergency -> kiểm tra giới hạn
+    // Nếu đã hết quota hoặc vượt quota -> vẫn cho phép nhưng cần admin duyệt
+    let requiresAdminApproval = false;
     if (isEmergency) {
       const limitCheck = await checkEmergencyLeaveLimit(instructorId);
-      if (!limitCheck.canEmergency) {
-        return res.status(400).json({ 
-          status: 'error', 
-          message: `Bạn đã sử dụng hết 2 lần báo bận khẩn cấp trong tháng này. Vui liên hệ admin để được hỗ trợ.` 
-        });
+      
+      // Nếu đã hết quota (>=2) -> cần admin duyệt
+      if (limitCheck.count >= 2) {
+        requiresAdminApproval = true;
       }
     }
 
@@ -855,13 +908,12 @@ export const toggleBusyAllDay = async (req, res) => {
     const endOfDay = new Date(inputDate);
     endOfDay.setHours(23, 59, 59, 999);
 
-    const instructorForNotify = await User.findById(instructorId);
+    const instructorInfo = await User.findById(instructorId).select('fullName email workingLocation');
     const allSlots = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    let successCount = 0;
-    let cancelledBookings = [];
+    let existingBookings = [];
 
+    // Kiểm tra tất cả các ca trong ngày
     for (const slotNumber of allSlots) {
-      // Kiểm tra booking
       const existingBooking = await Booking.findOne({
         instructorId,
         date: { $gte: startOfDay, $lte: endOfDay },
@@ -870,23 +922,53 @@ export const toggleBusyAllDay = async (req, res) => {
       }).populate('learnerId', 'fullName email phone');
 
       if (existingBooking) {
-        // [MỚI] Nếu là emergency -> HUỶ booking và thông báo
-        if (isEmergency) {
-          // Cập nhật trạng thái booking thành CANCELLED
-          existingBooking.status = 'CANCELLED';
-          existingBooking.instructorNote = 'Huỷ do giáo viên báo bận khẩn cấp';
-          await existingBooking.save();
-          
-          cancelledBookings.push(existingBooking);
-          
-          // Gửi email thông báo huỷ
-          await sendBookingCancelledNotification(instructorForNotify, existingBooking);
-        } else {
-          // Không phải emergency -> bỏ qua
-          continue;
-        }
+        existingBookings.push({
+          timeSlot: slotNumber,
+          ...existingBooking.toObject()
+        });
       }
+    }
 
+    // [MỚI] Nếu là emergency -> luôn cần admin duyệt
+    if (isEmergency) {
+      // Tạo request cho admin duyệt
+      const request = await Request.create({
+        user: instructorId,
+        type: 'INSTRUCTOR_BUSY',
+        reason: `Giáo viên ${instructorInfo.fullName} báo bận khẩn cấp cả ngày ${inputDate.toLocaleDateString('vi-VN')}. ${existingBookings.length > 0 ? `Có ${existingBookings.length} học viên đặt lịch.` : 'Không có học viên đặt lịch.'}`,
+        metadata: {
+          date: inputDate,
+          timeSlot: 'all', // Cả ngày
+          isEmergency: true,
+          requiresAdminApproval: true,
+          instructorName: instructorInfo.fullName,
+          instructorEmail: instructorInfo.email,
+          instructorLocation: instructorInfo.workingLocation,
+          bookingsInfo: existingBookings.map(b => ({
+            timeSlot: b.timeSlot,
+            learnerName: b.learnerId?.fullName,
+            learnerPhone: b.learnerId?.phone,
+            learnerEmail: b.learnerId?.email
+          })),
+          action: 'CANCEL_BOOKING' // Admin duyệt sẽ huỷ booking
+        }
+      });
+
+      const limitCheck = await checkEmergencyLeaveLimit(instructorId);
+
+      return res.status(200).json({
+        status: 'pending_approval',
+        message: 'Yêu cầu báo bận khẩn cấp cả ngày đã được gửi cho admin duyệt. Bạn sẽ được thông báo khi có quyết định.',
+        requestId: request._id,
+        existingBookingsCount: existingBookings.length,
+        remainingEmergency: limitCheck.remaining,
+        requiresApproval: true
+      });
+    }
+
+    // Nếu không phải emergency -> xử lý bình thường (không huỷ booking)
+    let successCount = 0;
+    for (const slotNumber of allSlots) {
       // Kiểm tra schedule đã tồn tại
       const existingSchedule = await Schedule.findOne({
         instructorId,
@@ -904,27 +986,20 @@ export const toggleBusyAllDay = async (req, res) => {
           date: startOfDay,
           timeSlot: slotNumber,
           type: 'BUSY',
-          isEmergency: isEmergency,
-          note: isEmergency ? 'Báo bận khẩn cấp cả ngày' : 'Giảng viên báo bận cả ngày'
+          isEmergency: false,
+          note: 'Giảng viên báo bận cả ngày'
         });
         successCount++;
       }
     }
 
-    // Nếu là emergency -> tăng counter
-    if (isEmergency) {
-      await incrementEmergencyLeave(instructorId);
-    }
-
     const newLimit = await checkEmergencyLeaveLimit(instructorId);
 
     // Tạo thông báo chi tiết
-    let message = isEmergency 
-      ? `Đã báo bận ${successCount} ca (khẩn cấp).`
-      : `Đã báo bận ${successCount} ca trong ngày.`;
+    let message = `Đã báo bận ${successCount} ca trong ngày.`;
     
-    if (cancelledBookings.length > 0) {
-      message += ` Đã huỷ ${cancelledBookings.length} lịch học và gửi email thông báo cho học viên.`;
+    if (existingBookings.length > 0) {
+      message += ` Lưu ý: Có ${existingBookings.length} học viên đã đặt lịch trong ngày này.`;
     }
 
     res.json({
@@ -932,8 +1007,8 @@ export const toggleBusyAllDay = async (req, res) => {
       message: message,
       data: {
         successCount,
-        cancelledCount: cancelledBookings.length,
-        isEmergency,
+        existingBookingsCount: existingBookings.length,
+        isEmergency: false,
         remainingEmergency: newLimit.remaining
       }
     });

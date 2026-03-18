@@ -51,7 +51,7 @@ const hasCompleteDocumentProfile = (doc) => !!(
 
 export const getAllRegistrations = async (req, res) => {
   try {
-    const { learnerId, batchId, status, courseId, unassigned } = req.query;
+    const { learnerId, batchId, status, courseId, unassigned, paidFirstInstallment } = req.query;
     const filter = {};
 
     if (req.user?.role === 'learner') {
@@ -67,6 +67,9 @@ export const getAllRegistrations = async (req, res) => {
             { batchId: null },
             { batchId: { $exists: false } }
         ];
+    }
+    if (paidFirstInstallment === 'true') {
+      filter.firstPaymentDate = { $exists: true, $ne: null };
     }
     if (status) {
         if (status.includes(',')) {

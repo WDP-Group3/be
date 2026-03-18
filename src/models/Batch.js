@@ -16,6 +16,15 @@ const batchSchema = new mongoose.Schema({
     trim: true,
     default: '',
   },
+  examLocationId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ExamLocation',
+    default: null,
+  },
+  minlearners: {
+    type: Number,
+    default: 1,
+  },
   startDate: {
     type: Date,
     required: true,

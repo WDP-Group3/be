@@ -9,7 +9,7 @@ const requestSchema = new mongoose.Schema(
         },
         type: {
             type: String,
-            enum: ['LATE_PAYMENT', 'SUPPORT'],
+            enum: ['LATE_PAYMENT', 'SUPPORT', 'INSTRUCTOR_BUSY'],
             default: 'LATE_PAYMENT',
             required: true,
         },
