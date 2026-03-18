@@ -133,49 +133,49 @@ export const getPaymentMethodStats = async (req, res) => {
 };
 
 // ─── 4. Top 5 khóa học theo doanh thu ─────────────────────────────────────
+// Dùng Registration làm nguồn chính vì Payment.registrationId có thể trỏ tới
+// các registration đã bị xóa (orphaned data). Revenue = tổng feePlanSnapshot.
 export const getTopCourses = async (req, res) => {
     try {
         const year = parseInt(req.query.year) || currentYear();
         const start = new Date(year, 0, 1);
         const end = new Date(year + 1, 0, 1);
 
-        // Payment → Registration → Batch → Course
-        const rows = await Payment.aggregate([
-            { $match: { paidAt: { $gte: start, $lt: end } } },
-            {
-                $lookup: {
-                    from: 'registrations',
-                    localField: 'registrationId',
-                    foreignField: '_id',
-                    as: 'reg'
-                }
-            },
-            { $unwind: '$reg' },
+        // Registration → Batch → Course, tính doanh thu từ feePlanSnapshot
+        const rows = await Registration.aggregate([
+            { $match: { createdAt: { $gte: start, $lt: end } } },
             {
                 $lookup: {
                     from: 'batches',
-                    localField: 'reg.batchId',
+                    localField: 'batchId',
                     foreignField: '_id',
                     as: 'batch'
                 }
             },
-            { $unwind: '$batch' },
+            { $unwind: { path: '$batch', preserveNullAndEmptyArrays: true } },
+            {
+                // Nếu không có batch, thử dùng courseId trực tiếp từ registration
+                $addFields: {
+                    resolvedCourseId: { $ifNull: ['$batch.courseId', '$courseId'] }
+                }
+            },
             {
                 $lookup: {
                     from: 'courses',
-                    localField: 'batch.courseId',
+                    localField: 'resolvedCourseId',
                     foreignField: '_id',
                     as: 'course'
                 }
             },
-            { $unwind: '$course' },
+            { $unwind: { path: '$course', preserveNullAndEmptyArrays: false } },
+            { $unwind: { path: '$feePlanSnapshot', preserveNullAndEmptyArrays: true } },
             {
                 $group: {
                     _id: '$course._id',
                     name: { $first: '$course.name' },
                     code: { $first: '$course.code' },
-                    revenue: { $sum: '$amount' },
-                    learners: { $addToSet: '$reg.learnerId' }
+                    revenue: { $sum: '$feePlanSnapshot.amount' },
+                    learners: { $addToSet: '$learnerId' }
                 }
             },
             {
@@ -283,16 +283,34 @@ export const getRecentTransactions = async (req, res) => {
             },
             { $unwind: { path: '$course', preserveNullAndEmptyArrays: true } },
             {
+                // Thêm resolvedCourseId để fallback sang reg.courseId khi không có batch
+                $addFields: {
+                    resolvedCourseId: { $ifNull: ['$batch.courseId', '$reg.courseId'] }
+                }
+            },
+            {
+                $lookup: {
+                    from: 'courses',
+                    localField: 'resolvedCourseId',
+                    foreignField: '_id',
+                    as: 'courseFromReg'
+                }
+            },
+            { $unwind: { path: '$courseFromReg', preserveNullAndEmptyArrays: true } },
+            {
                 $project: {
                     _id: 1,
                     amount: 1,
                     method: 1,
                     paidAt: 1,
+                    // note chứa mã giao dịch từ SePay (ví dụ: "SePay auto webhook - HP-xxx")
                     note: 1,
-                    learnerName: { $concat: ['$learner.firstName', ' ', '$learner.lastName'] },
+                    // User model dùng fullName (không có firstName/lastName)
+                    learnerName: '$learner.fullName',
                     learnerEmail: '$learner.email',
-                    courseName: '$course.name',
-                    courseCode: '$course.code',
+                    // Ưu tiên course từ batch, nếu không lấy từ reg.courseId
+                    courseName: { $ifNull: ['$course.name', '$courseFromReg.name'] },
+                    courseCode: { $ifNull: ['$course.code', '$courseFromReg.code'] },
                 }
             }
         ]);
