@@ -18,6 +18,7 @@ export const getAllBatches = async (req, res) => {
     const batches = await Batch.find(filter)
       .populate('courseId', 'code name')
       .populate('instructorIds', 'fullName phone')
+      .populate('examLocationId', 'name address')
       .sort({ startDate: -1 })
       .skip(skip)
       .limit(limit);
@@ -56,7 +57,8 @@ export const getBatchById = async (req, res) => {
     const { id } = req.params;
     const batch = await Batch.findById(id)
       .populate('courseId')
-      .populate('instructorIds', 'fullName phone email');
+      .populate('instructorIds', 'fullName phone email')
+      .populate('examLocationId', 'name address');
 
     if (!batch) {
       return res.status(404).json({
@@ -84,7 +86,7 @@ export const getBatchById = async (req, res) => {
 
 export const createBatch = async (req, res) => {
   try {
-    const { courseId, name, examLocation, startDate, estimatedEndDate, location, maxlearners, instructorIds = [], status = 'OPEN' } = req.body;
+    const { courseId, name, examLocation, examLocationId, minlearners, startDate, estimatedEndDate, location, maxlearners, instructorIds = [], status = 'OPEN' } = req.body;
 
     if (!courseId || !startDate || !estimatedEndDate || !location) {
       return res.status(400).json({
@@ -97,6 +99,8 @@ export const createBatch = async (req, res) => {
       courseId,
       name,
       examLocation,
+      examLocationId: examLocationId || null,
+      minlearners: minlearners || 1,
       startDate,
       estimatedEndDate,
       location,
@@ -136,7 +140,8 @@ export const updateBatch = async (req, res) => {
 
     const batch = await Batch.findByIdAndUpdate(id, updates, { new: true })
       .populate('courseId', 'code name')
-      .populate('instructorIds', 'fullName phone email');
+      .populate('instructorIds', 'fullName phone email')
+      .populate('examLocationId', 'name address');
 
     if (!batch) {
       return res.status(404).json({
