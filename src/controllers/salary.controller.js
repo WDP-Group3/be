@@ -1,11 +1,12 @@
 import SalaryConfig from '../models/SalaryConfig.js';
+import SalaryReport from '../models/SalaryReport.js';
 import Course from '../models/Course.js';
 import User from '../models/User.js';
 import Booking from '../models/Booking.js';
 import Document from '../models/Document.js';
 
 // ============================================
-// HELPER: Lấy cấu hình lương hiện tại
+// HELPER: Lấy cấu hình lương hiện tại (so với ngày hiện tại)
 // ============================================
 const getActiveConfig = async () => {
   const config = await SalaryConfig.findOne({
@@ -20,13 +21,80 @@ const getActiveConfig = async () => {
 };
 
 // ============================================
+// HELPER: Lấy cấu hình lương áp dụng cho một tháng cụ thể
+// ============================================
+const getConfigForMonth = async (year, month) => {
+  // Lấy ngày giữa tháng để xác định config nào đang active
+  const targetDate = new Date(year, month - 1, 15);
+  const config = await SalaryConfig.findOne({
+    effectiveFrom: { $lte: targetDate },
+    $or: [
+      { effectiveTo: null },
+      { effectiveTo: { $gt: targetDate } }
+    ]
+  }).sort({ effectiveFrom: -1 });
+
+  return config;
+};
+
+// ============================================
+// HELPER: Lấy tất cả cấu hình (để tìm effectiveFrom theo từng khóa)
+// ============================================
+export const getAllConfigs = async () => {
+  return SalaryConfig.find().sort({ effectiveFrom: 1 }).lean();
+};
+
+// ============================================
+// HELPER: Lấy commission đang áp dụng cho một khóa tại một ngày cụ thể
+// Ưu tiên: user override > config.courseCommissions[].effectiveFrom
+// ============================================
+export const getCommissionForCourse = (courseId, docDate, configs, userOverrideMap = {}) => {
+  const cid = courseId ? courseId.toString() : '';
+  if (!cid) return { amount: 0, effectiveFrom: null, isOverride: false };
+  // 1. User override (no date dependency)
+  if (userOverrideMap && userOverrideMap[cid] !== undefined) {
+    return { amount: userOverrideMap[cid], effectiveFrom: null, isOverride: true };
+  }
+  // 2. Find the config entry with the most recent effectiveDate <= docDate
+  const safeConfigs = configs || [];
+  let bestEntry = null;
+  let bestEffDate = null;
+  for (const cfg of safeConfigs) {
+    const entry = cfg.courseCommissions.find(cc => cc.courseId.toString() === cid);
+    if (!entry) continue;
+    // effectiveDate = entry.effectiveFrom || config.effectiveFrom
+    const entryEffDate = entry.effectiveFrom ? new Date(entry.effectiveFrom) : null;
+    const cfgEffDate = cfg.effectiveFrom ? new Date(cfg.effectiveFrom) : null;
+    const effectiveDate = entryEffDate || cfgEffDate;
+    if (!effectiveDate || effectiveDate <= docDate) {
+      if (!bestEntry || (effectiveDate && (!bestEffDate || effectiveDate > bestEffDate))) {
+        bestEntry = entry;
+        bestEffDate = effectiveDate;
+      }
+    }
+  }
+  if (bestEntry) {
+    return { amount: bestEntry.commissionAmount, effectiveFrom: bestEffDate, isOverride: false };
+  }
+  return { amount: 0, effectiveFrom: null, isOverride: false };
+};
+
+
+// ============================================
 // HELPER: Tính lương cho một user trong tháng
 // ============================================
-const calculateSalary = async (userId, month, year, config, options = {}) => {
+const calculateSalary = async (userId, month, year, options = {}) => {
   const user = await User.findById(userId).lean();
   if (!user || !['INSTRUCTOR', 'CONSULTANT'].includes(user.role)) {
     return null;
   }
+
+  // Lấy tất cả configs để tìm commission theo effectiveFrom từng khóa
+  const allConfigs = await getAllConfigs();
+
+  // Lấy config đang active (dùng cho instructor hourly rate)
+  const activeConfig = await getConfigForMonth(year, month);
+  const config = activeConfig;
 
   // Lấy danh sách courses
   const courses = await Course.find({ status: 'Active' }).lean();
@@ -35,21 +103,19 @@ const calculateSalary = async (userId, month, year, config, options = {}) => {
     courseMap[c._id.toString()] = { code: c.code, name: c.name };
   });
 
-  // Map commission theo courseId (ưu tiên override của user nếu có)
-  const commissionMap = {};
-  config.courseCommissions.forEach(cc => {
-    commissionMap[cc.courseId.toString()] = cc.commissionAmount;
-  });
-
+  // Map user override (không phụ thuộc effectiveFrom)
+  const userOverrideMap = {};
   if (Array.isArray(user.commissionOverrides) && user.commissionOverrides.length > 0) {
     user.commissionOverrides.forEach(ov => {
       if (ov?.courseId) {
-        commissionMap[ov.courseId.toString()] = ov.commissionAmount || 0;
+        userOverrideMap[ov.courseId.toString()] = ov.commissionAmount || 0;
       }
     });
   }
 
-  const hourlyRate = Number.isFinite(user.salaryHourlyRate) ? user.salaryHourlyRate : (config.instructorHourlyRate || 80000);
+  const hourlyRate = Number.isFinite(user.salaryHourlyRate)
+    ? user.salaryHourlyRate
+    : (config?.instructorHourlyRate || 80000);
 
   const { courseIdFilter } = options;
   const applyCourseFilter = Boolean(courseIdFilter);
@@ -80,7 +146,7 @@ const calculateSalary = async (userId, month, year, config, options = {}) => {
       : bookings;
 
     totalTeachingSessions = filteredBookings.length;
-    totalTeachingHours = filteredBookings.length; // Mỗi buổi = 1 giờ
+    totalTeachingHours = filteredBookings.length;
 
     filteredBookings.forEach(booking => {
       teachingDetails.push({
@@ -94,8 +160,6 @@ const calculateSalary = async (userId, month, year, config, options = {}) => {
   }
 
   // === CONSULTANT: Tính hoa hồng hồ sơ ===
-  // Mỗi hồ sơ (Document có consultantId) được gán cho consultant sẽ được tính hoa hồng
-  // Ngày ghi nhận = createdAt của Document
   if (user.role === 'CONSULTANT') {
     const docs = await Document.find({
       consultantId: userId,
@@ -105,8 +169,6 @@ const calculateSalary = async (userId, month, year, config, options = {}) => {
       populate: { path: 'courseId learnerId' }
     }).lean();
 
-    // Lọc documents trong tháng (dựa vào createdAt của document)
-    // Hoặc nếu document không có createdAt, dùng createdAt của registration
     const docsInMonth = docs.filter(doc => {
       const docDate = doc.createdAt ? new Date(doc.createdAt) : null;
       const regDate = doc.registrationId?.createdAt ? new Date(doc.registrationId.createdAt) : null;
@@ -122,13 +184,20 @@ const calculateSalary = async (userId, month, year, config, options = {}) => {
         })
       : docsInMonth;
 
-    // Thống kê theo course
-    const processDocument = (doc) => {
+    filteredDocs.forEach(doc => {
       const reg = doc.registrationId;
       if (!reg) return;
 
       const courseId = reg.courseId?._id?.toString() || reg.courseId?.toString();
       if (!courseId) return;
+
+      // Xác định ngày ghi nhận hoa hồng
+      const docDate = doc.createdAt ? new Date(doc.createdAt) : null;
+      const regDate = reg.createdAt ? new Date(reg.createdAt) : null;
+      const recordDate = docDate || regDate;
+
+      // Lấy commission đang áp dụng tại thời điểm record
+      const { amount: commission } = getCommissionForCourse(courseId, recordDate, allConfigs, userOverrideMap);
 
       if (!courseCounts[courseId]) {
         courseCounts[courseId] = {
@@ -140,8 +209,6 @@ const calculateSalary = async (userId, month, year, config, options = {}) => {
       }
       courseCounts[courseId].count++;
       totalDocuments += 1;
-
-      const commission = commissionMap[courseId] || 0;
       totalCommission += commission;
 
       commissionDetails.push({
@@ -151,13 +218,9 @@ const calculateSalary = async (userId, month, year, config, options = {}) => {
         registrationDate: reg.firstPaymentDate || reg.createdAt || doc.createdAt,
         commissionAmount: commission
       });
-    };
-
-    // Xử lý documents trong tháng
-    filteredDocs.forEach(doc => processDocument(doc));
+    });
   }
 
-  // Tính tổng lương
   const teachingSalary = totalTeachingHours * hourlyRate;
   const totalSalary = teachingSalary + totalCommission;
 
@@ -175,7 +238,7 @@ const calculateSalary = async (userId, month, year, config, options = {}) => {
     courseCounts: Object.values(courseCounts),
     teachingDetails,
     commissionDetails,
-    configId: config._id
+    configId: config?._id || null
   };
 };
 
@@ -237,7 +300,7 @@ export const getSalaryConfig = async (_req, res) => {
 // ============================================
 export const createSalaryConfig = async (req, res) => {
   try {
-    const { courseCommissions, instructorHourlyRate, effectiveFrom, note } = req.body;
+    const { courseCommissions, instructorHourlyRate, effectiveFrom, effectiveTo, note } = req.body;
 
     // Validate
     if (!instructorHourlyRate || instructorHourlyRate <= 0) {
@@ -252,6 +315,7 @@ export const createSalaryConfig = async (req, res) => {
       courseCommissions: courseCommissions || [],
       instructorHourlyRate,
       effectiveFrom: new Date(effectiveFrom),
+      effectiveTo: effectiveTo ? new Date(effectiveTo) : null,
       note: note || '',
       createdBy: req.user?.id
     });
@@ -340,14 +404,18 @@ export const getMonthlySummary = async (req, res) => {
   try {
     const { month, year, role, search, courseId, page = 1, limit = 10 } = req.query;
 
-    // Mặc định: tháng hiện tại
+    // Mặc định: tháng trước
     const now = new Date();
-    const currentMonth = now.getMonth() + 1; // 1-12
+    const currentMonth = now.getMonth() + 1;
     const currentYear = now.getFullYear();
 
-    // Sử dụng tháng/năm từ query, mặc định là tháng hiện tại
-    const targetMonth = month ? parseInt(month) : currentMonth;
-    const targetYear = year ? parseInt(year) : currentYear;
+    // Tính tháng trước
+    let prevMonth = currentMonth - 1;
+    let prevYear = currentYear;
+    if (prevMonth < 1) { prevMonth = 12; prevYear = currentYear - 1; }
+
+    const targetMonth = month ? parseInt(month) : prevMonth;
+    const targetYear = year ? parseInt(year) : prevYear;
 
     // Lấy users theo role
     const userFilter = { role: { $in: ['INSTRUCTOR', 'CONSULTANT'] }, status: 'ACTIVE' };
@@ -366,8 +434,8 @@ export const getMonthlySummary = async (req, res) => {
       .sort({ fullName: 1 })
       .lean();
 
-    // Lấy cấu hình lương
-    const config = await getActiveConfig();
+    // Lấy cấu hình lương áp dụng cho tháng này
+    const config = await getConfigForMonth(targetYear, targetMonth);
     if (!config) {
       return res.status(400).json({
         status: 'error',
@@ -379,7 +447,7 @@ export const getMonthlySummary = async (req, res) => {
     const results = [];
 
     for (const user of users) {
-      const salaryData = await calculateSalary(user._id, targetMonth + 1, targetYear, config, { courseIdFilter: courseId });
+      const salaryData = await calculateSalary(user._id, targetMonth, targetYear, { courseIdFilter: courseId });
 
       if (salaryData) {
         // Format course counts
@@ -395,6 +463,12 @@ export const getMonthlySummary = async (req, res) => {
           }
         }
 
+        // Kiểm tra override
+        const hasOverride = (
+          Number.isFinite(user.salaryHourlyRate) ||
+          (Array.isArray(user.commissionOverrides) && user.commissionOverrides.length > 0)
+        );
+
         results.push({
           _id: user._id,
           fullName: user.fullName,
@@ -407,7 +481,8 @@ export const getMonthlySummary = async (req, res) => {
           totalDocuments: salaryData.totalDocuments,
           totalSalary: salaryData.totalSalary,
           courseCounts: courseCountMap,
-          salaryData: salaryData // Giữ lại để dùng cho export
+          hasOverride,
+          salaryData: salaryData
         });
       }
     }
@@ -423,7 +498,7 @@ export const getMonthlySummary = async (req, res) => {
           pages: Math.ceil(total / parseInt(limit))
         },
         filter: {
-          month: targetMonth + 1,
+          month: targetMonth,
           year: targetYear,
           role,
           courseId
@@ -447,14 +522,17 @@ export const getSalaryDetail = async (req, res) => {
     }
 
     const now = new Date();
-    const currentMonth = now.getMonth() + 1; // 1-12
+    const currentMonth = now.getMonth() + 1;
     const currentYear = now.getFullYear();
 
-    // Sử dụng tháng/năm từ query, mặc định là tháng hiện tại
-    const targetMonth = month ? parseInt(month) : currentMonth;
-    const targetYear = year ? parseInt(year) : currentYear;
+    let prevMonth = currentMonth - 1;
+    let prevYear = currentYear;
+    if (prevMonth < 1) { prevMonth = 12; prevYear = currentYear - 1; }
 
-    const config = await getActiveConfig();
+    const targetMonth = month ? parseInt(month) : prevMonth;
+    const targetYear = year ? parseInt(year) : prevYear;
+
+    const config = await getConfigForMonth(targetYear, targetMonth);
     if (!config) {
       return res.status(400).json({
         status: 'error',
@@ -462,11 +540,33 @@ export const getSalaryDetail = async (req, res) => {
       });
     }
 
-    const salaryData = await calculateSalary(userId, targetMonth + 1, targetYear, config, { courseIdFilter: courseId });
+    const salaryData = await calculateSalary(userId, targetMonth, targetYear, { courseIdFilter: courseId });
 
     if (!salaryData) {
       return res.status(404).json({ status: 'error', message: 'Không tìm thấy dữ liệu lương' });
     }
+
+    // Upsert SalaryReport
+    await SalaryReport.findOneAndUpdate(
+      { month: targetMonth, year: targetYear, userId },
+      {
+        month: targetMonth,
+        year: targetYear,
+        userId,
+        role: salaryData.role,
+        totalTeachingHours: salaryData.totalTeachingHours,
+        totalTeachingSessions: salaryData.totalTeachingSessions,
+        totalCommission: salaryData.totalCommission,
+        totalSalary: salaryData.totalSalary,
+        courseCounts: salaryData.courseCounts,
+        teachingDetails: salaryData.teachingDetails,
+        commissionDetails: salaryData.commissionDetails,
+        configId: config._id,
+        status: 'DRAFT',
+        createdBy: req.userId
+      },
+      { upsert: true, new: true }
+    );
 
     res.json({
       status: 'success',
@@ -495,14 +595,17 @@ export const getMySalary = async (req, res) => {
     }
 
     const now = new Date();
-    const currentMonth = now.getMonth() + 1; // 1-12
+    const currentMonth = now.getMonth() + 1;
     const currentYear = now.getFullYear();
 
-    // Sử dụng tháng/năm từ query, mặc định là tháng hiện tại
-    const targetMonth = month ? parseInt(month) : currentMonth;
-    const targetYear = year ? parseInt(year) : currentYear;
+    let prevMonth = currentMonth - 1;
+    let prevYear = currentYear;
+    if (prevMonth < 1) { prevMonth = 12; prevYear = currentYear - 1; }
 
-    const config = await getActiveConfig();
+    const targetMonth = month ? parseInt(month) : prevMonth;
+    const targetYear = year ? parseInt(year) : prevYear;
+
+    const config = await getConfigForMonth(targetYear, targetMonth);
     if (!config) {
       return res.status(400).json({
         status: 'error',
@@ -510,14 +613,36 @@ export const getMySalary = async (req, res) => {
       });
     }
 
-    const salaryData = await calculateSalary(userId, targetMonth + 1, targetYear, config, { courseIdFilter: courseId });
+    const salaryData = await calculateSalary(userId, targetMonth, targetYear, { courseIdFilter: courseId });
+
+    // Upsert SalaryReport
+    await SalaryReport.findOneAndUpdate(
+      { month: targetMonth, year: targetYear, userId },
+      {
+        month: targetMonth,
+        year: targetYear,
+        userId,
+        role: salaryData.role,
+        totalTeachingHours: salaryData.totalTeachingHours,
+        totalTeachingSessions: salaryData.totalTeachingSessions,
+        totalCommission: salaryData.totalCommission,
+        totalSalary: salaryData.totalSalary,
+        courseCounts: salaryData.courseCounts,
+        teachingDetails: salaryData.teachingDetails,
+        commissionDetails: salaryData.commissionDetails,
+        configId: config._id,
+        status: 'DRAFT',
+        createdBy: req.userId
+      },
+      { upsert: true, new: true }
+    );
 
     res.json({
       status: 'success',
       data: {
         ...salaryData,
         filter: {
-          month: targetMonth + 1,
+          month: targetMonth,
           year: targetYear,
           courseId
         }
@@ -611,21 +736,48 @@ export const exportSalaryCSV = async (req, res) => {
     }
 
     const now = new Date();
-    const currentMonth = now.getMonth() + 1; // 1-12
+    const currentMonth = now.getMonth() + 1;
     const currentYear = now.getFullYear();
-    const targetMonth = month ? parseInt(month) : currentMonth;
-    const targetYear = year ? parseInt(year) : currentYear;
 
-    const config = await getActiveConfig();
+    let prevMonth = currentMonth - 1;
+    let prevYear = currentYear;
+    if (prevMonth < 1) { prevMonth = 12; prevYear = currentYear - 1; }
+
+    const targetMonth = month ? parseInt(month) : prevMonth;
+    const targetYear = year ? parseInt(year) : prevYear;
+
+    const config = await getConfigForMonth(targetYear, targetMonth);
     if (!config) {
       return res.status(400).json({ status: 'error', message: 'Chưa có cấu hình lương' });
     }
 
-    const salaryData = await calculateSalary(userId, targetMonth, targetYear, config, { courseIdFilter: courseId });
+    const salaryData = await calculateSalary(userId, targetMonth, targetYear, { courseIdFilter: courseId });
 
     if (!salaryData) {
       return res.status(404).json({ status: 'error', message: 'Không tìm thấy dữ liệu lương' });
     }
+
+    // Upsert SalaryReport
+    await SalaryReport.findOneAndUpdate(
+      { month: targetMonth, year: targetYear, userId },
+      {
+        month: targetMonth,
+        year: targetYear,
+        userId,
+        role: salaryData.role,
+        totalTeachingHours: salaryData.totalTeachingHours,
+        totalTeachingSessions: salaryData.totalTeachingSessions,
+        totalCommission: salaryData.totalCommission,
+        totalSalary: salaryData.totalSalary,
+        courseCounts: salaryData.courseCounts,
+        teachingDetails: salaryData.teachingDetails,
+        commissionDetails: salaryData.commissionDetails,
+        configId: config._id,
+        status: 'DRAFT',
+        createdBy: req.userId
+      },
+      { upsert: true, new: true }
+    );
 
     // Tạo CSV
     let csv = '';
