@@ -13,6 +13,11 @@ const salaryConfigSchema = new mongoose.Schema({
       required: true,
       default: 0,
     },
+    // Ngày hiệu lực riêng cho từng khóa
+    effectiveFrom: {
+      type: Date,
+      default: null,
+    },
   }],
 
   // Lương theo giờ cho instructor
