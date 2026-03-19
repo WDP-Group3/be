@@ -74,6 +74,7 @@ const buildTuitionItems = (registrations, payments) => {
       courseEndDate: batch?.estimatedEndDate || null,
       courseMonths,
       firstPaymentDate: registration.firstPaymentDate || null,
+      registrationDate: registration.createdAt || null,
       paymentPlanType: registration.paymentPlanType || 'INSTALLMENT',
       totalFee,
       paidAmount,
