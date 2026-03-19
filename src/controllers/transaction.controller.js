@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import Transaction from '../models/Transaction.js';
 import Payment from '../models/Payment.js';
 import Registration from '../models/Registration.js';
+import User from '../models/User.js';
 import { enrollSinglelearner } from '../services/enrollment.service.js';
 
 const SEPAY_BANK_CODE = process.env.SEPAY_BANK_CODE || '';
@@ -169,7 +170,7 @@ export const checkStatus = async (req, res) => {
       // Kiểm tra xem registration đã có payment nào chưa
       const existingPaymentCount = await Payment.countDocuments({ registrationId: transaction.registrationId });
       if (existingPaymentCount <= 1) { // <= 1 vì vừa tạo payment ở trên
-        const registration = await Registration.findById(transaction.registrationId).select('_id status firstPaymentDate');
+        const registration = await Registration.findById(transaction.registrationId).select('_id status firstPaymentDate learnerId');
         if (registration) {
           // Set firstPaymentDate nếu chưa có (thanh toán lần đầu)
           if (!registration.firstPaymentDate) {
@@ -182,6 +183,17 @@ export const checkStatus = async (req, res) => {
             await Registration.findByIdAndUpdate(registration._id, { status: 'PROCESSING' });
           }
           enrollment = await enrollSinglelearner(registration._id);
+
+          // Emit real-time notification to user
+          if (global.io && registration.learnerId) {
+            global.io.to(`user:${registration.learnerId}`).emit('payment-success', {
+              registrationId: transaction.registrationId,
+              amount: transaction.amount,
+              paidAt: transaction.paidAt,
+              enrollment
+            });
+            console.log(`💰 Emitted payment-success to user:${registration.learnerId}`);
+          }
         }
       }
     }
@@ -283,7 +295,7 @@ export const confirmTransaction = async (req, res) => {
       // Set firstPaymentDate cho payment ĐẦU TIÊN (tự động)
       const existingPaymentCount = await Payment.countDocuments({ registrationId: transaction.registrationId });
       if (existingPaymentCount <= 1) {
-        const registration = await Registration.findById(transaction.registrationId).select('_id firstPaymentDate status');
+        const registration = await Registration.findById(transaction.registrationId).select('_id firstPaymentDate status learnerId');
         if (registration) {
           if (!registration.firstPaymentDate) {
             await Registration.findByIdAndUpdate(registration._id, {
@@ -293,7 +305,18 @@ export const confirmTransaction = async (req, res) => {
           // Auto-enroll khi xác nhận thanh toán đầu tiên
           if (['NEW', 'WAITING'].includes(registration.status)) {
             await Registration.findByIdAndUpdate(registration._id, { status: 'PROCESSING' });
-            await enrollSinglelearner(registration._id);
+            const enrollment = await enrollSinglelearner(registration._id);
+
+            // Emit real-time notification to user
+            if (global.io && registration.learnerId) {
+              global.io.to(`user:${registration.learnerId}`).emit('payment-success', {
+                registrationId: transaction.registrationId,
+                amount: transaction.amount,
+                paidAt: transaction.paidAt,
+                enrollment
+              });
+              console.log(`💰 Emitted payment-success to user:${registration.learnerId}`);
+            }
           }
         }
       }

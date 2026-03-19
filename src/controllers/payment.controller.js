@@ -234,9 +234,20 @@ export const createPayment = async (req, res) => {
     const enrollResult = await enrollSinglelearner(registrationId);
     console.log('💰 [PAYMENT] Kết quả auto-enroll:', enrollResult);
 
-    return res.status(201).json({ 
-      status: 'success', 
-      message: 'Tạo giao dịch học phí thành công', 
+    // Emit real-time notification to user
+    if (global.io && registration.learnerId) {
+      global.io.to(`user:${registration.learnerId}`).emit('payment-success', {
+        registrationId,
+        amount: payment.amount,
+        paidAt: payment.paidAt,
+        enrollment: enrollResult
+      });
+      console.log(`💰 Emitted payment-success to user:${registration.learnerId}`);
+    }
+
+    return res.status(201).json({
+      status: 'success',
+      message: 'Tạo giao dịch học phí thành công',
       data: result,
       enrollment: enrollResult
     });

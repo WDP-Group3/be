@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
 import { connectDB } from './config/db.js';
 import apiRoutes from './routes/index.js';
 import { initCloudinary, isCloudinaryConfigured, pingCloudinary } from './services/cloudinary.service.js';
@@ -229,8 +231,40 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Start server
-const server = app.listen(PORT, () => {
+// Start server with Socket.io
+const httpServer = createServer(app);
+const io = new Server(httpServer, {
+  cors: {
+    origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+    credentials: true,
+  },
+});
+
+// Socket.io connection handling
+io.on('connection', (socket) => {
+  console.log(`🔌 Client connected: ${socket.id}`);
+
+  // Join user to their personal room
+  socket.on('join', (userId) => {
+    socket.join(`user:${userId}`);
+    console.log(`👤 User ${userId} joined room: user:${userId}`);
+  });
+
+  // Join admin room
+  socket.on('join-admin', () => {
+    socket.join('admin');
+    console.log(`👑 Admin joined room: admin`);
+  });
+
+  socket.on('disconnect', () => {
+    console.log(`🔌 Client disconnected: ${socket.id}`);
+  });
+});
+
+// Make io accessible to controllers via global
+global.io = io;
+
+const server = httpServer.listen(PORT, () => {
   console.log(`🚀 Server đang chạy tại http://localhost:${PORT}`);
   console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
 });
