@@ -46,8 +46,8 @@ const buildFeePlanSnapshot = (course, paymentPlanType = 'INSTALLMENT') => {
 
 const hasCompleteDocumentProfile = (doc) => !!(
   doc?.cccdNumber
-  && doc?.cccdImage
-  && doc?.healthCertificate
+  && doc?.cccdImageFront
+  && doc?.cccdImageBack
   && doc?.photo
 );
 
@@ -168,7 +168,20 @@ export const createRegistration = async (req, res) => {
     });
 
     if (existingRegistration) {
-      return res.status(400).json({ status: 'error', message: 'Bạn đã đăng ký khoá học này rồi' });
+      if (existingRegistration.firstPaymentDate) {
+        return res.status(400).json({ status: 'error', message: 'Bạn đã đăng ký khoá học này rồi' });
+      }
+
+      const existingResult = await Registration.findById(existingRegistration._id)
+        .populate('learnerId', 'fullName phone email')
+        .populate('courseId', 'code name estimatedCost')
+        .populate('batchId', 'startDate estimatedEndDate location');
+
+      return res.status(200).json({
+        status: 'success',
+        data: existingResult,
+        message: 'Bạn đã có đăng ký chưa thanh toán. Vui lòng thanh toán để hoàn tất.',
+      });
     }
 
     // Lấy thông tin course

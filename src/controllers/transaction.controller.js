@@ -78,14 +78,46 @@ export const checkStatus = async (req, res) => {
     }
 
     const payload = req.body || {};
+    console.log('📥 [SEPAY WEBHOOK] Received payload:', JSON.stringify(payload));
+
     const transferContent = payload.transferContent || payload.content || payload.description || '';
     if (!transferContent) {
       return res.status(400).json({ status: 'error', message: 'Thiếu transferContent' });
     }
 
-    const transaction = await Transaction.findOne({ transferContent, status: { $ne: 'completed' } });
+    // Tìm transaction: ưu tiên exact match, nếu không thì match prefix (SePay có thể thêm text vào description)
+    // Chuẩn hóa: bỏ dấu - trong transferContent để so sánh
+    const normalizeContent = (content) => {
+      if (!content) return '';
+      return content.replace(/-/g, '').split(' ')[0].toUpperCase();
+    };
+
+    let transaction = await Transaction.findOne({ transferContent, status: { $ne: 'completed' } });
+
     if (!transaction) {
-      return res.status(404).json({ status: 'error', message: 'Không tìm thấy giao dịch pending' });
+      // Thử tìm theo normalized content
+      const normalizedTransfer = normalizeContent(transferContent);
+      console.log('🔍 [SEPAY] Searching with normalized:', normalizedTransfer);
+
+      // Lấy tất cả transaction pending và so sánh
+      const pendingTransactions = await Transaction.find({ status: { $ne: 'completed' } });
+      for (const tx of pendingTransactions) {
+        if (!tx.transferContent) continue;
+        const normalizedDb = normalizeContent(tx.transferContent);
+        console.log(`   Comparing: ${normalizedTransfer} vs ${normalizedDb} => ${normalizedTransfer === normalizedDb}`);
+        if (normalizedTransfer === normalizedDb) {
+          transaction = tx;
+          break;
+        }
+      }
+    }
+
+    if (transaction) {
+      console.log('✅ [SEPAY] Found transaction:', transaction.transferContent, 'amount:', transaction.amount);
+    }
+
+    if (!transaction) {
+      return res.status(404).json({ status: 'error', message: 'Không tìm thấy giao dịch pending', received: transferContent });
     }
 
     const paidAmount = Number(payload.transferAmount || payload.amount || 0);
@@ -164,7 +196,9 @@ export const checkStatus = async (req, res) => {
 export const getTransactionStatus = async (req, res) => {
   try {
     const { id } = req.params;
+    console.log('📊 [GET TRANSACTION STATUS] id:', id, 'user:', req.userId);
     const transaction = await Transaction.findById(id).lean();
+    console.log('📊 [GET TRANSACTION STATUS] transaction:', transaction);
 
     if (!transaction) {
       return res.status(404).json({ status: 'error', message: 'Không tìm thấy giao dịch' });

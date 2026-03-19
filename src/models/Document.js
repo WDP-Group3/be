@@ -13,7 +13,11 @@ const documentSchema = new mongoose.Schema({
     required: false,
     default: null,
   },
-  cccdImage: {
+  cccdImageFront: {
+    type: String,
+    trim: true,
+  },
+  cccdImageBack: {
     type: String,
     trim: true,
   },

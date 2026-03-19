@@ -6,7 +6,6 @@ import {
   getTuitionInfo,
   createPayment,
   getAiTuitionSuggestion,
-  extendDueDateBylearner,
   upsertDueDateByAdmin,
   deletePayment,
 } from '../controllers/payment.controller.js';
@@ -17,7 +16,6 @@ const router = express.Router();
 
 router.get('/tuition-info', authenticate, requireRole('learner', 'ADMIN', 'CONSULTANT'), getTuitionInfo);
 router.post('/ai-suggestion', authenticate, requireRole('ADMIN', 'CONSULTANT', 'learner'), getAiTuitionSuggestion);
-router.post('/extend-due-date', authenticate, requireRole('learner'), extendDueDateBylearner);
 router.post('/upsert-due-date', authenticate, requireRole('ADMIN', 'CONSULTANT'), upsertDueDateByAdmin);
 
 router.post('/', authenticate, requireRole('ADMIN', 'CONSULTANT'), createPayment);

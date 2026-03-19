@@ -21,7 +21,8 @@ const documentPopulate = [
 
 const isDocumentComplete = (document) => !!(
   document?.cccdNumber
-  && document?.cccdImage
+  && document?.cccdImageFront
+  && document?.cccdImageBack
   && document?.photo
 );
 
@@ -197,7 +198,7 @@ export const getMyDocument = async (req, res) => {
 
 export const uploadDocuments = async (req, res) => {
   try {
-    const { registrationId, cccdImage, healthCertificate, photo, cccdNumber, consultantEmail } = req.body;
+    const { registrationId, cccdImageFront, cccdImageBack, healthCertificate, photo, cccdNumber, consultantEmail } = req.body;
     const learnerId = req.userId;
 
     let registration = null;
@@ -213,7 +214,8 @@ export const uploadDocuments = async (req, res) => {
     if (!document) document = new Document({ learnerId, status: 'PENDING' });
 
     if (registration?._id) document.registrationId = registration._id;
-    if (cccdImage) document.cccdImage = cccdImage;
+    if (cccdImageFront) document.cccdImageFront = cccdImageFront;
+    if (cccdImageBack) document.cccdImageBack = cccdImageBack;
     if (healthCertificate) document.healthCertificate = healthCertificate;
     if (photo) document.photo = photo;
     if (cccdNumber) document.cccdNumber = cccdNumber;
@@ -227,7 +229,7 @@ export const uploadDocuments = async (req, res) => {
       document.consultantEmail = consultant.email;
     }
 
-    if (cccdImage || healthCertificate || photo || cccdNumber || consultantEmail) document.status = 'PENDING';
+    if (cccdImageFront || cccdImageBack || healthCertificate || photo || cccdNumber || consultantEmail) document.status = 'PENDING';
 
     await document.save();
 

@@ -268,6 +268,7 @@ export const getTuitionInfo = async (req, res) => {
 
     // Note: Filtering by Learner name/Course name requires populating or aggregation.
     // To keep it simple but functional, let's fetch matching Learner IDs if search is provided.
+    console.log('[tuition-info] Search:', search);
     if (search) {
       const matchingUsers = await User.find({
         $or: [
@@ -276,7 +277,8 @@ export const getTuitionInfo = async (req, res) => {
         ]
       }).select('_id');
       const userIds = matchingUsers.map(u => u._id);
-      
+      console.log('[tuition-info] Matching users:', userIds.length);
+
       // Also search by Course code/name
       const matchingCourses = await Course.find({
         $or: [
@@ -285,11 +287,21 @@ export const getTuitionInfo = async (req, res) => {
         ]
       }).select('_id');
       const courseIds = matchingCourses.map(c => c._id);
+      console.log('[tuition-info] Matching courses:', courseIds.length);
 
-      filter.$or = [
-        { learnerId: { $in: userIds } },
-        { courseId: { $in: courseIds } }
-      ];
+      // Chỉ thêm filter nếu có kết quả
+      if (userIds.length > 0 || courseIds.length > 0) {
+        const orConditions = [];
+        if (userIds.length > 0) {
+          orConditions.push({ learnerId: { $in: userIds } });
+        }
+        if (courseIds.length > 0) {
+          orConditions.push({ courseId: { $in: courseIds } });
+        }
+        if (orConditions.length > 0) {
+          filter.$or = orConditions;
+        }
+      }
     }
 
     if (courseId) filter.courseId = courseId;
@@ -322,21 +334,23 @@ export const getTuitionInfo = async (req, res) => {
     let items = buildTuitionItems(registrations, allPayments);
 
     // Filter by status if provided (status is calculated in buildTuitionItems)
+    console.log('[tuition-info] Status filter:', status, '| Items before filter:', items.length);
     if (status) {
       switch (status) {
         case 'paid':
-          items = items.filter(i => i.remaining === 0);
+          items = items.filter(i => i.remaining <= 0);
           break;
         case 'partial':
           items = items.filter(i => i.remaining > 0 && i.paidAmount > 0);
           break;
         case 'unpaid':
-          items = items.filter(i => i.paidAmount === 0);
+          items = items.filter(i => i.paidAmount <= 0);
           break;
         case 'overdue':
           items = items.filter(i => i.isOverdue);
           break;
       }
+      console.log('[tuition-info] Items after filter:', items.length);
     }
 
     if (dateFrom) {
@@ -406,46 +420,6 @@ export const getAiTuitionSuggestion = async (req, res) => {
     };
 
     return res.json({ status: 'success', data: suggestion });
-  } catch (error) {
-    return res.status(500).json({ status: 'error', message: error.message });
-  }
-};
-
-export const extendDueDateBylearner = async (req, res) => {
-  try {
-    const { registrationId, scheduleIndex, extendedDays = 7, reason = '' } = req.body;
-
-    if (!registrationId) {
-      return res.status(400).json({ status: 'error', message: 'registrationId là bắt buộc' });
-    }
-
-    const registration = await Registration.findOne({ _id: registrationId, learnerId: req.userId });
-    if (!registration) {
-      return res.status(404).json({ status: 'error', message: 'Không tìm thấy hồ sơ của học viên' });
-    }
-
-    if (!Array.isArray(registration.feePlanSnapshot) || registration.feePlanSnapshot.length === 0) {
-      return res.status(400).json({ status: 'error', message: 'Hồ sơ chưa có lịch đóng phí để gia hạn' });
-    }
-
-    const index = Number.isInteger(scheduleIndex)
-      ? scheduleIndex
-      : registration.feePlanSnapshot.findIndex((item) => item?.dueDate);
-
-    if (index < 0 || index >= registration.feePlanSnapshot.length) {
-      return res.status(400).json({ status: 'error', message: 'scheduleIndex không hợp lệ' });
-    }
-
-    const currentDueDate = registration.feePlanSnapshot[index]?.dueDate;
-    const baseDate = currentDueDate ? new Date(currentDueDate) : new Date();
-    const days = Math.max(1, Math.min(Number(extendedDays) || 7, 30));
-    baseDate.setDate(baseDate.getDate() + days);
-
-    registration.feePlanSnapshot[index].dueDate = baseDate;
-    registration.feePlanSnapshot[index].note = `${registration.feePlanSnapshot[index].note || ''} | learner xin gia hạn ${days} ngày${reason ? `: ${reason}` : ''}`.trim();
-    await registration.save();
-
-    return res.json({ status: 'success', message: 'Gia hạn hạn thanh toán thành công', data: registration.feePlanSnapshot[index] });
   } catch (error) {
     return res.status(500).json({ status: 'error', message: error.message });
   }
