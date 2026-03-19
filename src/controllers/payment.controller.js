@@ -43,25 +43,8 @@ const buildTuitionItems = (registrations, payments) => {
       }
     }
 
-    // Tính công nợ real-time dựa trên firstPaymentDate
-    let remaining = 0;
-    let monthsElapsed = 0;
-    if (registration.firstPaymentDate && courseMonths > 0) {
-      const firstPayment = new Date(registration.firstPaymentDate);
-      const now = new Date();
-      if (!isNaN(firstPayment.getTime())) {
-        monthsElapsed = (now.getFullYear() - firstPayment.getFullYear()) * 12 + (now.getMonth() - firstPayment.getMonth());
-        monthsElapsed = Math.max(monthsElapsed, 0);
-        // Công nợ = (Tổng học phí / Số tháng) * Số tháng đã học - Đã đóng
-        const tuitionPerMonth = totalFee / courseMonths;
-        const calculatedDebt = tuitionPerMonth * monthsElapsed;
-        remaining = Math.max(calculatedDebt - paidAmount, 0);
-      } else {
-        remaining = Math.max(totalFee - paidAmount, 0);
-      }
-    } else {
-      remaining = Math.max(totalFee - paidAmount, 0);
-    }
+    // Tính công nợ: Tổng phí - Đã đóng
+    let remaining = Math.max(totalFee - paidAmount, 0);
 
     let accumulated = 0;
     let nextSchedule = null;
@@ -91,7 +74,6 @@ const buildTuitionItems = (registrations, payments) => {
       courseEndDate: batch?.estimatedEndDate || null,
       courseMonths,
       firstPaymentDate: registration.firstPaymentDate || null,
-      monthsElapsed,
       paymentPlanType: registration.paymentPlanType || 'INSTALLMENT',
       totalFee,
       paidAmount,
