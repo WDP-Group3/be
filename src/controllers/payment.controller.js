@@ -2,6 +2,7 @@ import Payment from '../models/Payment.js';
 import Registration from '../models/Registration.js';
 import Course from '../models/Course.js';
 import Invoice from '../models/Invoice.js';
+import User from '../models/User.js';
 import { enrollSinglelearner } from '../services/enrollment.service.js';
 
 const getFeePlanFromRegistration = (registration) => {
