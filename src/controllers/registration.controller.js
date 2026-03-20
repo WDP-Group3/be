@@ -30,6 +30,7 @@ const buildFeePlanSnapshot = (course, paymentPlanType = 'INSTALLMENT') => {
       name: item.name || `Đợt ${idx + 1}`,
       amount: Number(item.amount) || 0,
       dueDate: item.dueDate || null,
+      afterPreviousPaidDays: Number(item.afterPreviousPaidDays) || 0,
       note: item.note || '',
     }));
   }
@@ -634,20 +635,17 @@ export const getFeeSubmissions = async (req, res) => {
     // Xây dựng filter registration
     const regFilter = {};
 
-    // Phân quyền: CONSULTANT chỉ thấy HV của mình
+    // Phân quyền: CONSULTANT chỉ thấy HV của mình qua Document.consultantId
     if (user.role === 'CONSULTANT') {
-      const myLeads = await Leads.find({ assignTo: userId }).select('phone');
-      const phones = myLeads.map(l => l.phone).filter(Boolean);
-      if (phones.length === 0) {
+      const myDocs = await Document.find({ consultantId: userId, isDeleted: false }).select('learnerId');
+      const learnerIds = myDocs.map(d => d.learnerId).filter(Boolean);
+      if (learnerIds.length === 0) {
         return res.json({
           status: 'success',
           data: { items: [], totalFee: 0, paidAmount: 0, remaining: 0 },
           pagination: { total: 0, page, limit, totalPages: 0 },
         });
       }
-      // Tìm learner theo phone
-      const myLearners = await User.find({ phone: { $in: phones }, role: 'learner' }).select('_id');
-      const learnerIds = myLearners.map(u => u._id);
       regFilter.learnerId = { $in: learnerIds };
     }
 

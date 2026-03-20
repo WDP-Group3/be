@@ -38,6 +38,9 @@ router.get('/detail', authenticate, requireRole('ADMIN'), salaryController.getSa
 // GET /salary/export - Xuất CSV
 router.get('/export', authenticate, requireRole('ADMIN'), salaryController.exportSalaryCSV);
 
+// GET /salary/export-all - Xuất Excel tất cả lương tháng (Admin)
+router.get('/export-all', authenticate, requireRole('ADMIN'), salaryController.exportAllSalaryExcel);
+
 // ============================================
 // Routes cho override lương/hoa hồng theo user (Admin)
 // ============================================
@@ -52,5 +55,35 @@ router.put('/users/:id/override', authenticate, requireRole('ADMIN'), salaryCont
 // ============================================
 // GET /salary/my - Lương của tôi
 router.get('/my', authenticate, salaryController.getMySalary);
+
+// GET /salary/my-export - Export CSV lương của tôi
+router.get('/my-export', authenticate, salaryController.exportMySalaryCSV);
+
+// ============================================
+// Routes cho cấu hình nghỉ phép (Admin only)
+// ============================================
+// GET /salary/leave-config - Lấy cấu hình nghỉ phép của năm hiện tại
+router.get('/leave-config', authenticate, requireRole('ADMIN'), salaryController.getLeaveConfig);
+
+// PUT /salary/leave-config - Cập nhật cấu hình nghỉ phép
+router.put('/leave-config', authenticate, requireRole('ADMIN'), salaryController.updateLeaveConfig);
+
+// GET /salary/leave-usage - Xem usage nghỉ phép của instructors
+router.get('/leave-usage', authenticate, requireRole('ADMIN'), salaryController.getLeaveUsage);
+
+// ============================================
+// Routes cho cấu hình cột lương động (Admin only)
+// ============================================
+// GET /salary/columns - Lấy danh sách cột lương
+router.get('/columns', authenticate, requireRole('ADMIN'), salaryController.getSalaryColumns);
+
+// POST /salary/columns - Tạo cột lương mới
+router.post('/columns', authenticate, requireRole('ADMIN'), salaryController.createSalaryColumn);
+
+// PUT /salary/columns/:id - Cập nhật cột lương
+router.put('/columns/:id', authenticate, requireRole('ADMIN'), salaryController.updateSalaryColumn);
+
+// DELETE /salary/columns/:id - Xóa cột lương
+router.delete('/columns/:id', authenticate, requireRole('ADMIN'), salaryController.deleteSalaryColumn);
 
 export default router;
