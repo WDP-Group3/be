@@ -62,3 +62,12 @@ export const emitNotification = (userId, notification) => {
     io.to(`user:${userId}`).emit('notification', notification);
   }
 };
+
+// Emit schedule update event (broadcast to everyone)
+// Payload can be { instructorId, date, timeSlot, status } to target specific UI updates
+export const emitScheduleUpdate = (payload) => {
+  if (io) {
+    io.emit('schedule-updated', payload);
+    console.log(`📅 Emitted schedule-updated globally`, payload);
+  }
+};

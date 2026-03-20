@@ -86,6 +86,7 @@ export const autoEnrolllearners = async (courseId, options = {}) => {
     const pendingRegistrations = await Registration.find({
       courseId,
       status: { $in: ['NEW', 'PROCESSING', 'WAITING'] },
+      firstPaymentDate: { $ne: null }, // Đã nộp tiền lần 1
       $or: [
         { batchId: { $in: [null, undefined] } }, // Chưa có batch
         { batchId: batch._id } // Có batch nhưng là batch hiện tại
@@ -94,12 +95,11 @@ export const autoEnrolllearners = async (courseId, options = {}) => {
       .populate('learnerId', 'fullName email')
       .sort({ createdAt: 1 });
 
-    const pendingIds = pendingRegistrations.map((reg) => reg._id);
-    if (!pendingIds.length) {
-      console.log(`ℹ️ [AUTO-ENROLL] Không có học viên chờ của khoá học ${course.name}`);
+    if (!pendingRegistrations.length) {
+      console.log(`ℹ️ [AUTO-ENROLL] Không có học viên chờ (đã thanh toán) của khoá học ${course.name}`);
       return {
         success: true,
-        message: 'Không có học viên chờ được gán',
+        message: 'Không có học viên chờ hợp lệ được gán',
         enrolledCount,
         maxlearners,
         newlyEnrolled: 0,
@@ -107,21 +107,14 @@ export const autoEnrolllearners = async (courseId, options = {}) => {
       };
     }
 
-    const paidRegistrationIds = await Payment.distinct('registrationId', {
-      registrationId: { $in: pendingIds }
-    });
-    const paidSet = new Set(paidRegistrationIds.map((id) => String(id)));
-
-    // 5. Lọc các registration đủ điều kiện và cắt giới hạn chỗ trống
-    const readyToEnroll = pendingRegistrations
-      .filter((reg) => paidSet.has(String(reg._id)))
-      .slice(0, openSlots);
+    // 5. Cắt giới hạn chỗ trống lấy danh sách sẵn sàng
+    const readyToEnroll = pendingRegistrations.slice(0, openSlots);
 
     if (readyToEnroll.length === 0) {
-      console.log(`ℹ️ [AUTO-ENROLL] Không tìm thấy học viên đã thanh toán để gán vào lớp ${course.name}`);
+      console.log(`ℹ️ [AUTO-ENROLL] Không có học viên để gán vào lớp ${course.name}`);
       return {
         success: true,
-        message: 'Không có học viên đã thanh toán để gán',
+        message: 'Không có học viên để gán',
         enrolledCount,
         maxlearners,
         newlyEnrolled: 0,

@@ -48,5 +48,18 @@ bookingSchema.index({ instructorId: 1 });
 bookingSchema.index({ date: 1 });
 bookingSchema.index({ status: 1 });
 
+// CHÚ Ý: ĐỂ CHẶN RACE CONDITION
+// 1. Giáo viên chỉ dạy 1 học viên/lớp tại 1 thời điểm
+bookingSchema.index(
+  { instructorId: 1, date: 1, timeSlot: 1 },
+  { unique: true, partialFilterExpression: { status: { $ne: 'CANCELLED' } } }
+);
+
+// 2. Học viên chỉ học 1 giáo viên tại 1 thời điểm
+bookingSchema.index(
+  { learnerId: 1, date: 1, timeSlot: 1 },
+  { unique: true, partialFilterExpression: { status: { $ne: 'CANCELLED' } } }
+);
+
 const Booking = mongoose.model('Booking', bookingSchema);
 export default Booking;
