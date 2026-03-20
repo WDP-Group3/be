@@ -71,19 +71,4 @@ router.put('/leave-config', authenticate, requireRole('ADMIN'), salaryController
 // GET /salary/leave-usage - Xem usage nghỉ phép của instructors
 router.get('/leave-usage', authenticate, requireRole('ADMIN'), salaryController.getLeaveUsage);
 
-// ============================================
-// Routes cho cấu hình cột lương động (Admin only)
-// ============================================
-// GET /salary/columns - Lấy danh sách cột lương
-router.get('/columns', authenticate, requireRole('ADMIN'), salaryController.getSalaryColumns);
-
-// POST /salary/columns - Tạo cột lương mới
-router.post('/columns', authenticate, requireRole('ADMIN'), salaryController.createSalaryColumn);
-
-// PUT /salary/columns/:id - Cập nhật cột lương
-router.put('/columns/:id', authenticate, requireRole('ADMIN'), salaryController.updateSalaryColumn);
-
-// DELETE /salary/columns/:id - Xóa cột lương
-router.delete('/columns/:id', authenticate, requireRole('ADMIN'), salaryController.deleteSalaryColumn);
-
 export default router;

@@ -1,7 +1,6 @@
 import SalaryConfig from '../models/SalaryConfig.js';
 import SalaryReport from '../models/SalaryReport.js';
 import LeaveConfig from '../models/LeaveConfig.js';
-import SalaryColumnConfig from '../models/SalaryColumnConfig.js';
 import Course from '../models/Course.js';
 import User from '../models/User.js';
 import Booking from '../models/Booking.js';
@@ -266,12 +265,18 @@ const calculateSalary = async (userId, month, year, options = {}) => {
 // ============================================
 // HELPER: Tính khấu trừ nghỉ phép cho INSTRUCTOR
 // ============================================
-const computeLeaveDeduction = (userObj, leaveConfig) => {
+const computeLeaveDeduction = (userObj, leaveConfig, targetMonth, targetYear) => {
   if (!userObj || userObj.role !== 'INSTRUCTOR') return 0;
   if (!leaveConfig || !Number.isFinite(leaveConfig.paidLeaveDaysPerYear)) return 0;
+
   const paidDays = leaveConfig.paidLeaveDaysPerYear;
   const deductionPerDay = leaveConfig.leaveDeductionPerDay || 0;
-  const leavesTaken = userObj.emergencyLeaveCount || 0;
+
+  // Chỉ tính deduction nếu emergencyLeaveCount thuộc tháng đang xem
+  const targetMonthStr = `${targetYear}-${String(targetMonth).padStart(2, '0')}`;
+  const lastMonth = userObj.lastEmergencyLeaveMonth || '';
+  const leavesTaken = lastMonth === targetMonthStr ? (userObj.emergencyLeaveCount || 0) : 0;
+
   const extraLeaves = Math.max(0, leavesTaken - paidDays);
   return extraLeaves * deductionPerDay;
 };
@@ -442,6 +447,7 @@ export const getAllSalaryConfigs = async (_req, res) => {
 export const getCoursesForSalary = async (_req, res) => {
   try {
     const courses = await Course.find({ status: 'Active' }).sort({ code: 1 }).lean();
+    console.log('[getCoursesForSalary] courses count:', courses.length, courses.map(c => c.code));
     res.json({
       status: 'success',
       data: courses
@@ -574,7 +580,9 @@ const calculateSalaryWithSharedData = (
 
   // === CONSULTANT ===
   if (user.role === 'CONSULTANT') {
-    const docs = (docsByConsultant[userId.toString()] || []).filter(doc => {
+    const rawDocs = docsByConsultant[userId.toString()] || [];
+    console.log(`[Salary] CONSULTANT ${user.fullName}: raw docs=${rawDocs.length}`);
+    const docs = rawDocs.filter(doc => {
       const docDate = doc.createdAt ? new Date(doc.createdAt) : null;
       const regDate = doc.registrationId?.createdAt ? new Date(doc.registrationId.createdAt) : null;
       const targetDate = docDate || regDate;
@@ -584,10 +592,12 @@ const calculateSalaryWithSharedData = (
       if (applyCourseFilter && courseId !== courseIdFilter.toString()) return false;
       return true;
     });
+    console.log(`[Salary] CONSULTANT filtered docs=${docs.length} courseMap keys=${Object.keys(courseMap)}`);
 
     docs.forEach(doc => {
       const reg = doc.registrationId;
       const courseId = reg.courseId._id?.toString() || reg.courseId.toString();
+      console.log(`[Salary] doc courseId=${courseId} inMap=${!!courseMap[courseId]}`);
       const docDate = doc.createdAt ? new Date(doc.createdAt) : null;
       const regDate = reg.createdAt ? new Date(reg.createdAt) : null;
       const recordDate = docDate || regDate;
@@ -619,7 +629,7 @@ const calculateSalaryWithSharedData = (
   const totalSalaryBeforeDeduction = teachingSalary + totalCommission;
 
   // Compute leave deduction for INSTRUCTOR only
-  const leaveDeduction = computeLeaveDeduction(user, leaveConfig);
+  const leaveDeduction = computeLeaveDeduction(user, leaveConfig, targetMonth, targetYear);
   const totalSalary = Math.max(0, totalSalaryBeforeDeduction - leaveDeduction);
 
   return {
@@ -646,6 +656,7 @@ const calculateSalaryWithSharedData = (
 // API: Lấy tổng lương tháng (Admin) - GET
 // ============================================
 export const getMonthlySummary = async (req, res) => {
+  console.log('[Salary] getMonthlySummary called', req.query);
   try {
     const { month, year, role, search, courseId, page = 1, limit = 10 } = req.query;
     console.log(`[Salary] monthly-summary month=${month} year=${year} role=${role} courseId=${courseId} page=${page}`);
@@ -674,15 +685,17 @@ export const getMonthlySummary = async (req, res) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const total = await User.countDocuments(userFilter);
 
-    // Pre-fetch tất cả data dùng chung (parallel)
-    const [config, allConfigs, courses, users, leaveConfig] = await Promise.all([
+    // Pre-fetch: lấy ALL users (cho stats) + paginated users (cho bảng)
+    const [config, allConfigs, courses, allUsers, paginatedUsers, leaveConfig] = await Promise.all([
       getConfigForMonth(targetYear, targetMonth),
       getAllConfigs(),
       Course.find({ status: 'Active' }).lean(),
+      User.find(userFilter).lean(),
       User.find(userFilter).skip(skip).limit(parseInt(limit)).sort({ fullName: 1 }).lean(),
       getLeaveConfigForYear(targetYear),
     ]);
 
+    console.log('[Salary DEBUG] config:', !!config, 'courses:', courses.length);
     if (!config) {
       console.warn('[Salary] 400 monthly-summary: no salary config', { query: req.query });
       return res.status(400).json({
@@ -699,20 +712,20 @@ export const getMonthlySummary = async (req, res) => {
     const startDate = new Date(targetYear, targetMonth - 1, 1);
     const endDate = new Date(targetYear, targetMonth, 0, 23, 59, 59);
 
-    // Chỉ pre-fetch data cho những user đang được hiển thị (đã phân trang)
-    const instructorIds = users.filter(u => u.role === 'INSTRUCTOR').map(u => u._id);
-    const consultantIds = users.filter(u => u.role === 'CONSULTANT').map(u => u._id);
+    // Pre-fetch data cho TẤT CẢ users (cho stats tổng)
+    const allInstructorIds = allUsers.filter(u => u.role === 'INSTRUCTOR').map(u => u._id);
+    const allConsultantIds = allUsers.filter(u => u.role === 'CONSULTANT').map(u => u._id);
 
     const [allBookings, allDocs] = await Promise.all([
-      instructorIds.length > 0
+      allInstructorIds.length > 0
         ? Booking.find({
-            instructorId: { $in: instructorIds },
+            instructorId: { $in: allInstructorIds },
             date: { $gte: startDate, $lte: endDate }
           }).populate('learnerId', 'fullName').populate('batchId', 'courseId').lean()
         : Promise.resolve([]),
-      consultantIds.length > 0
+      allConsultantIds.length > 0
         ? Document.find({
-            consultantId: { $in: consultantIds },
+            consultantId: { $in: allConsultantIds },
             isDeleted: false,
             createdAt: { $gte: startDate, $lte: endDate }
           }).populate({
@@ -738,7 +751,8 @@ export const getMonthlySummary = async (req, res) => {
       docsByConsultant[cid].push(doc);
     });
 
-    const sharedData = {
+    // Tính stats trên TẤT CẢ users
+    const sharedDataAll = {
       allConfigs,
       courses,
       courseMap,
@@ -748,16 +762,27 @@ export const getMonthlySummary = async (req, res) => {
       courseIdFilter: courseId,
       leaveConfig,
     };
+    const allResults = await calculateSalaryBatch(allUsers, targetMonth, targetYear, { courseIdFilter: courseId }, sharedDataAll);
+    const totalStats = {
+      totalSalary: allResults.reduce((s, u) => s + (u.totalSalary || 0), 0),
+      totalHours: allResults.reduce((s, u) => s + (u.totalTeachingHours || 0), 0),
+      totalCommission: allResults.reduce((s, u) => s + (u.totalCommission || 0), 0),
+      totalDocuments: allResults.reduce((s, u) => s + (u.totalDocuments || 0), 0),
+      instructorCount: allResults.filter(u => u.role === 'INSTRUCTOR').length,
+      consultantCount: allResults.filter(u => u.role === 'CONSULTANT').length,
+    };
 
-    // Tính lương song song
-    console.log(`[Salary] Pre-fetch done. users=${users.length} instructors=${instructorIds.length} consultants=${consultantIds.length} bookings=${allBookings.length} docs=${allDocs.length}`);
-    const results = await calculateSalaryBatch(users, targetMonth, targetYear, { courseIdFilter: courseId }, sharedData);
-    console.log(`[Salary] calculate done. results=${results.length}`);
+    // Tính results cho paginated users (dùng lại data đã pre-fetch ở trên)
+    const paginatedIds = paginatedUsers.map(u => u._id.toString());
+    const paginatedResults = allResults.filter(u => paginatedIds.includes(u.userId.toString()));
+
+    console.log(`[Salary] total=${total} results=${paginatedResults.length}`);
 
     res.json({
       status: 'success',
       data: {
-        users: results,
+        users: paginatedResults,
+        totalStats,
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
@@ -1172,7 +1197,8 @@ export const getLeaveUsage = async (req, res) => {
       .lean();
 
     const usage = instructors.map(instructor => {
-      const leavesTaken = instructor.emergencyLeaveCount || 0;
+      const lastMonth = instructor.lastEmergencyLeaveMonth || '';
+      const leavesTaken = lastMonth.startsWith(String(year)) ? (instructor.emergencyLeaveCount || 0) : 0;
       const paidDays = leaveConfig.paidLeaveDaysPerYear || 12;
       const deductionPerDay = leaveConfig.leaveDeductionPerDay || 0;
       const extraDays = Math.max(0, leavesTaken - paidDays);
@@ -1555,153 +1581,6 @@ export const exportSalaryCSV = async (req, res) => {
     res.send(excelBuffer);
   } catch (error) {
     console.error('[Salary] Export Excel ERROR:', error);
-    res.status(500).json({ status: 'error', message: error.message });
-  }
-};
-
-// ============================================
-// API: Lấy danh sách cột lương (GET /salary/columns)
-// ============================================
-export const getSalaryColumns = async (req, res) => {
-  try {
-    const { type, role, active } = req.query;
-    const filter = {};
-    if (type) filter.type = type;
-    if (role) filter.applyToRoles = role;
-    if (active !== undefined) filter.isActive = active === 'true';
-
-    const columns = await SalaryColumnConfig.find(filter)
-      .populate('courseId', 'code name')
-      .sort({ order: 1, createdAt: 1 })
-      .lean();
-
-    res.json({ status: 'success', data: columns });
-  } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
-  }
-};
-
-// ============================================
-// API: Tạo cột lương mới (POST /salary/columns)
-// ============================================
-export const createSalaryColumn = async (req, res) => {
-  try {
-    const { name, code, type, applyToRoles, order, description, courseId, defaultValue } = req.body;
-
-    if (!name || !name.trim()) {
-      console.warn('[Salary] 400 createSalaryColumn: missing name', { body: req.body });
-      return res.status(400).json({ status: 'error', message: 'Tên cột là bắt buộc' });
-    }
-    if (!code || !code.trim()) {
-      console.warn('[Salary] 400 createSalaryColumn: missing code', { body: req.body });
-      return res.status(400).json({ status: 'error', message: 'Mã cột là bắt buộc' });
-    }
-    if (!type || !['course', 'allowance', 'deduction', 'bonus'].includes(type)) {
-      console.warn('[Salary] 400 createSalaryColumn: invalid type', { type, body: req.body });
-      return res.status(400).json({ status: 'error', message: 'Loại cột không hợp lệ' });
-    }
-
-    // Check unique code
-    const existing = await SalaryColumnConfig.findOne({ code: code.trim().toLowerCase() });
-    if (existing) {
-      console.warn('[Salary] 400 createSalaryColumn: duplicate code', { code });
-      return res.status(400).json({ status: 'error', message: 'Mã cột đã tồn tại' });
-    }
-
-    const column = new SalaryColumnConfig({
-      name: name.trim(),
-      code: code.trim().toLowerCase().replace(/\s+/g, '_'),
-      type,
-      applyToRoles: Array.isArray(applyToRoles) ? applyToRoles : ['ALL'],
-      order: Number.isFinite(order) ? order : 0,
-      description: description || '',
-      courseId: courseId || null,
-      defaultValue: Number.isFinite(defaultValue) ? defaultValue : 0,
-    });
-
-    await column.save();
-
-    res.status(201).json({
-      status: 'success',
-      message: 'Cột lương đã được tạo',
-      data: column,
-    });
-  } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
-  }
-};
-
-// ============================================
-// API: Cập nhật cột lương (PUT /salary/columns/:id)
-// ============================================
-export const updateSalaryColumn = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { name, code, type, applyToRoles, isActive, order, description, courseId, defaultValue } = req.body;
-
-    const column = await SalaryColumnConfig.findById(id);
-    if (!column) {
-      return res.status(404).json({ status: 'error', message: 'Cột lương không tồn tại' });
-    }
-
-    if (name !== undefined) column.name = name.trim();
-    if (code !== undefined) {
-      const newCode = code.trim().toLowerCase().replace(/\s+/g, '_');
-      const existing = await SalaryColumnConfig.findOne({ code: newCode, _id: { $ne: id } });
-      if (existing) {
-        console.warn('[Salary] 400 updateSalaryColumn: duplicate code', { id, code: newCode });
-        return res.status(400).json({ status: 'error', message: 'Mã cột đã tồn tại' });
-      }
-      column.code = newCode;
-    }
-    if (type !== undefined) {
-      if (!['course', 'allowance', 'deduction', 'bonus'].includes(type)) {
-        console.warn('[Salary] 400 updateSalaryColumn: invalid type', { id, type });
-        return res.status(400).json({ status: 'error', message: 'Loại cột không hợp lệ' });
-      }
-      column.type = type;
-    }
-    if (applyToRoles !== undefined) column.applyToRoles = Array.isArray(applyToRoles) ? applyToRoles : ['ALL'];
-    if (isActive !== undefined) column.isActive = Boolean(isActive);
-    if (order !== undefined) column.order = Number.isFinite(order) ? order : 0;
-    if (description !== undefined) column.description = description;
-    if (courseId !== undefined) column.courseId = courseId || null;
-    if (defaultValue !== undefined) column.defaultValue = Number.isFinite(defaultValue) ? defaultValue : 0;
-
-    await column.save();
-
-    const populated = await SalaryColumnConfig.findById(column._id)
-      .populate('courseId', 'code name')
-      .lean();
-
-    res.json({
-      status: 'success',
-      message: 'Cột lương đã được cập nhật',
-      data: populated,
-    });
-  } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
-  }
-};
-
-// ============================================
-// API: Xóa cột lương (DELETE /salary/columns/:id)
-// ============================================
-export const deleteSalaryColumn = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const column = await SalaryColumnConfig.findById(id);
-    if (!column) {
-      return res.status(404).json({ status: 'error', message: 'Cột lương không tồn tại' });
-    }
-
-    await SalaryColumnConfig.findByIdAndDelete(id);
-
-    res.json({
-      status: 'success',
-      message: 'Cột lương đã được xóa',
-    });
-  } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
