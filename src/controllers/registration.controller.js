@@ -325,23 +325,60 @@ export const assignRegistrationByAdmin = async (req, res) => {
   }
 };
 
+export const unassignRegistration = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const registration = await Registration.findById(id);
+    if (!registration) {
+      return res.status(404).json({ status: 'error', message: 'Không tìm thấy đăng ký' });
+    }
+
+    registration.batchId = null;
+    registration.status = 'WAITING';
+    await registration.save();
+
+    return res.json({
+      status: 'success',
+      message: 'Học viên đã được tháo khỏi lớp thành công',
+      data: registration,
+    });
+  } catch (error) {
+    return res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
 export const getBatchParticipants = async (req, res) => {
   try {
     const { batchId } = req.params;
 
     const registrations = await Registration.find({ batchId })
-      .populate('learnerId', 'fullName phone email status')
+      .populate('learnerId', 'fullName phone email status avatar')
       .populate({
         path: 'batchId',
         select: 'location startDate estimatedEndDate status courseId',
         populate: { path: 'courseId', select: 'code name' },
       })
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Fetch documents for each learner to check profile completion
+    const learnerIds = registrations.map(r => r.learnerId?._id).filter(Boolean);
+    const documents = await Document.find({ learnerId: { $in: learnerIds } }).lean();
+    const docMap = {};
+    documents.forEach(d => docMap[d.learnerId.toString()] = d);
+
+    const enrichedRegistrations = registrations.map(r => {
+      const doc = r.learnerId ? docMap[r.learnerId._id.toString()] : null;
+      return {
+        ...r,
+        learnerDocument: doc || null
+      };
+    });
 
     return res.json({
       status: 'success',
-      data: registrations,
-      count: registrations.length,
+      data: enrichedRegistrations,
+      count: enrichedRegistrations.length,
     });
   } catch (error) {
     return res.status(500).json({ status: 'error', message: error.message });
@@ -552,6 +589,9 @@ export const updateOfflinePayment = async (req, res) => {
     }
 
     registration.feePlanSnapshot[feeIndex].paymented = true;
+    if (!registration.firstPaymentDate) {
+      registration.firstPaymentDate = new Date();
+    }
     registration.markModified('feePlanSnapshot');
     await registration.save();
 

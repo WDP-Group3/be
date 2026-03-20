@@ -6,6 +6,7 @@ import Course from '../models/Course.js';
 import mongoose from 'mongoose';
 import { sendNotificationEmail } from '../services/email.service.js';
 import { checkIsHoliday } from './systemHoliday.controller.js';
+import { emitScheduleUpdate } from '../services/socket.service.js';
 
 // [HELPER 1] Kiểm tra khoảng cách thời gian (Quy tắc 12h)
 // Logic: Trả về số giờ chênh lệch. Nếu < 0 là quá khứ, < 12 là gấp.
@@ -276,6 +277,7 @@ export const createBooking = async (req, res) => {
     
     if (isBusy) return res.status(400).json({ status: 'error', message: 'Giáo viên đã báo bận.' });
 
+    // 1. Kiểm tra lỡ giáo viên đã có người đặt
     const existingBooking = await Booking.findOne({
         instructorId,
         date: { $gte: startOfDay, $lte: endOfDay },
@@ -284,6 +286,21 @@ export const createBooking = async (req, res) => {
     });
 
     if (existingBooking) return res.status(400).json({ status: 'error', message: 'Giáo viên đã có lịch dạy slot này.' });
+
+    // 2. [FIX] Chống phân thân: Kiểm tra xem học viên có đang đặt 2 giáo viên cùng 1 khung giờ không
+    const learnerExistingBooking = await Booking.findOne({
+        learnerId,
+        date: { $gte: startOfDay, $lte: endOfDay },
+        timeSlot: String(timeSlot),
+        status: { $ne: 'CANCELLED' }
+    });
+
+    if (learnerExistingBooking) {
+      return res.status(400).json({ 
+        status: 'error', 
+        message: 'Bạn đã có lịch học vào ca này với một giáo viên khác. Không thể phân thân học 2 nơi cùng lúc!' 
+      });
+    }
 
     const newBooking = new Booking({
       learnerId, 
@@ -296,8 +313,24 @@ export const createBooking = async (req, res) => {
     });
 
     await newBooking.save();
+
+    // Phát sóng sự kiện cập nhật lịch để các màn hình khác khóa ô này ngay lập tức
+    emitScheduleUpdate({ 
+      instructorId, 
+      date: bookingDate, 
+      timeSlot: String(timeSlot),
+      status: 'BOOKED'
+    });
+
     res.status(201).json({ status: 'success', message: 'Đặt lịch thành công!', data: newBooking });
   } catch (error) {
+    if (error.code === 11000) {
+      return res.status(400).json({ 
+        status: 'error', 
+        message: 'Ca học này vừa được người khác đặt hoặc bạn đã có lịch trùng. Vui lòng chọn ca hoặc giáo viên khác!' 
+      });
+    }
+    
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
@@ -341,6 +374,14 @@ export const updateBookingStatus = async (req, res) => {
             );
             
             if (!updatedBooking) return res.status(404).json({ status: 'error', message: 'Không tìm thấy lịch' });
+
+            // Phát sóng sự kiện lịch đã trống (bị hủy)
+            emitScheduleUpdate({
+              instructorId: updatedBooking.instructorId,
+              date: updatedBooking.date,
+              timeSlot: updatedBooking.timeSlot,
+              status: 'ABSENT' // hoặc CANCELLED
+            });
             
             return res.json({ 
                 status: 'success', 
@@ -359,6 +400,17 @@ export const updateBookingStatus = async (req, res) => {
     );
 
     if (!updatedBooking) return res.status(404).json({ status: 'error', message: 'Không tìm thấy lịch' });
+
+    // Phát sóng sự kiện nếu trạng thái liên quan đến việc nhả lịch (CANCELLED)
+    if (status === 'CANCELLED') {
+      emitScheduleUpdate({
+        instructorId: updatedBooking.instructorId,
+        date: updatedBooking.date,
+        timeSlot: updatedBooking.timeSlot,
+        status: 'CANCELLED'
+      });
+    }
+
     res.json({ status: 'success', message: 'Cập nhật thành công', data: updatedBooking });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });

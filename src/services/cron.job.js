@@ -38,13 +38,13 @@ export const startFridayReminderCron = () => {
 };
 
 // [CRON JOB] Kiểm tra và gửi email nhắc nhở điểm danh
-// Chạy mỗi 5 phút để kiểm tra các buổi học đã kết thúc + 5 phút nhưng chưa được điểm danh
+// Các ca học kết thúc lúc :00 hoặc :30, chạy cron vào đầu mỗi giờ để kiểm tra một lượt
 export const startAttendanceReminderCron = () => {
-  console.log('⏰ Cron job "Attendance Reminder" đã được khởi động - Chạy mỗi 5 phút');
+  console.log('⏰ Cron job "Attendance Reminder" đã được khởi động - Chạy mỗi 1 tiếng đồng hồ (phút 00)');
 
-  // Chạy mỗi 5 phút
-  cron.schedule('*/5 * * * *', async () => {
-    console.log('🔔 [CRON ATTENDANCE] Đang kiểm tra các buổi học cần điểm danh...');
+  // Chạy chính xác mỗi 1 tiếng đồng hồ (phút thứ 00 của mọi giờ)
+  cron.schedule('0 * * * *', async () => {
+    console.log('🔔 [CRON ATTENDANCE] Đang kiểm tra các buổi học cần điểm danh (mỗi 1h)...');
     
     try {
       await checkAndSendAttendanceReminders();

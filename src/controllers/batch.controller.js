@@ -176,6 +176,12 @@ export const deleteBatch = async (req, res) => {
       });
     }
 
+    // Hoàn tác: Reset tất cả học viên thuộc lớp này về trạng thái chờ
+    await Registration.updateMany(
+      { batchId: id },
+      { $set: { batchId: null, status: 'WAITING' } }
+    );
+
     return res.json({
       status: 'success',
       message: 'Xóa lớp học thành công',
@@ -185,5 +191,29 @@ export const deleteBatch = async (req, res) => {
       status: 'error',
       message: error.message,
     });
+  }
+};
+
+export const autoEnrollBatch = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const batch = await Batch.findById(id);
+    if (!batch) {
+      return res.status(404).json({ status: 'error', message: 'Không tìm thấy lớp học' });
+    }
+
+    if (batch.status !== 'OPEN') {
+      return res.status(400).json({ status: 'error', message: 'Lớp học không ở trạng thái MỞ' });
+    }
+
+    const enrollResult = await autoEnrolllearners(batch.courseId, { batchId: batch._id });
+    
+    return res.status(200).json({
+      status: 'success',
+      message: enrollResult.message,
+      data: enrollResult
+    });
+  } catch (error) {
+    return res.status(500).json({ status: 'error', message: error.message });
   }
 };

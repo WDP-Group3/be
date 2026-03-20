@@ -4,6 +4,7 @@ import User from '../models/User.js';
 import SystemHoliday from '../models/SystemHoliday.js';
 import Request from '../models/Request.js';
 import { sendNotificationEmail } from '../services/email.service.js';
+import { emitScheduleUpdate } from '../services/socket.service.js';
 
 // [HELPER] Kiểm tra ngày có trong lịch nghỉ không - CHỈ áp dụng nếu nghỉ toàn hệ thống HOẶC trùng khu vực GV
 // instructorLocation: khu vực dạy của GV (vd: Trung Giã). Nếu holiday.location = Thanh Xuân thì GV Trung Giã KHÔNG bị chặn.
@@ -603,6 +604,9 @@ export const toggleBusy = async (req, res) => {
       // Nếu TÌM THẤY -> XÓA NGAY (không tính là emergency khi hủy)
       await Schedule.findByIdAndDelete(existingSchedule._id);
       
+      // Bắn socket thông báo lịch trống
+      emitScheduleUpdate({ instructorId, date: startOfDay, timeSlot: slotNumber, status: 'AVAILABLE' });
+
       return res.json({ 
         status: 'success', 
         message: 'Đã mở lại lịch thành công', 
@@ -629,6 +633,9 @@ export const toggleBusy = async (req, res) => {
       if (existingBooking) {
         console.log(`⚠️ [SCHEDULE] GV báo bận (không phải emergency) trùng với booking của HV: ${existingBooking.learnerId?.fullName}`);
       }
+
+      // Bắn socket thông báo lịch bận
+      emitScheduleUpdate({ instructorId, date: startOfDay, timeSlot: slotNumber, status: 'BUSY' });
 
       return res.json({ 
         status: 'success', 
@@ -979,6 +986,7 @@ export const toggleBusyAllDay = async (req, res) => {
       if (existingSchedule) {
         // Đã có -> xóa (mở lại)
         await Schedule.findByIdAndDelete(existingSchedule._id);
+        emitScheduleUpdate({ instructorId, date: startOfDay, timeSlot: slotNumber, status: 'AVAILABLE' });
       } else {
         // Chưa có -> tạo mới
         await Schedule.create({
@@ -989,6 +997,7 @@ export const toggleBusyAllDay = async (req, res) => {
           isEmergency: false,
           note: 'Giảng viên báo bận cả ngày'
         });
+        emitScheduleUpdate({ instructorId, date: startOfDay, timeSlot: slotNumber, status: 'BUSY' });
         successCount++;
       }
     }
