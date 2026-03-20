@@ -16,6 +16,7 @@ const getFeePlanFromRegistration = (registration) => {
     name: item.name || `Đợt ${idx + 1}`,
     amount: Number(item.amount) || 0,
     dueDate: item.dueDate || null,
+    afterPreviousPaidDays: Number(item.afterPreviousPaidDays) || 0,
     note: item.note || '',
   }));
 };

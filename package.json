@@ -31,7 +31,8 @@
     "node-cron": "^4.2.1",
     "nodemailer": "^7.0.12",
     "socket.io": "^4.8.3",
-    "vnpay": "^2.4.4"
+    "vnpay": "^2.4.4",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

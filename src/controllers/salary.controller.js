@@ -1,9 +1,12 @@
 import SalaryConfig from '../models/SalaryConfig.js';
 import SalaryReport from '../models/SalaryReport.js';
+import LeaveConfig from '../models/LeaveConfig.js';
+import SalaryColumnConfig from '../models/SalaryColumnConfig.js';
 import Course from '../models/Course.js';
 import User from '../models/User.js';
 import Booking from '../models/Booking.js';
 import Document from '../models/Document.js';
+import * as XLSX from 'xlsx';
 
 // ============================================
 // HELPER: Lấy cấu hình lương hiện tại (so với ngày hiện tại)
@@ -42,6 +45,20 @@ const getConfigForMonth = async (year, month) => {
 // ============================================
 export const getAllConfigs = async () => {
   return SalaryConfig.find().sort({ effectiveFrom: 1 }).lean();
+};
+
+// ============================================
+// HELPER: Lấy cấu hình nghỉ phép cho một năm
+// ============================================
+const getLeaveConfigForYear = async (year) => {
+  let cfg = await LeaveConfig.findOne({ year }).lean();
+  if (!cfg) {
+    // Auto-create with defaults
+    const newCfg = new LeaveConfig({ year, paidLeaveDaysPerYear: 12, leaveDeductionPerDay: 0 });
+    await newCfg.save();
+    cfg = newCfg.toObject();
+  }
+  return cfg;
 };
 
 // ============================================
@@ -93,6 +110,10 @@ const calculateSalary = async (userId, month, year, options = {}) => {
   const allConfigs = await getAllConfigs();
 
   // Lấy config đang active (dùng cho instructor hourly rate)
+  // NOTE: Hệ thống chỉ hỗ trợ thanh toán theo giờ (hourly). Không có khái niệm
+  // "lương cố định" — tổng lương luôn được tính = số buổi đã hoàn thành x lương/giờ.
+  // Khi đổi từ mức lương này sang mức khác, các SalaryReport cũ vẫn giữ nguyên
+  // (đã được snapshot) nhưng khi recalculate, hệ thống sẽ dùng config hiện tại.
   const activeConfig = await getConfigForMonth(year, month);
   const config = activeConfig;
 
@@ -243,6 +264,19 @@ const calculateSalary = async (userId, month, year, options = {}) => {
 };
 
 // ============================================
+// HELPER: Tính khấu trừ nghỉ phép cho INSTRUCTOR
+// ============================================
+const computeLeaveDeduction = (userObj, leaveConfig) => {
+  if (!userObj || userObj.role !== 'INSTRUCTOR') return 0;
+  if (!leaveConfig || !Number.isFinite(leaveConfig.paidLeaveDaysPerYear)) return 0;
+  const paidDays = leaveConfig.paidLeaveDaysPerYear;
+  const deductionPerDay = leaveConfig.leaveDeductionPerDay || 0;
+  const leavesTaken = userObj.emergencyLeaveCount || 0;
+  const extraLeaves = Math.max(0, leavesTaken - paidDays);
+  return extraLeaves * deductionPerDay;
+};
+
+// ============================================
 // API: Lấy cấu hình lương hiện tại (GET)
 // ============================================
 export const getSalaryConfig = async (_req, res) => {
@@ -279,7 +313,8 @@ export const getSalaryConfig = async (_req, res) => {
         code: courseMap[cc.courseId.toString()]?.code || 'N/A',
         name: courseMap[cc.courseId.toString()]?.name || 'N/A'
       },
-      commissionAmount: cc.commissionAmount
+      commissionAmount: cc.commissionAmount,
+      effectiveFrom: cc.effectiveFrom ? new Date(cc.effectiveFrom).toISOString().split('T')[0] : null
     }));
 
     res.json({
@@ -304,11 +339,21 @@ export const createSalaryConfig = async (req, res) => {
 
     // Validate
     if (!instructorHourlyRate || instructorHourlyRate <= 0) {
+      console.warn('[Salary] 400 createSalaryConfig: invalid hourlyRate', { instructorHourlyRate });
       return res.status(400).json({ status: 'error', message: 'Lương theo giờ không hợp lệ' });
     }
 
     if (!effectiveFrom) {
+      console.warn('[Salary] 400 createSalaryConfig: missing effectiveFrom', { body: req.body });
       return res.status(400).json({ status: 'error', message: 'Ngày hiệu lực là bắt buộc' });
+    }
+
+    const effectiveDate = new Date(effectiveFrom + 'T00:00:00');
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    if (effectiveDate < todayStart) {
+      console.warn('[Salary] 400 createSalaryConfig: past effectiveFrom', { effectiveFrom });
+      return res.status(400).json({ status: 'error', message: 'Ngày hiệu lực không được là ngày trong quá khứ' });
     }
 
     const config = new SalaryConfig({
@@ -347,7 +392,16 @@ export const updateSalaryConfig = async (req, res) => {
 
     if (courseCommissions) config.courseCommissions = courseCommissions;
     if (instructorHourlyRate) config.instructorHourlyRate = instructorHourlyRate;
-    if (effectiveFrom) config.effectiveFrom = new Date(effectiveFrom);
+    if (effectiveFrom) {
+      const newEffDate = new Date(effectiveFrom + 'T00:00:00');
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      if (newEffDate < todayStart) {
+        console.warn('[Salary] 400 updateSalaryConfig: past effectiveFrom', { effectiveFrom, id });
+        return res.status(400).json({ status: 'error', message: 'Ngày hiệu lực không được là ngày trong quá khứ' });
+      }
+      config.effectiveFrom = newEffDate;
+    }
     if (effectiveTo) config.effectiveTo = new Date(effectiveTo);
     if (note !== undefined) config.note = note;
 
@@ -398,18 +452,208 @@ export const getCoursesForSalary = async (_req, res) => {
 };
 
 // ============================================
+// HELPER: Tính lương cho NHIỀU user cùng lúc với data đã pre-fetch
+// ============================================
+const calculateSalaryBatch = async (users, targetMonth, targetYear, options, sharedData) => {
+  const { allConfigs, courses, courseMap, bookingsByInstructor, docsByConsultant, config, courseIdFilter, leaveConfig } = sharedData;
+  const results = [];
+
+  for (const user of users) {
+    const salaryData = calculateSalaryWithSharedData(
+      user._id, targetMonth, targetYear, options,
+      allConfigs, courses, courseMap, bookingsByInstructor, docsByConsultant, config,
+      user, leaveConfig
+    );
+
+    if (salaryData) {
+      const courseCountMap = {};
+      salaryData.courseCounts.forEach(cc => {
+        const key = cc.courseId?.toString() || cc.courseCode;
+        courseCountMap[key] = cc.count;
+      });
+
+      if (courseIdFilter && user.role === 'CONSULTANT') {
+        const matchedCourse = salaryData.courseCounts.find(cc => cc.courseId?.toString() === courseIdFilter.toString());
+        if (!matchedCourse) {
+          continue;
+        }
+      }
+
+      const hasOverride = (
+        Number.isFinite(user.salaryHourlyRate) ||
+        (Array.isArray(user.commissionOverrides) && user.commissionOverrides.length > 0)
+      );
+
+      results.push({
+        _id: user._id,
+        userId: user._id,
+        fullName: user.fullName,
+        role: user.role,
+        hourlyRate: salaryData.hourlyRate,
+        teachingSalary: salaryData.teachingSalary,
+        totalTeachingHours: salaryData.totalTeachingHours,
+        totalTeachingSessions: salaryData.totalTeachingSessions,
+        totalCommission: salaryData.totalCommission,
+        totalDocuments: salaryData.totalDocuments,
+        leaveDeduction: salaryData.leaveDeduction || 0,
+        totalSalary: salaryData.totalSalary,
+        courseCounts: courseCountMap,
+        courseCountDetails: salaryData.courseCounts,
+        hasOverride,
+        salaryData: salaryData
+      });
+    }
+  }
+
+  return results;
+};
+
+// ============================================
+// HELPER: Tính lương với data đã pre-fetch (không query lại DB)
+// userObj là object đã được lean() sẵn, không query lại
+// ============================================
+const calculateSalaryWithSharedData = (
+  userId, targetMonth, targetYear, options,
+  allConfigs, courses, courseMap, bookingsByInstructor, docsByConsultant, config,
+  userObj, leaveConfig
+) => {
+  const user = userObj;
+  if (!user || !['INSTRUCTOR', 'CONSULTANT'].includes(user.role)) {
+    return null;
+  }
+
+  const hourlyRate = Number.isFinite(user.salaryHourlyRate)
+    ? user.salaryHourlyRate
+    : (config?.instructorHourlyRate || 80000);
+
+  const { courseIdFilter } = options;
+  const applyCourseFilter = Boolean(courseIdFilter);
+
+  const startDate = new Date(targetYear, targetMonth - 1, 1);
+  const endDate = new Date(targetYear, targetMonth, 0, 23, 59, 59);
+
+  let totalTeachingHours = 0;
+  let totalTeachingSessions = 0;
+  let totalCommission = 0;
+  let totalDocuments = 0;
+  const courseCounts = {};
+  const teachingDetails = [];
+  const commissionDetails = [];
+
+  // User override map
+  const userOverrideMap = {};
+  if (Array.isArray(user.commissionOverrides) && user.commissionOverrides.length > 0) {
+    user.commissionOverrides.forEach(ov => {
+      if (ov?.courseId) {
+        userOverrideMap[ov.courseId.toString()] = ov.commissionAmount || 0;
+      }
+    });
+  }
+
+  // === INSTRUCTOR ===
+  if (user.role === 'INSTRUCTOR') {
+    const bookings = (bookingsByInstructor[userId.toString()] || []).filter(b => {
+      if (b.attendance !== 'PRESENT' || b.status !== 'COMPLETED') return false;
+      if (applyCourseFilter && b.batchId?.courseId?.toString() !== courseIdFilter.toString()) return false;
+      return true;
+    });
+
+    totalTeachingSessions = bookings.length;
+    totalTeachingHours = bookings.length;
+
+    bookings.forEach(booking => {
+      teachingDetails.push({
+        date: booking.date,
+        timeSlot: booking.timeSlot,
+        learnerName: booking.learnerId?.fullName || 'N/A',
+        hours: 1,
+        amount: hourlyRate
+      });
+    });
+  }
+
+  // === CONSULTANT ===
+  if (user.role === 'CONSULTANT') {
+    const docs = (docsByConsultant[userId.toString()] || []).filter(doc => {
+      const docDate = doc.createdAt ? new Date(doc.createdAt) : null;
+      const regDate = doc.registrationId?.createdAt ? new Date(doc.registrationId.createdAt) : null;
+      const targetDate = docDate || regDate;
+      if (!targetDate || targetDate < startDate || targetDate > endDate) return false;
+      if (!doc.registrationId?.courseId) return false;
+      const courseId = doc.registrationId.courseId._id?.toString() || doc.registrationId.courseId.toString();
+      if (applyCourseFilter && courseId !== courseIdFilter.toString()) return false;
+      return true;
+    });
+
+    docs.forEach(doc => {
+      const reg = doc.registrationId;
+      const courseId = reg.courseId._id?.toString() || reg.courseId.toString();
+      const docDate = doc.createdAt ? new Date(doc.createdAt) : null;
+      const regDate = reg.createdAt ? new Date(reg.createdAt) : null;
+      const recordDate = docDate || regDate;
+      const { amount: commission } = getCommissionForCourse(courseId, recordDate, allConfigs, userOverrideMap);
+
+      if (!courseCounts[courseId]) {
+        courseCounts[courseId] = {
+          courseId: reg.courseId._id || reg.courseId,
+          courseCode: courseMap[courseId]?.code || 'N/A',
+          courseName: courseMap[courseId]?.name || 'N/A',
+          count: 0
+        };
+      }
+      courseCounts[courseId].count++;
+      totalDocuments += 1;
+      totalCommission += commission;
+
+      commissionDetails.push({
+        courseCode: courseMap[courseId]?.code || 'N/A',
+        courseName: courseMap[courseId]?.name || 'N/A',
+        learnerName: reg.learnerId?.fullName || 'N/A',
+        registrationDate: reg.firstPaymentDate || reg.createdAt || doc.createdAt,
+        commissionAmount: commission
+      });
+    });
+  }
+
+  const teachingSalary = totalTeachingHours * hourlyRate;
+  const totalSalaryBeforeDeduction = teachingSalary + totalCommission;
+
+  // Compute leave deduction for INSTRUCTOR only
+  const leaveDeduction = computeLeaveDeduction(user, leaveConfig);
+  const totalSalary = Math.max(0, totalSalaryBeforeDeduction - leaveDeduction);
+
+  return {
+    userId,
+    role: user.role,
+    userName: user.fullName,
+    hourlyRate,
+    teachingSalary,
+    totalTeachingHours,
+    totalTeachingSessions,
+    totalCommission,
+    leaveDeduction,
+    totalSalary,
+    totalSalaryBeforeDeduction,
+    totalDocuments,
+    courseCounts: Object.values(courseCounts),
+    teachingDetails,
+    commissionDetails,
+    configId: config?._id || null
+  };
+};
+
+// ============================================
 // API: Lấy tổng lương tháng (Admin) - GET
 // ============================================
 export const getMonthlySummary = async (req, res) => {
   try {
     const { month, year, role, search, courseId, page = 1, limit = 10 } = req.query;
+    console.log(`[Salary] monthly-summary month=${month} year=${year} role=${role} courseId=${courseId} page=${page}`);
 
-    // Mặc định: tháng trước
     const now = new Date();
     const currentMonth = now.getMonth() + 1;
     const currentYear = now.getFullYear();
 
-    // Tính tháng trước
     let prevMonth = currentMonth - 1;
     let prevYear = currentYear;
     if (prevMonth < 1) { prevMonth = 12; prevYear = currentYear - 1; }
@@ -417,75 +661,98 @@ export const getMonthlySummary = async (req, res) => {
     const targetMonth = month ? parseInt(month) : prevMonth;
     const targetYear = year ? parseInt(year) : prevYear;
 
-    // Lấy users theo role
     const userFilter = { role: { $in: ['INSTRUCTOR', 'CONSULTANT'] }, status: 'ACTIVE' };
     if (role) {
       userFilter.role = role;
     }
     if (search) {
+      // Case-insensitive regex search on fullName.
+      // countDocuments includes this filter, so total/pagination are accurate even with a search term.
       userFilter.fullName = { $regex: search, $options: 'i' };
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const total = await User.countDocuments(userFilter);
-    const users = await User.find(userFilter)
-      .skip(skip)
-      .limit(parseInt(limit))
-      .sort({ fullName: 1 })
-      .lean();
 
-    // Lấy cấu hình lương áp dụng cho tháng này
-    const config = await getConfigForMonth(targetYear, targetMonth);
+    // Pre-fetch tất cả data dùng chung (parallel)
+    const [config, allConfigs, courses, users, leaveConfig] = await Promise.all([
+      getConfigForMonth(targetYear, targetMonth),
+      getAllConfigs(),
+      Course.find({ status: 'Active' }).lean(),
+      User.find(userFilter).skip(skip).limit(parseInt(limit)).sort({ fullName: 1 }).lean(),
+      getLeaveConfigForYear(targetYear),
+    ]);
+
     if (!config) {
+      console.warn('[Salary] 400 monthly-summary: no salary config', { query: req.query });
       return res.status(400).json({
         status: 'error',
         message: 'Chưa có cấu hình lương. Vui lòng cấu hình trước.'
       });
     }
 
-    // Tính lương cho từng user
-    const results = [];
+    const courseMap = {};
+    courses.forEach(c => {
+      courseMap[c._id.toString()] = { code: c.code, name: c.name };
+    });
 
-    for (const user of users) {
-      const salaryData = await calculateSalary(user._id, targetMonth, targetYear, { courseIdFilter: courseId });
+    const startDate = new Date(targetYear, targetMonth - 1, 1);
+    const endDate = new Date(targetYear, targetMonth, 0, 23, 59, 59);
 
-      if (salaryData) {
-        // Format course counts
-        const courseCountMap = {};
-        salaryData.courseCounts.forEach(cc => {
-          courseCountMap[cc.courseCode] = cc.count;
-        });
+    // Chỉ pre-fetch data cho những user đang được hiển thị (đã phân trang)
+    const instructorIds = users.filter(u => u.role === 'INSTRUCTOR').map(u => u._id);
+    const consultantIds = users.filter(u => u.role === 'CONSULTANT').map(u => u._id);
 
-        if (courseId && user.role === 'CONSULTANT') {
-          const matchedCourse = salaryData.courseCounts.find(cc => cc.courseId?.toString() === courseId.toString());
-          if (!matchedCourse) {
-            continue;
-          }
-        }
+    const [allBookings, allDocs] = await Promise.all([
+      instructorIds.length > 0
+        ? Booking.find({
+            instructorId: { $in: instructorIds },
+            date: { $gte: startDate, $lte: endDate }
+          }).populate('learnerId', 'fullName').populate('batchId', 'courseId').lean()
+        : Promise.resolve([]),
+      consultantIds.length > 0
+        ? Document.find({
+            consultantId: { $in: consultantIds },
+            isDeleted: false,
+            createdAt: { $gte: startDate, $lte: endDate }
+          }).populate({
+            path: 'registrationId',
+            populate: { path: 'courseId learnerId' }
+          }).lean()
+        : Promise.resolve([]),
+    ]);
 
-        // Kiểm tra override
-        const hasOverride = (
-          Number.isFinite(user.salaryHourlyRate) ||
-          (Array.isArray(user.commissionOverrides) && user.commissionOverrides.length > 0)
-        );
+    // Group bookings by instructor
+    const bookingsByInstructor = {};
+    allBookings.forEach(b => {
+      const iid = b.instructorId.toString();
+      if (!bookingsByInstructor[iid]) bookingsByInstructor[iid] = [];
+      bookingsByInstructor[iid].push(b);
+    });
 
-        results.push({
-          _id: user._id,
-          fullName: user.fullName,
-          role: user.role,
-          hourlyRate: salaryData.hourlyRate,
-          teachingSalary: salaryData.teachingSalary,
-          totalTeachingHours: salaryData.totalTeachingHours,
-          totalTeachingSessions: salaryData.totalTeachingSessions,
-          totalCommission: salaryData.totalCommission,
-          totalDocuments: salaryData.totalDocuments,
-          totalSalary: salaryData.totalSalary,
-          courseCounts: courseCountMap,
-          hasOverride,
-          salaryData: salaryData
-        });
-      }
-    }
+    // Group docs by consultant
+    const docsByConsultant = {};
+    allDocs.forEach(doc => {
+      const cid = doc.consultantId.toString();
+      if (!docsByConsultant[cid]) docsByConsultant[cid] = [];
+      docsByConsultant[cid].push(doc);
+    });
+
+    const sharedData = {
+      allConfigs,
+      courses,
+      courseMap,
+      bookingsByInstructor,
+      docsByConsultant,
+      config,
+      courseIdFilter: courseId,
+      leaveConfig,
+    };
+
+    // Tính lương song song
+    console.log(`[Salary] Pre-fetch done. users=${users.length} instructors=${instructorIds.length} consultants=${consultantIds.length} bookings=${allBookings.length} docs=${allDocs.length}`);
+    const results = await calculateSalaryBatch(users, targetMonth, targetYear, { courseIdFilter: courseId }, sharedData);
+    console.log(`[Salary] calculate done. results=${results.length}`);
 
     res.json({
       status: 'success',
@@ -502,10 +769,12 @@ export const getMonthlySummary = async (req, res) => {
           year: targetYear,
           role,
           courseId
-        }
+        },
+        courses: courses.map(c => ({ _id: c._id, code: c.code, name: c.name }))
       }
     });
   } catch (error) {
+    console.error('[Salary] monthly-summary ERROR:', error);
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
@@ -518,6 +787,7 @@ export const getSalaryDetail = async (req, res) => {
     const { userId, month, year, courseId } = req.query;
 
     if (!userId) {
+      console.warn('[Salary] 400: missing userId', { query: req.query });
       return res.status(400).json({ status: 'error', message: 'userId là bắt buộc' });
     }
 
@@ -532,27 +802,54 @@ export const getSalaryDetail = async (req, res) => {
     const targetMonth = month ? parseInt(month) : prevMonth;
     const targetYear = year ? parseInt(year) : prevYear;
 
-    const config = await getConfigForMonth(targetYear, targetMonth);
+    const [config, allConfigs, courses, user, leaveConfig] = await Promise.all([
+      getConfigForMonth(targetYear, targetMonth),
+      getAllConfigs(),
+      Course.find({ status: 'Active' }).lean(),
+      User.findById(userId).lean(),
+      getLeaveConfigForYear(targetYear),
+    ]);
+
     if (!config) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Chưa có cấu hình lương'
-      });
+      console.warn('[Salary] 400 getSalaryDetail: no config', { query: req.query });
+      return res.status(400).json({ status: 'error', message: 'Chưa có cấu hình lương' });
     }
 
-    const salaryData = await calculateSalary(userId, targetMonth, targetYear, { courseIdFilter: courseId });
+    if (!user || !['INSTRUCTOR', 'CONSULTANT'].includes(user.role)) {
+      return res.status(404).json({ status: 'error', message: 'Không tìm thấy dữ liệu lương' });
+    }
+
+    const courseMap = {};
+    courses.forEach(c => { courseMap[c._id.toString()] = { code: c.code, name: c.name }; });
+
+    const startDate = new Date(targetYear, targetMonth - 1, 1);
+    const endDate = new Date(targetYear, targetMonth, 0, 23, 59, 59);
+
+    const [allBookings, allDocs] = await Promise.all([
+      Booking.find({ instructorId: userId, date: { $gte: startDate, $lte: endDate } })
+        .populate('learnerId', 'fullName').populate('batchId', 'courseId').lean(),
+      Document.find({ consultantId: userId, isDeleted: false })
+        .populate({ path: 'registrationId', populate: { path: 'courseId learnerId' } }).lean(),
+    ]);
+
+    const salaryData = calculateSalaryWithSharedData(
+      userId, targetMonth, targetYear, { courseIdFilter: courseId },
+      allConfigs, courses, courseMap,
+      { [userId]: allBookings },
+      { [userId]: allDocs },
+      config,
+      user,
+      leaveConfig
+    );
 
     if (!salaryData) {
       return res.status(404).json({ status: 'error', message: 'Không tìm thấy dữ liệu lương' });
     }
 
-    // Upsert SalaryReport
     await SalaryReport.findOneAndUpdate(
       { month: targetMonth, year: targetYear, userId },
       {
-        month: targetMonth,
-        year: targetYear,
-        userId,
+        month: targetMonth, year: targetYear, userId,
         role: salaryData.role,
         totalTeachingHours: salaryData.totalTeachingHours,
         totalTeachingSessions: salaryData.totalTeachingSessions,
@@ -568,10 +865,7 @@ export const getSalaryDetail = async (req, res) => {
       { upsert: true, new: true }
     );
 
-    res.json({
-      status: 'success',
-      data: salaryData
-    });
+    res.json({ status: 'success', data: salaryData });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
@@ -607,21 +901,43 @@ export const getMySalary = async (req, res) => {
 
     const config = await getConfigForMonth(targetYear, targetMonth);
     if (!config) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Chưa có cấu hình lương'
-      });
+      console.warn('[Salary] 400 getMySalary: no config', { userId, query: req.query });
+      return res.status(400).json({ status: 'error', message: 'Chưa có cấu hình lương' });
     }
 
-    const salaryData = await calculateSalary(userId, targetMonth, targetYear, { courseIdFilter: courseId });
+    const [allConfigs, courses, leaveConfig] = await Promise.all([
+      getAllConfigs(),
+      Course.find({ status: 'Active' }).lean(),
+      getLeaveConfigForYear(targetYear),
+    ]);
 
-    // Upsert SalaryReport
+    const courseMap = {};
+    courses.forEach(c => { courseMap[c._id.toString()] = { code: c.code, name: c.name }; });
+
+    const startDate = new Date(targetYear, targetMonth - 1, 1);
+    const endDate = new Date(targetYear, targetMonth, 0, 23, 59, 59);
+
+    const [allBookings, allDocs] = await Promise.all([
+      Booking.find({ instructorId: userId, date: { $gte: startDate, $lte: endDate } })
+        .populate('learnerId', 'fullName').populate('batchId', 'courseId').lean(),
+      Document.find({ consultantId: userId, isDeleted: false })
+        .populate({ path: 'registrationId', populate: { path: 'courseId learnerId' } }).lean(),
+    ]);
+
+    const salaryData = calculateSalaryWithSharedData(
+      userId, targetMonth, targetYear, { courseIdFilter: courseId },
+      allConfigs, courses, courseMap,
+      { [userId]: allBookings },
+      { [userId]: allDocs },
+      config,
+      user,
+      leaveConfig
+    );
+
     await SalaryReport.findOneAndUpdate(
       { month: targetMonth, year: targetYear, userId },
       {
-        month: targetMonth,
-        year: targetYear,
-        userId,
+        month: targetMonth, year: targetYear, userId,
         role: salaryData.role,
         totalTeachingHours: salaryData.totalTeachingHours,
         totalTeachingSessions: salaryData.totalTeachingSessions,
@@ -641,14 +957,86 @@ export const getMySalary = async (req, res) => {
       status: 'success',
       data: {
         ...salaryData,
-        filter: {
-          month: targetMonth,
-          year: targetYear,
-          courseId
-        }
+        filter: { month: targetMonth, year: targetYear, courseId }
       }
     });
   } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// ============================================
+// API: Export CSV lương của tôi (Instructor/Consultant)
+// ============================================
+export const exportMySalaryCSV = async (req, res) => {
+  try {
+    const userId = req.userId;
+    const { month, year, courseId } = req.query;
+
+    if (!userId) {
+      return res.status(401).json({ status: 'error', message: 'Chưa đăng nhập' });
+    }
+
+    const user = await User.findById(userId).lean();
+    if (!user || !['INSTRUCTOR', 'CONSULTANT'].includes(user.role)) {
+      return res.status(403).json({ status: 'error', message: 'Bạn không có quyền xuất lương' });
+    }
+
+    const now = new Date();
+    const currentMonth = now.getMonth() + 1;
+    const currentYear = now.getFullYear();
+    let prevMonth = currentMonth - 1;
+    let prevYear = currentYear;
+    if (prevMonth < 1) { prevMonth = 12; prevYear = currentYear - 1; }
+
+    const targetMonth = month ? parseInt(month) : prevMonth;
+    const targetYear = year ? parseInt(year) : prevYear;
+
+    const [config, allConfigs, courses] = await Promise.all([
+      getConfigForMonth(targetYear, targetMonth),
+      getAllConfigs(),
+      Course.find({ status: 'Active' }).lean(),
+    ]);
+
+    if (!config) {
+      console.warn('[Salary] 400 exportMySalaryCSV: no config', { userId, query: req.query });
+      return res.status(400).json({ status: 'error', message: 'Chưa có cấu hình lương' });
+    }
+
+    const courseMap = {};
+    courses.forEach(c => { courseMap[c._id.toString()] = { code: c.code, name: c.name }; });
+
+    const startDate = new Date(targetYear, targetMonth - 1, 1);
+    const endDate = new Date(targetYear, targetMonth, 0, 23, 59, 59);
+
+    const [allBookings, allDocs] = await Promise.all([
+      Booking.find({ instructorId: userId, date: { $gte: startDate, $lte: endDate } })
+        .populate('learnerId', 'fullName').populate('batchId', 'courseId').lean(),
+      Document.find({ consultantId: userId, isDeleted: false })
+        .populate({ path: 'registrationId', populate: { path: 'courseId learnerId' } }).lean(),
+    ]);
+
+    const leaveConfig = await getLeaveConfigForYear(targetYear);
+    const salaryData = calculateSalaryWithSharedData(
+      userId, targetMonth, targetYear, { courseIdFilter: courseId },
+      allConfigs, courses, courseMap,
+      { [userId]: allBookings },
+      { [userId]: allDocs },
+      config,
+      user,
+      leaveConfig
+    );
+
+    if (!salaryData) {
+      return res.status(404).json({ status: 'error', message: 'Không tìm thấy dữ liệu lương' });
+    }
+
+    const excelBuffer = buildSalaryExcel(salaryData, targetMonth, targetYear);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`luong_${salaryData.userName}_${targetMonth}_${targetYear}.xlsx`)}`);
+    res.send(excelBuffer);
+  } catch (error) {
+    console.error('[Salary] exportMySalaryCSV ERROR:', error);
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
@@ -666,6 +1054,7 @@ export const getUserSalaryOverride = async (req, res) => {
     }
 
     if (!['INSTRUCTOR', 'CONSULTANT'].includes(user.role)) {
+      console.warn('[Salary] 400: invalid user role', { userId: id, role: user?.role });
       return res.status(400).json({ status: 'error', message: 'User không phải Instructor/Consultant' });
     }
 
@@ -692,6 +1081,7 @@ export const updateUserSalaryOverride = async (req, res) => {
     }
 
     if (!['INSTRUCTOR', 'CONSULTANT'].includes(user.role)) {
+      console.warn('[Salary] 400: invalid user role', { userId: id, role: user?.role });
       return res.status(400).json({ status: 'error', message: 'User không phải Instructor/Consultant' });
     }
 
@@ -725,13 +1115,357 @@ export const updateUserSalaryOverride = async (req, res) => {
 };
 
 // ============================================
-// API: Xuất file CSV chi tiết lương
+// API: Lấy cấu hình nghỉ phép (GET /salary/leave-config)
+// ============================================
+export const getLeaveConfig = async (req, res) => {
+  try {
+    const year = parseInt(req.query.year) || new Date().getFullYear();
+    const cfg = await getLeaveConfigForYear(year);
+    res.json({ status: 'success', data: cfg });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// ============================================
+// API: Cập nhật cấu hình nghỉ phép (PUT /salary/leave-config)
+// ============================================
+export const updateLeaveConfig = async (req, res) => {
+  try {
+    const { paidLeaveDaysPerYear, leaveDeductionPerDay, year } = req.body;
+    const targetYear = year || new Date().getFullYear();
+
+    if (paidLeaveDaysPerYear !== undefined && (paidLeaveDaysPerYear < 0 || !Number.isFinite(paidLeaveDaysPerYear))) {
+      console.warn('[Salary] 400 updateLeaveConfig: invalid paidLeaveDaysPerYear', { paidLeaveDaysPerYear });
+      return res.status(400).json({ status: 'error', message: 'Số ngày nghỉ phép không hợp lệ' });
+    }
+    if (leaveDeductionPerDay !== undefined && (leaveDeductionPerDay < 0 || !Number.isFinite(leaveDeductionPerDay))) {
+      console.warn('[Salary] 400 updateLeaveConfig: invalid leaveDeductionPerDay', { leaveDeductionPerDay });
+      return res.status(400).json({ status: 'error', message: 'Số tiền khấu trừ không hợp lệ' });
+    }
+
+    let cfg = await LeaveConfig.findOne({ year: targetYear });
+    if (!cfg) {
+      cfg = new LeaveConfig({ year: targetYear });
+    }
+    if (paidLeaveDaysPerYear !== undefined) cfg.paidLeaveDaysPerYear = paidLeaveDaysPerYear;
+    if (leaveDeductionPerDay !== undefined) cfg.leaveDeductionPerDay = leaveDeductionPerDay;
+    await cfg.save();
+
+    res.json({ status: 'success', message: 'Cập nhật cấu hình nghỉ phép thành công', data: cfg });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// ============================================
+// API: Xem usage nghỉ phép của instructors (GET /salary/leave-usage)
+// ============================================
+export const getLeaveUsage = async (req, res) => {
+  try {
+    const year = parseInt(req.query.year) || new Date().getFullYear();
+    const leaveConfig = await getLeaveConfigForYear(year);
+
+    const instructors = await User.find({ role: 'INSTRUCTOR', status: 'ACTIVE' })
+      .select('fullName emergencyLeaveCount emergencyLeaveOverflowCount lastEmergencyLeaveMonth')
+      .sort({ fullName: 1 })
+      .lean();
+
+    const usage = instructors.map(instructor => {
+      const leavesTaken = instructor.emergencyLeaveCount || 0;
+      const paidDays = leaveConfig.paidLeaveDaysPerYear || 12;
+      const deductionPerDay = leaveConfig.leaveDeductionPerDay || 0;
+      const extraDays = Math.max(0, leavesTaken - paidDays);
+      const deduction = extraDays * deductionPerDay;
+      return {
+        userId: instructor._id,
+        fullName: instructor.fullName,
+        emergencyLeaveCount: leavesTaken,
+        paidLeaveDays: paidDays,
+        extraLeaveDays: extraDays,
+        leaveDeductionPerDay: deductionPerDay,
+        leaveDeduction: deduction,
+        lastEmergencyLeaveMonth: instructor.lastEmergencyLeaveMonth,
+      };
+    });
+
+    res.json({
+      status: 'success',
+      data: {
+        config: leaveConfig,
+        year,
+        instructors: usage,
+        summary: {
+          totalInstructors: usage.length,
+          totalLeaves: usage.reduce((s, i) => s + i.emergencyLeaveCount, 0),
+          totalExtraDays: usage.reduce((s, i) => s + i.extraLeaveDays, 0),
+          totalDeduction: usage.reduce((s, i) => s + i.leaveDeduction, 0),
+        },
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// ============================================
+// HELPER: Tạo file Excel từ salary data
+// ============================================
+const buildSalaryExcel = (salaryData, targetMonth, targetYear) => {
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1: Tổng quan
+  const overview = [
+    ['BẢNG LƯƠNG THÁNG', `${targetMonth}/${targetYear}`],
+    ['Họ tên', salaryData.userName],
+    ['Vai trò', salaryData.role === 'INSTRUCTOR' ? 'Giảng viên' : 'Tư vấn viên'],
+    [],
+    ['TỔNG QUAN'],
+    ['Tổng giờ dạy', salaryData.totalTeachingHours],
+    ['Tổng số buổi', salaryData.totalTeachingSessions],
+    ['Tổng hoa hồng', salaryData.totalCommission],
+    ['Tổng lương', salaryData.totalSalary],
+  ];
+  const wsOverview = XLSX.utils.aoa_to_sheet(overview);
+  XLSX.utils.book_append_sheet(wb, wsOverview, 'Tổng quan');
+
+  // Sheet 2: Chi tiết giờ dạy (INSTRUCTOR)
+  if (salaryData.teachingDetails && salaryData.teachingDetails.length > 0) {
+    const teaching = [
+      ['Ngày', 'Ca', 'Học viên', 'Số giờ', 'Số tiền'],
+      ...salaryData.teachingDetails.map(d => [
+        new Date(d.date).toLocaleDateString('vi-VN'),
+        d.timeSlot,
+        d.learnerName,
+        d.hours,
+        d.amount,
+      ]),
+    ];
+    const wsTeaching = XLSX.utils.aoa_to_sheet(teaching);
+    XLSX.utils.book_append_sheet(wb, wsTeaching, 'Chi tiết giờ dạy');
+  }
+
+  // Sheet 3: Chi tiết hoa hồng (CONSULTANT)
+  if (salaryData.commissionDetails && salaryData.commissionDetails.length > 0) {
+    const commission = [
+      ['Khóa học', 'Tên học viên', 'Ngày nhận hồ sơ', 'Hoa hồng'],
+      ...salaryData.commissionDetails.map(d => [
+        `${d.courseCode} - ${d.courseName}`,
+        d.learnerName,
+        new Date(d.registrationDate).toLocaleDateString('vi-VN'),
+        d.commissionAmount,
+      ]),
+    ];
+    const wsCommission = XLSX.utils.aoa_to_sheet(commission);
+    XLSX.utils.book_append_sheet(wb, wsCommission, 'Chi tiết hoa hồng');
+  }
+
+  // Sheet 4: Tổng hợp theo khóa học
+  if (salaryData.courseCounts && salaryData.courseCounts.length > 0) {
+    const courseSummary = [
+      ['Khóa học', 'Số lượng'],
+      ...salaryData.courseCounts.map(cc => [
+        `${cc.courseCode} - ${cc.courseName}`,
+        cc.count,
+      ]),
+    ];
+    const wsCourse = XLSX.utils.aoa_to_sheet(courseSummary);
+    XLSX.utils.book_append_sheet(wb, wsCourse, 'Theo khóa học');
+  }
+
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  return buffer;
+};
+
+// ============================================
+// HELPER: Build Excel tất cả lương (nhiều user)
+// ============================================
+const buildAllSalaryExcel = (allSalaryData, targetMonth, targetYear) => {
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1: Tổng hợp
+  const summary = [
+    ['BẢNG LƯƠNG THÁNG', `${targetMonth}/${targetYear}`],
+    ['Ngày xuất', new Date().toLocaleString('vi-VN')],
+    ['Tổng nhân viên', allSalaryData.length],
+    [],
+    ['STT', 'Họ tên', 'Vai trò', 'Tổng giờ dạy', 'Tổng số buổi', 'Hoa hồng', 'Tổng lương'],
+  ];
+  allSalaryData.forEach((sd, idx) => {
+    summary.push([
+      idx + 1,
+      sd.userName,
+      sd.role === 'INSTRUCTOR' ? 'Giảng viên' : 'Tư vấn viên',
+      sd.totalTeachingHours,
+      sd.totalTeachingSessions,
+      sd.totalCommission,
+      sd.totalSalary,
+    ]);
+  });
+  const wsSummary = XLSX.utils.aoa_to_sheet(summary);
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Tổng hợp');
+
+  // Sheet 2: Chi tiết giờ dạy (tất cả instructor)
+  const teachingRows = [['STT', 'Họ tên GV', 'Ngày', 'Ca', 'Học viên', 'Số giờ', 'Số tiền']];
+  allSalaryData.filter(sd => sd.role === 'INSTRUCTOR').forEach((sd) => {
+    (sd.teachingDetails || []).forEach(d => {
+      teachingRows.push([
+        teachingRows.length,
+        sd.userName,
+        new Date(d.date).toLocaleDateString('vi-VN'),
+        d.timeSlot,
+        d.learnerName,
+        d.hours,
+        d.amount,
+      ]);
+    });
+  });
+  const wsTeaching = XLSX.utils.aoa_to_sheet(teachingRows);
+  XLSX.utils.book_append_sheet(wb, wsTeaching, 'Chi tiết giờ dạy');
+
+  // Sheet 3: Chi tiết hoa hồng (tất cả consultant)
+  const commissionRows = [['STT', 'Họ tên TV', 'Khóa học', 'Học viên', 'Ngày nhận', 'Hoa hồng']];
+  allSalaryData.filter(sd => sd.role === 'CONSULTANT').forEach((sd) => {
+    (sd.commissionDetails || []).forEach(d => {
+      commissionRows.push([
+        commissionRows.length,
+        sd.userName,
+        `${d.courseCode} - ${d.courseName}`,
+        d.learnerName,
+        new Date(d.registrationDate).toLocaleDateString('vi-VN'),
+        d.commissionAmount,
+      ]);
+    });
+  });
+  const wsCommission = XLSX.utils.aoa_to_sheet(commissionRows);
+  XLSX.utils.book_append_sheet(wb, wsCommission, 'Chi tiết hoa hồng');
+
+  // Sheet 4: Theo khóa học
+  const courseRows = [['Khóa học', 'Số lượng']];
+  const courseMap = {};
+  allSalaryData.forEach((sd) => {
+    (sd.courseCounts || []).forEach(cc => {
+      const key = `${cc.courseCode} - ${cc.courseName}`;
+      courseMap[key] = (courseMap[key] || 0) + cc.count;
+    });
+  });
+  Object.entries(courseMap).forEach(([course, count]) => {
+    courseRows.push([course, count]);
+  });
+  const wsCourse = XLSX.utils.aoa_to_sheet(courseRows);
+  XLSX.utils.book_append_sheet(wb, wsCourse, 'Theo khóa học');
+
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+};
+
+// ============================================
+// API: Xuất file Excel tất cả lương tháng (Admin)
+// ============================================
+export const exportAllSalaryExcel = async (req, res) => {
+  try {
+    const { month, year, role, courseId } = req.query;
+
+    const now = new Date();
+    const currentMonth = now.getMonth() + 1;
+    const currentYear = now.getFullYear();
+    let prevMonth = currentMonth - 1;
+    let prevYear = currentYear;
+    if (prevMonth < 1) { prevMonth = 12; prevYear = currentYear - 1; }
+
+    const targetMonth = month ? parseInt(month) : prevMonth;
+    const targetYear = year ? parseInt(year) : prevYear;
+
+    // Pre-fetch tất cả data
+    const [config, allConfigs, courses, users, leaveConfig] = await Promise.all([
+      getConfigForMonth(targetYear, targetMonth),
+      getAllConfigs(),
+      Course.find({ status: 'Active' }).lean(),
+      User.find({ role: { $in: ['INSTRUCTOR', 'CONSULTANT'] } }).lean(),
+      getLeaveConfigForYear(targetYear),
+    ]);
+
+    if (!config) {
+      console.warn('[Salary] 400 exportAllSalaryExcel: no config', { query: req.query });
+      return res.status(400).json({ status: 'error', message: 'Chưa có cấu hình lương' });
+    }
+
+    const courseMap = {};
+    courses.forEach(c => { courseMap[c._id.toString()] = { code: c.code, name: c.name }; });
+
+    const startDate = new Date(targetYear, targetMonth - 1, 1);
+    const endDate = new Date(targetYear, targetMonth, 0, 23, 59, 59);
+
+    const [allBookings, allDocs] = await Promise.all([
+      Booking.find({
+        instructorId: { $in: users.map(u => u._id) },
+        date: { $gte: startDate, $lte: endDate },
+      }).populate('learnerId', 'fullName').populate('batchId', 'courseId').lean(),
+      Document.find({
+        consultantId: { $in: users.map(u => u._id) },
+        isDeleted: false,
+      }).populate({ path: 'registrationId', populate: { path: 'courseId learnerId' } }).lean(),
+    ]);
+
+    // Group by user
+    const bookingsByInstructor = {};
+    allBookings.forEach(b => {
+      const uid = b.instructorId?.toString();
+      if (!uid) return;
+      if (!bookingsByInstructor[uid]) bookingsByInstructor[uid] = [];
+      bookingsByInstructor[uid].push(b);
+    });
+
+    const docsByConsultant = {};
+    allDocs.forEach(d => {
+      const uid = d.consultantId?.toString();
+      if (!uid) return;
+      if (!docsByConsultant[uid]) docsByConsultant[uid] = [];
+      docsByConsultant[uid].push(d);
+    });
+
+    // Apply role filter
+    let filteredUsers = users;
+    if (role === 'INSTRUCTOR') filteredUsers = users.filter(u => u.role === 'INSTRUCTOR');
+    if (role === 'CONSULTANT') filteredUsers = users.filter(u => u.role === 'CONSULTANT');
+
+    // Tính lương từng user
+    const allSalaryData = [];
+    for (const user of filteredUsers) {
+      const uid = user._id.toString();
+      const salaryData = calculateSalaryWithSharedData(
+        uid, targetMonth, targetYear,
+        { courseIdFilter: courseId },
+        allConfigs, courses, courseMap,
+        bookingsByInstructor,
+        docsByConsultant,
+        config,
+        user,
+        leaveConfig
+      );
+      if (salaryData) {
+        allSalaryData.push(salaryData);
+      }
+    }
+
+    const excelBuffer = buildAllSalaryExcel(allSalaryData, targetMonth, targetYear);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`luong_tong_hop_${targetMonth}_${targetYear}.xlsx`)}`);
+    res.send(excelBuffer);
+  } catch (error) {
+    console.error('[Salary] exportAllSalaryExcel ERROR:', error);
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// ============================================
+// API: Xuất file Excel chi tiết lương
 // ============================================
 export const exportSalaryCSV = async (req, res) => {
   try {
     const { userId, month, year, courseId } = req.query;
 
     if (!userId) {
+      console.warn('[Salary] 400: missing userId', { query: req.query });
       return res.status(400).json({ status: 'error', message: 'userId là bắt buộc' });
     }
 
@@ -746,12 +1480,48 @@ export const exportSalaryCSV = async (req, res) => {
     const targetMonth = month ? parseInt(month) : prevMonth;
     const targetYear = year ? parseInt(year) : prevYear;
 
-    const config = await getConfigForMonth(targetYear, targetMonth);
+    // Pre-fetch tất cả data (parallel)
+    const [config, allConfigs, courses, user, leaveConfig] = await Promise.all([
+      getConfigForMonth(targetYear, targetMonth),
+      getAllConfigs(),
+      Course.find({ status: 'Active' }).lean(),
+      User.findById(userId).lean(),
+      getLeaveConfigForYear(targetYear),
+    ]);
+
     if (!config) {
+      console.warn('[Salary] 400 exportSalaryCSV: no config', { query: req.query });
       return res.status(400).json({ status: 'error', message: 'Chưa có cấu hình lương' });
     }
 
-    const salaryData = await calculateSalary(userId, targetMonth, targetYear, { courseIdFilter: courseId });
+    if (!user || !['INSTRUCTOR', 'CONSULTANT'].includes(user.role)) {
+      return res.status(404).json({ status: 'error', message: 'Không tìm thấy dữ liệu lương' });
+    }
+
+    const courseMap = {};
+    courses.forEach(c => { courseMap[c._id.toString()] = { code: c.code, name: c.name }; });
+
+    const startDate = new Date(targetYear, targetMonth - 1, 1);
+    const endDate = new Date(targetYear, targetMonth, 0, 23, 59, 59);
+
+    // Pre-fetch bookings & documents
+    const [allBookings, allDocs] = await Promise.all([
+      Booking.find({ instructorId: userId, date: { $gte: startDate, $lte: endDate } })
+        .populate('learnerId', 'fullName').populate('batchId', 'courseId').lean(),
+      Document.find({ consultantId: userId, isDeleted: false })
+        .populate({ path: 'registrationId', populate: { path: 'courseId learnerId' } }).lean(),
+    ]);
+
+    const salaryData = calculateSalaryWithSharedData(
+      userId, targetMonth, targetYear,
+      { courseIdFilter: courseId },
+      allConfigs, courses, courseMap,
+      { [userId]: allBookings },
+      { [userId]: allDocs },
+      config,
+      user,
+      leaveConfig
+    );
 
     if (!salaryData) {
       return res.status(404).json({ status: 'error', message: 'Không tìm thấy dữ liệu lương' });
@@ -779,47 +1549,158 @@ export const exportSalaryCSV = async (req, res) => {
       { upsert: true, new: true }
     );
 
-    // Tạo CSV
-    let csv = '';
+    const excelBuffer = buildSalaryExcel(salaryData, targetMonth, targetYear);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`luong_${salaryData.userName}_${targetMonth}_${targetYear}.xlsx`)}`);
+    res.send(excelBuffer);
+  } catch (error) {
+    console.error('[Salary] Export Excel ERROR:', error);
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
 
-    // Header thông tin
-    csv += `BẢNG LƯƠNG THÁNG ${targetMonth}/${targetYear}\n`;
-    csv += `Họ tên: ${salaryData.userName}\n`;
-    csv += `Vai trò: ${salaryData.role}\n`;
-    csv += `\n`;
+// ============================================
+// API: Lấy danh sách cột lương (GET /salary/columns)
+// ============================================
+export const getSalaryColumns = async (req, res) => {
+  try {
+    const { type, role, active } = req.query;
+    const filter = {};
+    if (type) filter.type = type;
+    if (role) filter.applyToRoles = role;
+    if (active !== undefined) filter.isActive = active === 'true';
 
-    // Tổng quan
-    csv += `TỔNG QUAN\n`;
-    csv += `Tổng giờ dạy,${salaryData.totalTeachingHours}\n`;
-    csv += `Tổng số buổi,${salaryData.totalTeachingSessions}\n`;
-    csv += `Tổng hoa hồng,${salaryData.totalCommission}\n`;
-    csv += `Tổng lương,${salaryData.totalSalary}\n`;
-    csv += `\n`;
+    const columns = await SalaryColumnConfig.find(filter)
+      .populate('courseId', 'code name')
+      .sort({ order: 1, createdAt: 1 })
+      .lean();
 
-    // Chi tiết giờ dạy (INSTRUCTOR)
-    if (salaryData.teachingDetails.length > 0) {
-      csv += `CHI TIẾT GIỜ DẠY\n`;
-      csv += `Ngày,Ca,Học viên,Số giờ,Số tiền\n`;
-      salaryData.teachingDetails.forEach(d => {
-        const date = new Date(d.date).toLocaleDateString('vi-VN');
-        csv += `${date},${d.timeSlot},${d.learnerName},${d.hours},${d.amount}\n`;
-      });
-      csv += `\n`;
+    res.json({ status: 'success', data: columns });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// ============================================
+// API: Tạo cột lương mới (POST /salary/columns)
+// ============================================
+export const createSalaryColumn = async (req, res) => {
+  try {
+    const { name, code, type, applyToRoles, order, description, courseId, defaultValue } = req.body;
+
+    if (!name || !name.trim()) {
+      console.warn('[Salary] 400 createSalaryColumn: missing name', { body: req.body });
+      return res.status(400).json({ status: 'error', message: 'Tên cột là bắt buộc' });
+    }
+    if (!code || !code.trim()) {
+      console.warn('[Salary] 400 createSalaryColumn: missing code', { body: req.body });
+      return res.status(400).json({ status: 'error', message: 'Mã cột là bắt buộc' });
+    }
+    if (!type || !['course', 'allowance', 'deduction', 'bonus'].includes(type)) {
+      console.warn('[Salary] 400 createSalaryColumn: invalid type', { type, body: req.body });
+      return res.status(400).json({ status: 'error', message: 'Loại cột không hợp lệ' });
     }
 
-    // Chi tiết hoa hồng
-    if (salaryData.commissionDetails.length > 0) {
-      csv += `CHI TIẾT HOA HỒNG\n`;
-      csv += `Khóa học,Tên học viên,Ngày nhận hồ sơ,Hoa hồng\n`;
-      salaryData.commissionDetails.forEach(d => {
-        const date = new Date(d.registrationDate).toLocaleDateString('vi-VN');
-        csv += `${d.courseCode} - ${d.courseName},${d.learnerName},${date},${d.commissionAmount}\n`;
-      });
+    // Check unique code
+    const existing = await SalaryColumnConfig.findOne({ code: code.trim().toLowerCase() });
+    if (existing) {
+      console.warn('[Salary] 400 createSalaryColumn: duplicate code', { code });
+      return res.status(400).json({ status: 'error', message: 'Mã cột đã tồn tại' });
     }
 
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename=salary_${salaryData.userName}_${targetMonth}_${targetYear}.csv`);
-    res.send('\ufeff' + csv); // BOM for UTF-8
+    const column = new SalaryColumnConfig({
+      name: name.trim(),
+      code: code.trim().toLowerCase().replace(/\s+/g, '_'),
+      type,
+      applyToRoles: Array.isArray(applyToRoles) ? applyToRoles : ['ALL'],
+      order: Number.isFinite(order) ? order : 0,
+      description: description || '',
+      courseId: courseId || null,
+      defaultValue: Number.isFinite(defaultValue) ? defaultValue : 0,
+    });
+
+    await column.save();
+
+    res.status(201).json({
+      status: 'success',
+      message: 'Cột lương đã được tạo',
+      data: column,
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// ============================================
+// API: Cập nhật cột lương (PUT /salary/columns/:id)
+// ============================================
+export const updateSalaryColumn = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, code, type, applyToRoles, isActive, order, description, courseId, defaultValue } = req.body;
+
+    const column = await SalaryColumnConfig.findById(id);
+    if (!column) {
+      return res.status(404).json({ status: 'error', message: 'Cột lương không tồn tại' });
+    }
+
+    if (name !== undefined) column.name = name.trim();
+    if (code !== undefined) {
+      const newCode = code.trim().toLowerCase().replace(/\s+/g, '_');
+      const existing = await SalaryColumnConfig.findOne({ code: newCode, _id: { $ne: id } });
+      if (existing) {
+        console.warn('[Salary] 400 updateSalaryColumn: duplicate code', { id, code: newCode });
+        return res.status(400).json({ status: 'error', message: 'Mã cột đã tồn tại' });
+      }
+      column.code = newCode;
+    }
+    if (type !== undefined) {
+      if (!['course', 'allowance', 'deduction', 'bonus'].includes(type)) {
+        console.warn('[Salary] 400 updateSalaryColumn: invalid type', { id, type });
+        return res.status(400).json({ status: 'error', message: 'Loại cột không hợp lệ' });
+      }
+      column.type = type;
+    }
+    if (applyToRoles !== undefined) column.applyToRoles = Array.isArray(applyToRoles) ? applyToRoles : ['ALL'];
+    if (isActive !== undefined) column.isActive = Boolean(isActive);
+    if (order !== undefined) column.order = Number.isFinite(order) ? order : 0;
+    if (description !== undefined) column.description = description;
+    if (courseId !== undefined) column.courseId = courseId || null;
+    if (defaultValue !== undefined) column.defaultValue = Number.isFinite(defaultValue) ? defaultValue : 0;
+
+    await column.save();
+
+    const populated = await SalaryColumnConfig.findById(column._id)
+      .populate('courseId', 'code name')
+      .lean();
+
+    res.json({
+      status: 'success',
+      message: 'Cột lương đã được cập nhật',
+      data: populated,
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// ============================================
+// API: Xóa cột lương (DELETE /salary/columns/:id)
+// ============================================
+export const deleteSalaryColumn = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const column = await SalaryColumnConfig.findById(id);
+    if (!column) {
+      return res.status(404).json({ status: 'error', message: 'Cột lương không tồn tại' });
+    }
+
+    await SalaryColumnConfig.findByIdAndDelete(id);
+
+    res.json({
+      status: 'success',
+      message: 'Cột lương đã được xóa',
+    });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
