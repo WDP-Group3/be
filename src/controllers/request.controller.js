@@ -51,6 +51,43 @@ export const createRequest = async (req, res) => {
             if (user.role !== 'learner' && user.role !== 'ADMIN') {
                 return res.status(403).json({ status: 'error', message: 'Chỉ học viên mới có quyền tạo đơn xin nộp muộn' });
             }
+
+            // Check trùng lặp: không cho phép xin nộp muộn 2 lần cho cùng 1 đợt
+            if (registrationId && paymentBatch) {
+                const duplicate = await Request.findOne({
+                    user: userId,
+                    type: 'LATE_PAYMENT',
+                    registrationId,
+                    paymentBatch,
+                    status: { $in: ['PENDING', 'APPROVED'] },
+                });
+                if (duplicate) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: `Bạn đã có đơn xin nộp muộn cho đợt "${paymentBatch}" này rồi (trạng thái: ${duplicate.status === 'PENDING' ? 'Chờ duyệt' : 'Đã duyệt'}). Không thể gửi thêm đơn.`,
+                    });
+                }
+            }
+
+            // Validate expectedPayDate trong vòng 30 ngày từ dueDate của đợt
+            if (registrationId && paymentBatch) {
+                const reg = await Registration.findById(registrationId);
+                if (reg && reg.feePlanSnapshot) {
+                    const feePlan = reg.feePlanSnapshot.find(f => f.name === paymentBatch);
+                    if (feePlan && feePlan.dueDate) {
+                        const dueDate = new Date(feePlan.dueDate);
+                        const maxAllowed = new Date(dueDate);
+                        maxAllowed.setDate(maxAllowed.getDate() + 30);
+                        const payDate = new Date(expectedPayDate);
+                        if (payDate > maxAllowed) {
+                            return res.status(400).json({
+                                status: 'error',
+                                message: `Ngày nộp dự kiến không được vượt quá 30 ngày kể từ hạn nộp (${dueDate.toLocaleDateString('vi-VN')}). Hạn tối đa: ${maxAllowed.toLocaleDateString('vi-VN')}.`,
+                            });
+                        }
+                    }
+                }
+            }
         }
 
         const newRequest = new Request({
