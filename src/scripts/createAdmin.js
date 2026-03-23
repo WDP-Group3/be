@@ -16,10 +16,6 @@ const createAdmin = async () => {
     // Check if admin already exists
     const existingAdmin = await User.findOne({ email: adminEmail });
     if (existingAdmin) {
-      console.log('✅ Admin đã tồn tại:');
-      console.log(`   Email: ${adminEmail}`);
-      console.log(`   Password: ${adminPassword}`);
-      console.log(`   Role: ${existingAdmin.role}`);
       await mongoose.connection.close();
       return;
     }
@@ -38,11 +34,6 @@ const createAdmin = async () => {
     });
 
     await admin.save();
-
-    console.log('✅ Đã tạo tài khoản Admin thành công!');
-    console.log('📧 Email:', adminEmail);
-    console.log('🔑 Password:', adminPassword);
-    console.log('⚠️  Lưu ý: Vui lòng đổi mật khẩu sau khi đăng nhập!');
 
     await mongoose.connection.close();
     process.exit(0);

@@ -18,7 +18,7 @@ router.post('/', createRequest);
 router.get('/my-requests', getMyRequests);
 
 // Admin/Consultant routes
-router.get('/', requireRole('ADMIN', 'CONSULTANT'), getAllRequests);
-router.put('/:id/status', requireRole('ADMIN', 'CONSULTANT'), updateRequestStatus);
+router.get('/', requireRole('ADMIN', 'CONSULTANT', 'INSTRUCTOR'), getAllRequests);
+router.put('/:id/status', requireRole('ADMIN', 'CONSULTANT', 'INSTRUCTOR'), updateRequestStatus);
 
 export default router;

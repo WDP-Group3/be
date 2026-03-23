@@ -14,20 +14,20 @@ import { requireRole } from '../middleware/role.middleware.js';
 
 const router = express.Router();
 
-router.get('/tuition-info', authenticate, requireRole('learner', 'ADMIN', 'CONSULTANT'), getTuitionInfo);
-router.post('/ai-suggestion', authenticate, requireRole('ADMIN', 'CONSULTANT', 'learner'), getAiTuitionSuggestion);
-router.post('/upsert-due-date', authenticate, requireRole('ADMIN', 'CONSULTANT'), upsertDueDateByAdmin);
+router.get('/tuition-info', authenticate, requireRole('learner', 'ADMIN', 'CONSULTANT', 'INSTRUCTOR'), getTuitionInfo);
+router.post('/ai-suggestion', authenticate, requireRole('ADMIN', 'CONSULTANT', 'INSTRUCTOR', 'learner'), getAiTuitionSuggestion);
+router.post('/upsert-due-date', authenticate, requireRole('ADMIN', 'CONSULTANT', 'INSTRUCTOR'), upsertDueDateByAdmin);
 
-router.post('/', authenticate, requireRole('ADMIN', 'CONSULTANT'), createPayment);
-router.get('/', authenticate, requireRole('learner', 'ADMIN', 'CONSULTANT'), getAllPayments);
+router.post('/', authenticate, requireRole('ADMIN', 'CONSULTANT', 'INSTRUCTOR'), createPayment);
+router.get('/', authenticate, requireRole('learner', 'ADMIN', 'CONSULTANT', 'INSTRUCTOR'), getAllPayments);
 
-router.post('/create-qr', authenticate, requireRole('learner', 'ADMIN', 'CONSULTANT'), createQR);
-router.get('/transactions', authenticate, requireRole('learner', 'ADMIN', 'CONSULTANT'), getTransactions);
-router.get('/transaction-status/:id', authenticate, requireRole('learner', 'ADMIN', 'CONSULTANT'), getTransactionStatus);
-router.patch('/transactions/:id/confirm', authenticate, requireRole('ADMIN', 'CONSULTANT'), confirmTransaction);
+router.post('/create-qr', authenticate, requireRole('learner', 'ADMIN', 'CONSULTANT', 'INSTRUCTOR'), createQR);
+router.get('/transactions', authenticate, requireRole('learner', 'ADMIN', 'CONSULTANT', 'INSTRUCTOR'), getTransactions);
+router.get('/transaction-status/:id', authenticate, requireRole('learner', 'ADMIN', 'CONSULTANT', 'INSTRUCTOR'), getTransactionStatus);
+router.patch('/transactions/:id/confirm', authenticate, requireRole('ADMIN', 'CONSULTANT', 'INSTRUCTOR'), confirmTransaction);
 router.post('/check-payment', checkStatus);
 
-router.get('/:id', authenticate, requireRole('learner', 'ADMIN', 'CONSULTANT'), getPaymentById);
-router.delete('/:id', authenticate, requireRole('ADMIN', 'CONSULTANT'), deletePayment);
+router.get('/:id', authenticate, requireRole('learner', 'ADMIN', 'CONSULTANT', 'INSTRUCTOR'), getPaymentById);
+router.delete('/:id', authenticate, requireRole('ADMIN', 'CONSULTANT', 'INSTRUCTOR'), deletePayment);
 
 export default router;
