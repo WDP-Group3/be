@@ -24,7 +24,8 @@ const getFeePlanFromRegistration = (registration) => {
 const buildTuitionItems = (registrations, payments) => {
   return registrations.map((registration) => {
     const batch = registration.batchId;
-    const course = batch?.courseId;
+    // Ưu tiên lấy course từ batch, fallback về courseId đã populate (khi không có batch)
+    const course = batch?.courseId || registration.courseId;
 
     const feePlan = getFeePlanFromRegistration(registration);
     const totalFromPlan = feePlan.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
@@ -96,7 +97,7 @@ export const getAllPayments = async (req, res) => {
     if (registrationId) filter.registrationId = registrationId;
     if (method) filter.method = method;
 
-    if (!registrationId && req.user?.role === 'learner') {
+    if (!registrationId && (req.user?.role === 'learner' || req.user?.role === 'USER')) {
       const registrations = await Registration.find({ learnerId: req.userId }).select('_id');
       const registrationIds = registrations.map((r) => r._id);
       if (registrationIds.length === 0) {
@@ -208,6 +209,14 @@ export const createPayment = async (req, res) => {
       await Registration.findByIdAndUpdate(registrationId, {
         firstPaymentDate: paidAt ? new Date(paidAt) : new Date()
       });
+
+      // 🔄 Chuyển role USER → learner khi thanh toán đợt 1 thành công
+      const user = await User.findById(registration.learnerId);
+      if (user && user.role === 'USER') {
+        user.role = 'learner';
+        await user.save();
+        console.log(`✅ [PAYMENT] Đã chuyển user ${user.email} từ USER → learner`);
+      }
     }
 
     // 🔄 Tự động cập nhật trạng thái và gán học viên vào lớp nếu chưa được gán
@@ -304,6 +313,7 @@ export const getTuitionInfo = async (req, res) => {
 
     let registrations = await Registration.find(filter)
       .populate('learnerId', 'fullName phone email')
+      .populate('courseId', 'code name estimatedCost feePayments')
       .populate({ path: 'batchId', populate: { path: 'courseId', model: Course } })
       .select('+firstPaymentDate')
       .sort({ createdAt: -1 });

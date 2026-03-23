@@ -40,6 +40,29 @@ const userSchema = new mongoose.Schema(
       default: 'ACTIVE',
     },
 
+    // --- Thông tin hồ sơ cá nhân (từ CCCD) ---
+    cccdNumber: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    cccdImageFront: {
+      type: String,
+      default: null,
+    },
+    cccdImageBack: {
+      type: String,
+      default: null,
+    },
+    healthCertificate: {
+      type: String,
+      default: null,
+    },
+    photo: {
+      type: String,
+      default: null,
+    },
+
     // --- [MỚI] Ghi đè lương/hoa hồng theo từng nhân sự ---
     salaryHourlyRate: {
       type: Number,
