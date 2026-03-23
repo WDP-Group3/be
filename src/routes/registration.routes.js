@@ -17,7 +17,7 @@ import { requireRole } from '../middleware/role.middleware.js';
 const router = express.Router();
 
 router.get('/fee-submissions', authenticate, requireRole('ADMIN', 'CONSULTANT', 'INSTRUCTOR'), getFeeSubmissions);
-router.get('/', authenticate, requireRole('ADMIN', 'CONSULTANT', 'INSTRUCTOR', 'learner'), getAllRegistrations);
+router.get('/', authenticate, requireRole('ADMIN', 'CONSULTANT', 'INSTRUCTOR', 'learner', 'USER'), getAllRegistrations);
 router.get('/my-courses', authenticate, requireRole('learner'), getMyCoursesWithProgress);
 router.get('/:id', authenticate, getRegistrationById);
 router.post('/', authenticate, createRegistration); // learner tự enroll

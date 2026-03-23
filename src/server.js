@@ -36,7 +36,7 @@ app.use(
       "https://fe-git-main-nthm1806s-projects.vercel.app",
     ].filter(Boolean), // .filter(Boolean) để loại bỏ giá trị undefined nếu biến môi trường chưa có
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   }),
 );
