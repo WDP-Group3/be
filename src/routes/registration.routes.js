@@ -16,15 +16,15 @@ import { requireRole } from '../middleware/role.middleware.js';
 
 const router = express.Router();
 
-router.get('/fee-submissions', authenticate, requireRole('ADMIN', 'CONSULTANT'), getFeeSubmissions);
-router.get('/', authenticate, requireRole('ADMIN', 'CONSULTANT', 'learner'), getAllRegistrations);
+router.get('/fee-submissions', authenticate, requireRole('ADMIN', 'CONSULTANT', 'INSTRUCTOR'), getFeeSubmissions);
+router.get('/', authenticate, requireRole('ADMIN', 'CONSULTANT', 'INSTRUCTOR', 'learner'), getAllRegistrations);
 router.get('/my-courses', authenticate, requireRole('learner'), getMyCoursesWithProgress);
 router.get('/:id', authenticate, getRegistrationById);
 router.post('/', authenticate, createRegistration); // learner tự enroll
 router.post('/assign', authenticate, requireRole('ADMIN'), assignRegistrationByAdmin); // admin gán
-router.get('/course/:courseId/participants', authenticate, requireRole('ADMIN', 'CONSULTANT'), getCourseParticipants);
-router.get('/batch/:batchId/participants', authenticate, requireRole('ADMIN', 'CONSULTANT'), getBatchParticipants);
-router.patch('/:id/offline-payment', authenticate, requireRole('ADMIN', 'CONSULTANT'), updateOfflinePayment);
+router.get('/course/:courseId/participants', authenticate, requireRole('ADMIN', 'CONSULTANT', 'INSTRUCTOR'), getCourseParticipants);
+router.get('/batch/:batchId/participants', authenticate, requireRole('ADMIN', 'CONSULTANT', 'INSTRUCTOR'), getBatchParticipants);
+router.patch('/:id/offline-payment', authenticate, requireRole('ADMIN', 'CONSULTANT', 'INSTRUCTOR'), updateOfflinePayment);
 router.patch('/:id/unassign', authenticate, requireRole('ADMIN'), unassignRegistration);
 
 export default router;

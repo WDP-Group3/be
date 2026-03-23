@@ -5,7 +5,7 @@ import { requireRole } from '../middleware/role.middleware.js';
 
 const router = express.Router();
 
-router.get('/', authenticate, requireRole('ADMIN', 'CONSULTANT', 'learner'), getInvoices);
-router.post('/from-payment/:paymentId', authenticate, requireRole('ADMIN', 'CONSULTANT'), createInvoiceFromPayment);
+router.get('/', authenticate, requireRole('ADMIN', 'CONSULTANT', 'INSTRUCTOR', 'learner'), getInvoices);
+router.post('/from-payment/:paymentId', authenticate, requireRole('ADMIN', 'CONSULTANT', 'INSTRUCTOR'), createInvoiceFromPayment);
 
 export default router;

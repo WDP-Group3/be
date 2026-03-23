@@ -22,7 +22,18 @@ export const requireRole = (...allowedRoles) => {
         });
       }
 
-      if (!allowedRoles.includes(user.role)) {
+      const userRole = user.role ? String(user.role).toUpperCase().trim() : '';
+      // Support both requireRole('A', 'B') and requireRole(['A', 'B'])
+      const flattenedRoles = allowedRoles.flat();
+      const upperAllowedRoles = flattenedRoles.map(r => String(r).toUpperCase().trim());
+
+      if (!upperAllowedRoles.includes(userRole)) {
+        console.warn(`[requireRole] ACCESS DENIED:
+          - Path: ${req.method} ${req.originalUrl}
+          - User ID: ${req.userId}
+          - User Role: '${userRole}'
+          - Allowed Roles: [${upperAllowedRoles.join(', ')}]
+        `);
         return res.status(403).json({
           status: 'error',
           message: 'Bạn không có quyền truy cập chức năng này',

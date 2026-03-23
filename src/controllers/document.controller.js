@@ -37,7 +37,7 @@ export const getDocumentsForReview = async (req, res) => {
       filter.status = status;
     }
 
-    if (req.user?.role === 'CONSULTANT') {
+    if (req.user?.role === 'CONSULTANT' || req.user?.role === 'INSTRUCTOR') {
       const email = req.user?.email?.trim();
       const escapedEmail = email ? email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
       filter.$or = [
@@ -53,7 +53,7 @@ export const getDocumentsForReview = async (req, res) => {
     const filtered = documents.filter((doc) => {
       const method = doc?.registrationId?.registerMethod;
 
-      if (req.user?.role === 'CONSULTANT') return true;
+      if (req.user?.role === 'CONSULTANT' || req.user?.role === 'INSTRUCTOR') return true;
       if (req.user?.role === 'ADMIN' && registerMethod) return method === registerMethod;
       return true;
     });
@@ -68,7 +68,7 @@ export const getDocumentsForReview = async (req, res) => {
 
       let consultantIdMatches = undefined;
       let consultantEmailMatches = undefined;
-      if (role === 'CONSULTANT') {
+      if (role === 'CONSULTANT' || role === 'INSTRUCTOR') {
         consultantIdMatches = await Document.countDocuments({ consultantId: userId, isDeleted: { $ne: true } });
         consultantEmailMatches = email
           ? await Document.countDocuments({ consultantEmail: new RegExp(email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), isDeleted: { $ne: true } })
@@ -99,7 +99,10 @@ export const lookupConsultantByEmail = async (req, res) => {
       return res.status(400).json({ status: 'error', message: 'email là bắt buộc' });
     }
 
-    const consultant = await User.findOne({ role: 'CONSULTANT', email: email.trim().toLowerCase() })
+    const consultant = await User.findOne({ 
+      role: { $in: ['CONSULTANT', 'INSTRUCTOR'] }, 
+      email: email.trim().toLowerCase() 
+    })
       .select('fullName phone email role avatar');
 
     if (!consultant) {
@@ -133,7 +136,7 @@ export const updateDocumentStatus = async (req, res) => {
       return res.status(403).json({ status: 'error', message: 'Admin chỉ được xem hồ sơ, không có quyền duyệt' });
     }
 
-    if (req.user?.role === 'CONSULTANT') {
+    if (req.user?.role === 'CONSULTANT' || req.user?.role === 'INSTRUCTOR') {
       const consultantIdMatch = document?.consultantId?.toString() === req.userId;
       const consultantEmailMatch = document?.consultantEmail && req.user?.email
         && document.consultantEmail.toLowerCase() === req.user.email.toLowerCase();
@@ -221,7 +224,10 @@ export const uploadDocuments = async (req, res) => {
     if (cccdNumber) document.cccdNumber = cccdNumber;
 
     if (consultantEmail) {
-      const consultant = await User.findOne({ role: 'CONSULTANT', email: consultantEmail.trim().toLowerCase() });
+      const consultant = await User.findOne({ 
+        role: { $in: ['CONSULTANT', 'INSTRUCTOR'] }, 
+        email: consultantEmail.trim().toLowerCase() 
+      });
       if (!consultant) {
         return res.status(400).json({ status: 'error', message: 'Không tìm thấy tư vấn viên theo email đã nhập' });
       }
@@ -254,7 +260,7 @@ export const getDocumentsByRegistration = async (req, res) => {
     const registration = await Registration.findById(registrationId);
     if (!registration) return res.status(404).json({ status: 'error', message: 'Không tìm thấy hồ sơ đăng ký' });
 
-    if (registration.learnerId.toString() !== learnerId && req.user?.role !== 'ADMIN' && req.user?.role !== 'CONSULTANT') {
+    if (registration.learnerId.toString() !== learnerId && req.user?.role !== 'ADMIN' && req.user?.role !== 'CONSULTANT' && req.user?.role !== 'INSTRUCTOR') {
       return res.status(403).json({ status: 'error', message: 'Bạn không có quyền xem hồ sơ này' });
     }
 
@@ -290,7 +296,7 @@ export const softDeleteDocument = async (req, res) => {
       return res.status(404).json({ status: 'error', message: 'Document not found' });
     }
 
-    if (req.user?.role === 'CONSULTANT') {
+    if (req.user?.role === 'CONSULTANT' || req.user?.role === 'INSTRUCTOR') {
       const consultantIdMatch = document?.consultantId?.toString() === req.userId;
       const consultantEmailMatch = document?.consultantEmail && req.user?.email
         && document.consultantEmail.toLowerCase() === req.user.email.toLowerCase();

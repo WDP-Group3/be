@@ -49,12 +49,9 @@ const createlearners = async () => {
     // Lấy 4 khóa học đầu tiên
     const courses = await Course.find({}).limit(4);
     if (courses.length < 4) {
-      console.log('❌ Cần ít nhất 4 khóa học Active trong database!');
-      console.log(`   Hiện có: ${courses.length} khóa học`);
       await mongoose.connection.close();
       process.exit(1);
     }
-    console.log(`✅ Tìm thấy ${courses.length} khóa học:`);
     courses.forEach((c, i) => console.log(`   ${i + 1}. ${c.name} (${c.code}) - Học phí: ${c.estimatedCost?.toLocaleString()} VNĐ`));
 
     // Lấy các batch của từng khóa học
@@ -63,8 +60,6 @@ const createlearners = async () => {
       const batches = await Batch.find({ courseId: course._id, status: 'OPEN' }).limit(1);
       courseBatches[course._id.toString()] = batches[0]?._id || null;
     }
-
-    console.log('\n📝 Bắt đầu tạo 15 học viên cho mỗi khóa học...\n');
 
     let totallearners = 0;
     let totalRegistrations = 0;
@@ -76,8 +71,6 @@ const createlearners = async () => {
       const courseCost = course.estimatedCost || 10000000;
       const batchId = courseBatches[course._id.toString()] || null; // Có thể null để được auto-enroll
 
-      console.log(`\n📚 Khóa học: ${course.name}`);
-      console.log('-----------------------------------');
 
       for (let learnerIndex = 1; learnerIndex <= 15; learnerIndex++) {
         const globalIndex = courseIndex * 15 + learnerIndex;
@@ -126,19 +119,8 @@ const createlearners = async () => {
         });
         await transaction.save();
         totalTransactions++;
-
-        console.log(`   ✅ ${learner.fullName} - ${learner.email}`);
-        console.log(`      📱 ${learner.phone} | 💰 ${paymentAmount.toLocaleString()} VNĐ`);
       }
     }
-
-    console.log('\n========================================');
-    console.log('✅ Hoàn thành!');
-    console.log(`   📚 Tổng khóa học: 4`);
-    console.log(`   👥 Tổng học viên: ${totallearners} (15/khóa)`);
-    console.log(`   📝 Tổng đăng ký: ${totalRegistrations}`);
-    console.log(`   💰 Tổng giao dịch: ${totalTransactions}`);
-    console.log('========================================\n');
 
     await mongoose.connection.close();
     process.exit(0);
