@@ -279,10 +279,13 @@ app.use((err, req, res, next) => {
 });
 
 // Start server with Socket.io
-const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: process.env.FRONTEND_URL || "http://localhost:5173",
+    origin: [
+      process.env.FRONTEND_URL,
+      'http://localhost:5173',
+      'https://fe-git-main-nthm1806s-projects.vercel.app'
+    ].filter(Boolean),
     credentials: true,
   },
 });
