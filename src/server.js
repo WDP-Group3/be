@@ -279,6 +279,7 @@ app.use((err, req, res, next) => {
 });
 
 // Start server with Socket.io
+const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
     origin: [
