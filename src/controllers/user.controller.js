@@ -1,5 +1,8 @@
 import User from '../models/User.js';
 import LearningLocation from '../models/LearningLocation.js';
+import Course from '../models/Course.js';
+import Registration from '../models/Registration.js';
+import Batch from '../models/Batch.js';
 import bcrypt from 'bcryptjs';
 
 // Helper function to format user response (remove password)
@@ -334,6 +337,162 @@ export const restoreUser = async (req, res) => {
       status: 'success',
       data: formatUserResponse(user),
       message: 'Đã khôi phục tài khoản user'
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// ==========================================
+// [MỚI] QUẢN LÝ HẠNG HỌC VIÊN (learner)
+// ==========================================
+
+/**
+ * Lấy danh sách hạng học có thể chọn + trạng thái enrolled của 1 learner
+ * GET /api/users/:id/enrolled-courses
+ */
+export const getLearnerEnrolledCourses = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ status: 'error', message: 'User not found' });
+    }
+
+    // Lấy tất cả khóa học active
+    const courses = await Course.find({ status: 'Active' }).lean();
+
+    // enrolledCourseCodes từ User (migrate từ Registration hoặc admin đã set)
+    const userEnrolledCodes = new Set(user.enrolledCourseCodes || []);
+
+    // Với mỗi course trên hệ thống, xác định trạng thái
+    const courseStatuses = await Promise.all(
+      courses.map(async (course) => {
+        // Kiểm tra Registration: đã thanh toán chưa?
+        const reg = await Registration.findOne({
+          learnerId: id,
+          courseId: course._id,
+          firstPaymentDate: { $ne: null },
+        }).lean();
+
+        const paid = !!reg;
+
+        // inBatch = đã thanh toán + có batch OPEN
+        let inBatch = false;
+        if (reg?.batchId) {
+          const batch = await Batch.findById(reg.batchId).lean();
+          if (batch && batch.status === 'OPEN') {
+            inBatch = true;
+          }
+        }
+
+        // enrolled = đã lưu trong User.enrolledCourseCodes
+        // (dù chưa thanh toán vẫn hiện, để admin thấy và chỉnh sửa)
+        const enrolled = userEnrolledCodes.has(course.code);
+
+        return {
+          _id: course._id,
+          code: course.code,
+          name: course.name,
+          enrolled,
+          paid,
+          inBatch,
+        };
+      }),
+    );
+
+    res.json({
+      status: 'success',
+      data: {
+        enrolledCourseCodes: user.enrolledCourseCodes || [],
+        courses: courseStatuses,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+/**
+ * Cập nhật danh sách hạng học của learner
+ * PATCH /api/users/:id/enrolled-courses
+ * Body: { enrolledCourseCodes: ["A1", "B2"] }
+ */
+export const updateLearnerEnrolledCourses = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { enrolledCourseCodes } = req.body;
+
+    if (!Array.isArray(enrolledCourseCodes)) {
+      return res.status(400).json({ status: 'error', message: 'enrolledCourseCodes phải là array' });
+    }
+
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ status: 'error', message: 'User not found' });
+    }
+
+    // Lấy tất cả khóa học active để validate
+    const courses = await Course.find({ status: 'Active' }).lean();
+    const courseCodes = new Set(courses.map((c) => c.code));
+
+    // Validate: chỉ chấp nhận course codes hợp lệ
+    const validCodes = enrolledCourseCodes.filter((code) => courseCodes.has(code));
+
+    // Validate business rules:
+    // 1. Xe Máy (A*): chỉ chọn được 1 trong các hạng bắt đầu bằng 'A'
+    // 2. Ô Tô (không phải A*): chỉ chọn được 1 trong các hạng còn lại
+    const xeMayCodes = validCodes.filter((c) => /^A[12]$/.test(c));
+    const oToCodes = validCodes.filter((c) => !/^A[12]$/.test(c));
+
+    if (xeMayCodes.length > 1) {
+      return res.status(400).json({
+        status: 'error',
+        message: `Xe Máy chỉ được chọn 1 hạng (${xeMayCodes.join(' hoặc ')}), không chọn cả ${xeMayCodes.length}`,
+      });
+    }
+    if (oToCodes.length > 1) {
+      return res.status(400).json({
+        status: 'error',
+        message: `Ô Tô chỉ được chọn 1 hạng (${oToCodes.join(' hoặc ')}), không chọn cả ${oToCodes.length}`,
+      });
+    }
+
+    // Với những hạng đã thanh toán VÀ đã vào lớp (inBatch): khóa không cho xóa
+    // Chưa thanh toán: không khóa, cho phép bỏ
+    const inBatchCodes = [];
+    for (const code of (user.enrolledCourseCodes || [])) {
+      const course = courses.find((c) => c.code === code);
+      if (!course) continue;
+      // Kiểm tra: đã thanh toán (firstPaymentDate != null) VÀ đã có batch OPEN
+      const reg = await Registration.findOne({
+        learnerId: id,
+        courseId: course._id,
+        firstPaymentDate: { $ne: null },
+        batchId: { $ne: null },
+        status: { $in: ['PROCESSING', 'STUDYING'] },
+      }).lean();
+      if (reg?.batchId) {
+        const batch = await Batch.findById(reg.batchId).lean();
+        if (batch && batch.status === 'OPEN') {
+          inBatchCodes.push(code);
+        }
+      }
+    }
+
+    // Merge: giữ lại những codes đang inBatch, thêm những codes mới được chọn
+    const mergedCodes = [...new Set([...inBatchCodes, ...validCodes])];
+
+    user.enrolledCourseCodes = mergedCodes;
+    await user.save();
+
+    res.json({
+      status: 'success',
+      data: {
+        enrolledCourseCodes: mergedCodes,
+        lockedCodes: inBatchCodes,
+      },
+      message: 'Cập nhật hạng học thành công',
     });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });

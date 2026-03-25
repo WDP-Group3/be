@@ -52,11 +52,24 @@ const transactionSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.Mixed,
     default: null,
   },
+  // ── ACID: Idempotency ──────────────────────────────────────
+  idempotencyKey: {
+    type: String,
+    trim: true,
+    default: null,
+  },
+  paymentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Payment',
+    default: null,
+  },
 }, {
   timestamps: true,
 });
 
 transactionSchema.index({ transferContent: 1 }, { unique: true });
+transactionSchema.index({ idempotencyKey: 1 }, { sparse: true });
+transactionSchema.index({ paymentId: 1 }, { sparse: true });
 transactionSchema.index({ user: 1, status: 1 });
 transactionSchema.index({ registrationId: 1 });
 

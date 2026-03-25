@@ -56,7 +56,12 @@ export const createQR = async (req, res) => {
       registrationId: registrationId || null,
       scheduleIndex: Number.isInteger(scheduleIndex) ? scheduleIndex : (scheduleIndex !== undefined ? Number(scheduleIndex) : null),
       status: 'pending',
+      // ── ACID: idempotencyKey = _id để webhook có thể check nhanh
+      idempotencyKey: null, // sẽ set sau khi có _id
     });
+    // Cập nhật idempotencyKey = transaction._id
+    transaction.idempotencyKey = String(transaction._id);
+    await transaction.save();
 
     if (!SEPAY_BANK_CODE || !SEPAY_BANK_ACCOUNT) {
       return res.status(500).json({
@@ -108,14 +113,25 @@ export const checkStatus = async (req, res) => {
       return content.replace(/-/g, '').split(' ')[0].toUpperCase();
     };
 
-    let transaction = await Transaction.findOne({ transferContent, status: { $ne: 'completed' } });
+    // Tìm KHÔNG filter theo status để handle cả completed transactions (idempotency check)
+    let transaction = await Transaction.findOne({ transferContent });
+
+    // Nếu tìm thấy mà đã completed → idempotent skip
+    if (transaction?.status === 'completed') {
+      if (transaction.paymentId) {
+        console.log(`⏭️ [SEPAY] Transaction ${transaction._id} đã xử lý trước đó (idempotent skip)`);
+        return res.json({ status: 'success', message: 'Đã xử lý rồi', data: { paymentCreated: false, alreadyProcessed: true } });
+      }
+      // Completed nhưng chưa có paymentId → hoặc là cũ hoặc data không nhất quán → vẫn xử lý tiếp
+      console.log(`⚠️ [SEPAY] Transaction ${transaction._id} completed nhưng chưa có paymentId → xử lý lại`);
+    }
 
     if (!transaction) {
       // Thử tìm theo normalized content
       const normalizedTransfer = normalizeContent(transferContent);
       console.log('🔍 [SEPAY] Searching with normalized:', normalizedTransfer);
 
-      // Lấy tất cả transaction pending và so sánh
+      // Lấy tất cả transaction chưa xử lý và so sánh
       const pendingTransactions = await Transaction.find({ status: { $ne: 'completed' } });
       for (const tx of pendingTransactions) {
         if (!tx.transferContent) continue;
@@ -129,11 +145,17 @@ export const checkStatus = async (req, res) => {
     }
 
     if (transaction) {
-      console.log('✅ [SEPAY] Found transaction:', transaction.transferContent, 'amount:', transaction.amount);
+      console.log('✅ [SEPAY] Found transaction:', transaction.transferContent, 'amount:', transaction.amount, '| status:', transaction.status);
     }
 
     if (!transaction) {
-      return res.status(404).json({ status: 'error', message: 'Không tìm thấy giao dịch pending', received: transferContent });
+      return res.status(404).json({ status: 'error', message: 'Không tìm thấy giao dịch', received: transferContent });
+    }
+
+    // ── ACID: Idempotency check — nếu đã có paymentId thì bỏ qua ──
+    if (transaction.paymentId) {
+      console.log(`⏭️ [SEPAY] Transaction ${transaction._id} đã xử lý trước đó (idempotent skip)`);
+      return res.json({ status: 'success', message: 'Đã xử lý rồi', data: { paymentCreated: false, alreadyProcessed: true } });
     }
 
     const paidAmount = Number(payload.transferAmount || payload.amount || 0);
@@ -147,7 +169,6 @@ export const checkStatus = async (req, res) => {
       if (!candidate) return null;
       const d = new Date(candidate);
       if (!Number.isNaN(d.getTime())) return d;
-      // Some providers send epoch seconds/ms
       const n = Number(candidate);
       if (!Number.isNaN(n) && n > 0) {
         const maybeMs = n > 2_000_000_000 ? n : n * 1000;
@@ -157,71 +178,69 @@ export const checkStatus = async (req, res) => {
       return null;
     };
 
+    const paidAt = extractPaidAt(payload) || new Date();
+
+    // ── ACID Phase 1: Tạo Payment ──────────────────────────────────
+    const payment = await Payment.create({
+      registrationId: transaction.registrationId,
+      amount: Number(transaction.amount),
+      method: 'ONLINE',
+      receivedBy: 'SYSTEM',
+      paidAt,
+      note: `SePay webhook - ${transaction.transferContent}`,
+    });
+
+    // ── ACID Phase 2: Update Transaction với paymentId (liên kết) ──
+    transaction.paymentId = payment._id;
     transaction.status = 'completed';
-    transaction.paidAt = extractPaidAt(payload) || new Date();
+    transaction.paidAt = paidAt;
     transaction.providerTransactionId = String(payload.id || payload.transactionId || payload.referenceCode || '');
     transaction.rawPayload = payload;
     await transaction.save();
 
-    let paymentCreated = false;
     let enrollment = null;
 
+    // ── ACID Phase 3: Xử lý post-payment (idempotent operations) ───
     if (transaction.registrationId) {
-      const note = `SePay auto webhook - ${transaction.transferContent}`;
-      const existedPayment = await Payment.findOne({ note });
-      if (!existedPayment) {
-        await Payment.create({
-          registrationId: transaction.registrationId,
-          amount: Number(transaction.amount),
-          method: 'ONLINE',
-          receivedBy: 'SYSTEM',
-          paidAt: transaction.paidAt,
-          note,
-        });
-        paymentCreated = true;
-      }
+      // 3a: Set firstPaymentDate + chuyển role USER → learner (idempotent)
+      const registration = await Registration.findById(transaction.registrationId).select('_id status firstPaymentDate learnerId');
+      if (registration) {
+        const updates = {};
 
-      // Auto-enroll & set firstPaymentDate cho payment ĐẦU TIÊN (tự động)
-      // Kiểm tra xem registration đã có payment nào chưa
-      const existingPaymentCount = await Payment.countDocuments({ registrationId: transaction.registrationId });
-      if (existingPaymentCount <= 1) { // <= 1 vì vừa tạo payment ở trên
-        const registration = await Registration.findById(transaction.registrationId).select('_id status firstPaymentDate learnerId');
-        if (registration) {
-          // Set firstPaymentDate nếu chưa có (thanh toán lần đầu)
-          if (!registration.firstPaymentDate) {
-            await Registration.findByIdAndUpdate(registration._id, {
-              firstPaymentDate: transaction.paidAt
-            });
-
-            // 🔄 Chuyển role USER → learner khi thanh toán đợt 1 thành công
-            const user = await User.findById(registration.learnerId);
-            if (user && user.role === 'USER') {
-              user.role = 'learner';
-              await user.save();
-              console.log(`✅ [SEPAY] Đã chuyển user ${user.email} từ USER → learner`);
-            }
-          }
-          // Ensure status progresses once money is received
-          if (['NEW', 'WAITING'].includes(registration.status)) {
-            await Registration.findByIdAndUpdate(registration._id, { status: 'PROCESSING' });
-          }
-          enrollment = await enrollSinglelearner(registration._id);
-
-          // Emit real-time notification to user
-          if (global.io && registration.learnerId) {
-            global.io.to(`user:${registration.learnerId}`).emit('payment-success', {
-              registrationId: transaction.registrationId,
-              amount: transaction.amount,
-              paidAt: transaction.paidAt,
-              enrollment
-            });
-            console.log(`💰 Emitted payment-success to user:${registration.learnerId}`);
+        if (!registration.firstPaymentDate) {
+          updates.firstPaymentDate = paidAt;
+          // Chuyển role USER → learner
+          const user = await User.findById(registration.learnerId);
+          if (user && user.role === 'USER') {
+            user.role = 'learner';
+            await user.save();
+            console.log(`✅ [SEPAY] Đã chuyển user ${user.email} từ USER → learner`);
           }
         }
+        if (['DRAFT', 'NEW', 'WAITING'].includes(registration.status)) {
+          updates.status = 'PROCESSING';
+        }
+        if (Object.keys(updates).length > 0) {
+          await Registration.findByIdAndUpdate(registration._id, updates);
+        }
+      }
+
+      // 3b: Auto-enroll (idempotent — check batchId exists)
+      enrollment = await enrollSinglelearner(transaction.registrationId);
+
+      // 3c: Emit real-time (fire & forget)
+      if (global.io && registration?.learnerId) {
+        global.io.to(`user:${registration.learnerId}`).emit('payment-success', {
+          registrationId: transaction.registrationId,
+          amount: transaction.amount,
+          paidAt,
+          enrollment
+        });
+        console.log(`💰 Emitted payment-success to user:${registration.learnerId}`);
       }
     }
 
-    return res.json({ status: 'success', message: 'Đã xác nhận thanh toán SePay', data: { paymentCreated, enrollment } });
+    return res.json({ status: 'success', message: 'Đã xác nhận thanh toán SePay', data: { paymentCreated: true, enrollment } });
   } catch (error) {
     console.error('Error processing SePay webhook:', error);
     return res.status(500).json({ status: 'error', message: error.message });
@@ -293,60 +312,72 @@ export const confirmTransaction = async (req, res) => {
       return res.status(404).json({ status: 'error', message: 'Không tìm thấy giao dịch' });
     }
 
-    if (transaction.status !== 'completed') {
-      transaction.status = 'completed';
-      transaction.paidAt = transaction.paidAt || new Date();
-      await transaction.save();
+    // ── ACID: Idempotency check ──────────────────────────────
+    if (transaction.paymentId) {
+      console.log(`⏭️ [CONFIRM] Transaction ${transaction._id} đã xử lý trước đó (idempotent skip)`);
+      return res.json({ status: 'success', message: 'Đã xác nhận rồi', data: { paymentCreated: false, alreadyProcessed: true } });
     }
 
-    let paymentCreated = false;
+    const paidAt = transaction.paidAt || new Date();
+
+    // ── ACID Phase 1: Tạo Payment ──────────────────────────────────
+    const payment = await Payment.create({
+      registrationId: transaction.registrationId,
+      amount: Number(transaction.amount),
+      method: 'ONLINE',
+      receivedBy: 'SYSTEM',
+      paidAt,
+      note: `Admin xác nhận - ${transaction.transferContent}`,
+    });
+
+    // ── ACID Phase 2: Update Transaction với paymentId ──────────────
+    transaction.paymentId = payment._id;
+    transaction.status = 'completed';
+    transaction.paidAt = paidAt;
+    await transaction.save();
+
+    // ── ACID Phase 3: Xử lý post-payment (idempotent operations) ───
+    let enrollment = null;
 
     if (transaction.registrationId) {
-      const note = `SePay auto webhook - ${transaction.transferContent}`;
-      const existedPayment = await Payment.findOne({ note });
-      if (!existedPayment) {
-        await Payment.create({
-          registrationId: transaction.registrationId,
-          amount: Number(transaction.amount),
-          method: 'ONLINE',
-          receivedBy: 'SYSTEM',
-          paidAt: transaction.paidAt || new Date(),
-          note,
-        });
-        paymentCreated = true;
-      }
+      // 3a: Set firstPaymentDate + chuyển role USER → learner
+      const registration = await Registration.findById(transaction.registrationId).select('_id status firstPaymentDate learnerId');
+      if (registration) {
+        const updates = {};
 
-      // Set firstPaymentDate cho payment ĐẦU TIÊN (tự động)
-      const existingPaymentCount = await Payment.countDocuments({ registrationId: transaction.registrationId });
-      if (existingPaymentCount <= 1) {
-        const registration = await Registration.findById(transaction.registrationId).select('_id firstPaymentDate status learnerId');
-        if (registration) {
-          if (!registration.firstPaymentDate) {
-            await Registration.findByIdAndUpdate(registration._id, {
-              firstPaymentDate: transaction.paidAt || new Date()
-            });
-          }
-          // Auto-enroll khi xác nhận thanh toán đầu tiên
-          if (['NEW', 'WAITING'].includes(registration.status)) {
-            await Registration.findByIdAndUpdate(registration._id, { status: 'PROCESSING' });
-            const enrollment = await enrollSinglelearner(registration._id);
-
-            // Emit real-time notification to user
-            if (global.io && registration.learnerId) {
-              global.io.to(`user:${registration.learnerId}`).emit('payment-success', {
-                registrationId: transaction.registrationId,
-                amount: transaction.amount,
-                paidAt: transaction.paidAt,
-                enrollment
-              });
-              console.log(`💰 Emitted payment-success to user:${registration.learnerId}`);
-            }
+        if (!registration.firstPaymentDate) {
+          updates.firstPaymentDate = paidAt;
+          const user = await User.findById(registration.learnerId);
+          if (user && user.role === 'USER') {
+            user.role = 'learner';
+            await user.save();
+            console.log(`✅ [CONFIRM] Đã chuyển user ${user.email} từ USER → learner`);
           }
         }
+        if (['DRAFT', 'NEW', 'WAITING'].includes(registration.status)) {
+          updates.status = 'PROCESSING';
+        }
+        if (Object.keys(updates).length > 0) {
+          await Registration.findByIdAndUpdate(registration._id, updates);
+        }
+      }
+
+      // 3b: Auto-enroll (idempotent)
+      enrollment = await enrollSinglelearner(transaction.registrationId);
+
+      // 3c: Emit real-time
+      if (global.io && registration?.learnerId) {
+        global.io.to(`user:${registration.learnerId}`).emit('payment-success', {
+          registrationId: transaction.registrationId,
+          amount: transaction.amount,
+          paidAt,
+          enrollment
+        });
+        console.log(`💰 Emitted payment-success to user:${registration.learnerId}`);
       }
     }
 
-    return res.json({ status: 'success', message: 'Đã xác nhận giao dịch', data: { transaction, paymentCreated } });
+    return res.json({ status: 'success', message: 'Đã xác nhận giao dịch', data: { paymentCreated: true, enrollment } });
   } catch (error) {
     return res.status(500).json({ status: 'error', message: error.message });
   }
