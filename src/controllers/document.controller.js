@@ -31,9 +31,7 @@ export const getDocumentsForReview = async (req, res) => {
     const { status = 'PENDING', registerMethod } = req.query;
 
     const filter = { isDeleted: { $ne: true } };
-    if (req.user?.role === 'ADMIN') {
-      filter.status = 'PENDING';
-    } else if (status) {
+    if (status) {
       filter.status = status;
     }
 
@@ -147,6 +145,18 @@ export const updateDocumentStatus = async (req, res) => {
 
     document.status = status;
     await document.save();
+
+    if (status === 'APPROVED') {
+      const user = await User.findById(document.learnerId);
+      if (user) {
+        if (document.cccdNumber) user.cccdNumber = document.cccdNumber;
+        if (document.cccdImageFront) user.cccdImageFront = document.cccdImageFront;
+        if (document.cccdImageBack) user.cccdImageBack = document.cccdImageBack;
+        if (document.healthCertificate) user.healthCertificate = document.healthCertificate;
+        if (document.photo) user.photo = document.photo;
+        await user.save();
+      }
+    }
 
     const result = await Document.findById(document._id).populate(documentPopulate);
     return res.json({ status: 'success', data: result, message: 'Cập nhật trạng thái hồ sơ thành công' });

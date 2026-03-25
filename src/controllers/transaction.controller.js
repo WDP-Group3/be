@@ -33,6 +33,21 @@ export const createQR = async (req, res) => {
 
     const transferContent = `HP-${Date.now()}-${randomCode()}`;
 
+    // Hủy các transaction pending cũ của cùng registration (chỉ giữ 1 pending duy nhất)
+    if (registrationId) {
+      const oldPending = await Transaction.find({
+        registrationId,
+        status: 'pending',
+      });
+      if (oldPending.length > 0) {
+        await Transaction.updateMany(
+          { _id: { $in: oldPending.map(t => t._id) } },
+          { status: 'cancelled' },
+        );
+        console.log(`[createQR] Đã hủy ${oldPending.length} transaction pending cũ cho registration ${registrationId}`);
+      }
+    }
+
     const transaction = await Transaction.create({
       amount,
       orderInfo: vnp_OrderInfo || '',
@@ -177,6 +192,14 @@ export const checkStatus = async (req, res) => {
             await Registration.findByIdAndUpdate(registration._id, {
               firstPaymentDate: transaction.paidAt
             });
+
+            // 🔄 Chuyển role USER → learner khi thanh toán đợt 1 thành công
+            const user = await User.findById(registration.learnerId);
+            if (user && user.role === 'USER') {
+              user.role = 'learner';
+              await user.save();
+              console.log(`✅ [SEPAY] Đã chuyển user ${user.email} từ USER → learner`);
+            }
           }
           // Ensure status progresses once money is received
           if (['NEW', 'WAITING'].includes(registration.status)) {
@@ -231,6 +254,7 @@ export const getTransactionStatus = async (req, res) => {
         amount: transaction.amount,
         transferContent: transaction.transferContent,
         paidAt: transaction.paidAt,
+        registrationId: transaction.registrationId,
       },
     });
   } catch (error) {
@@ -245,7 +269,7 @@ export const getTransactions = async (req, res) => {
 
     if (status) filter.status = status;
 
-    if (req.user?.role === 'learner') {
+    if (req.user?.role === 'learner' || req.user?.role === 'USER') {
       filter.user = req.userId;
     }
 

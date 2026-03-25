@@ -6,6 +6,8 @@ import User from '../models/User.js';
 import Booking from '../models/Booking.js';
 import Document from '../models/Document.js';
 import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
+import axios from 'axios';
 
 // ============================================
 // HELPER: Lấy cấu hình lương hiện tại (so với ngày hiện tại)
@@ -235,6 +237,12 @@ const calculateSalary = async (userId, month, year, options = {}) => {
         courseCode: courseMap[courseId]?.code || 'N/A',
         courseName: courseMap[courseId]?.name || 'N/A',
         learnerName: reg.learnerId?.fullName || 'N/A',
+        learnerPhone: reg.learnerId?.phone || '',
+        learnerEmail: reg.learnerId?.email || '',
+        cccdNumber: doc.cccdNumber || '',
+        photo: doc.photo || '',
+        cccdImageFront: doc.cccdImageFront || '',
+        cccdImageBack: doc.cccdImageBack || '',
         registrationDate: reg.firstPaymentDate || reg.createdAt || doc.createdAt,
         commissionAmount: commission
       });
@@ -619,6 +627,12 @@ const calculateSalaryWithSharedData = (
         courseCode: courseMap[courseId]?.code || 'N/A',
         courseName: courseMap[courseId]?.name || 'N/A',
         learnerName: reg.learnerId?.fullName || 'N/A',
+        learnerPhone: reg.learnerId?.phone || '',
+        learnerEmail: reg.learnerId?.email || '',
+        cccdNumber: doc.cccdNumber || '',
+        photo: doc.photo || '',
+        cccdImageFront: doc.cccdImageFront || '',
+        cccdImageBack: doc.cccdImageBack || '',
         registrationDate: reg.firstPaymentDate || reg.createdAt || doc.createdAt,
         commissionAmount: commission
       });
@@ -1056,7 +1070,7 @@ export const exportMySalaryCSV = async (req, res) => {
       return res.status(404).json({ status: 'error', message: 'Không tìm thấy dữ liệu lương' });
     }
 
-    const excelBuffer = buildSalaryExcel(salaryData, targetMonth, targetYear);
+    const excelBuffer = await buildSalaryExcel(salaryData, targetMonth, targetYear);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`luong_${salaryData.userName}_${targetMonth}_${targetYear}.xlsx`)}`);
     res.send(excelBuffer);
@@ -1235,91 +1249,193 @@ export const getLeaveUsage = async (req, res) => {
 };
 
 // ============================================
-// HELPER: Tạo file Excel từ salary data
+// HELPER: Tạo file Excel từ salary data (có ảnh học viên)
 // ============================================
-const buildSalaryExcel = (salaryData, targetMonth, targetYear) => {
-  const wb = XLSX.utils.book_new();
+const buildSalaryExcel = async (salaryData, targetMonth, targetYear) => {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'DriveCenter System';
+  wb.created = new Date();
 
   // Sheet 1: Tổng quan
-  const overview = [
-    ['BẢNG LƯƠNG THÁNG', `${targetMonth}/${targetYear}`],
-    ['Họ tên', salaryData.userName],
-    ['Vai trò', salaryData.role === 'INSTRUCTOR' ? 'Giảng viên' : 'Tư vấn viên'],
-    [],
-    ['TỔNG QUAN'],
-    ['Tổng giờ dạy', salaryData.totalTeachingHours],
-    ['Tổng số buổi', salaryData.totalTeachingSessions],
-    ['Tổng hoa hồng', salaryData.totalCommission],
-    ['Tổng lương', salaryData.totalSalary],
-  ];
-  const wsOverview = XLSX.utils.aoa_to_sheet(overview);
-  XLSX.utils.book_append_sheet(wb, wsOverview, 'Tổng quan');
+  const wsOverview = wb.addWorksheet('Tổng quan');
+  wsOverview.getCell('A1').value = 'BẢNG LƯƠNG THÁNG';
+  wsOverview.getCell('A1').font = { bold: true, size: 14 };
+  wsOverview.getCell('B1').value = `${targetMonth}/${targetYear}`;
+  wsOverview.getCell('A2').value = 'Họ tên';
+  wsOverview.getCell('B2').value = salaryData.userName;
+  wsOverview.getCell('A3').value = 'Vai trò';
+  wsOverview.getCell('B3').value = salaryData.role === 'INSTRUCTOR' ? 'Giảng viên' : 'Tư vấn viên';
+  wsOverview.getCell('A5').value = 'TỔNG QUAN';
+  wsOverview.getCell('A5').font = { bold: true };
+  wsOverview.getCell('A6').value = 'Tổng giờ dạy';
+  wsOverview.getCell('B6').value = salaryData.totalTeachingHours;
+  wsOverview.getCell('A7').value = 'Tổng số buổi';
+  wsOverview.getCell('B7').value = salaryData.totalTeachingSessions;
+  wsOverview.getCell('A8').value = 'Tổng hoa hồng';
+  wsOverview.getCell('B8').value = salaryData.totalCommission;
+  wsOverview.getCell('A9').value = 'Tổng lương';
+  wsOverview.getCell('B9').value = salaryData.totalSalary;
+  wsOverview.getColumn(1).width = 20;
+  wsOverview.getColumn(2).width = 20;
 
   // Sheet 2: Chi tiết giờ dạy (INSTRUCTOR)
   if (salaryData.teachingDetails && salaryData.teachingDetails.length > 0) {
-    const teaching = [
-      ['Ngày', 'Ca', 'Học viên', 'Số giờ', 'Số tiền'],
-      ...salaryData.teachingDetails.map(d => [
+    const wsTeaching = wb.addWorksheet('Chi tiết giờ dạy');
+    wsTeaching.addRow(['Ngày', 'Ca', 'Học viên', 'Số giờ', 'Số tiền']);
+    const headerRow = wsTeaching.getRow(1);
+    headerRow.font = { bold: true };
+    headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
+    headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    salaryData.teachingDetails.forEach(d => {
+      wsTeaching.addRow([
         new Date(d.date).toLocaleDateString('vi-VN'),
         d.timeSlot,
         d.learnerName,
         d.hours,
         d.amount,
-      ]),
-    ];
-    const wsTeaching = XLSX.utils.aoa_to_sheet(teaching);
-    XLSX.utils.book_append_sheet(wb, wsTeaching, 'Chi tiết giờ dạy');
+      ]);
+    });
+    ['Ngày', 'Ca', 'Học viên', 'Số giờ', 'Số tiền'].forEach((_, i) => {
+      wsTeaching.getColumn(i + 1).width = 18;
+    });
   }
 
-  // Sheet 3: Chi tiết hoa hồng (CONSULTANT)
+  // Sheet 3: Chi tiết hoa hồng (CONSULTANT) - có ảnh
   if (salaryData.commissionDetails && salaryData.commissionDetails.length > 0) {
-    const commission = [
-      ['Khóa học', 'Tên học viên', 'Ngày nhận hồ sơ', 'Hoa hồng'],
-      ...salaryData.commissionDetails.map(d => [
+    const wsCommission = wb.addWorksheet('Chi tiết hoa hồng');
+    const headers = ['Khóa học', 'Tên học viên', 'SĐT', 'Email', 'CCCD', 'Ngày nhận', 'Hoa hồng', 'Ảnh 3x4', 'CCCD trước', 'CCCD sau'];
+    wsCommission.addRow(headers);
+    const headerRow = wsCommission.getRow(1);
+    headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
+    wsCommission.getColumn(1).width = 22; // Khóa học
+    wsCommission.getColumn(2).width = 20; // Tên học viên
+    wsCommission.getColumn(3).width = 13; // SĐT
+    wsCommission.getColumn(4).width = 25; // Email
+    wsCommission.getColumn(5).width = 14; // CCCD
+    wsCommission.getColumn(6).width = 14; // Ngày nhận
+    wsCommission.getColumn(7).width = 12; // Hoa hồng
+    wsCommission.getColumn(8).width = 5;  // Ảnh 3x4
+    wsCommission.getColumn(9).width = 5;  // CCCD trước
+    wsCommission.getColumn(10).width = 5; // CCCD sau
+
+    for (const d of salaryData.commissionDetails) {
+      const row = wsCommission.addRow([
         `${d.courseCode} - ${d.courseName}`,
         d.learnerName,
+        d.learnerPhone || '',
+        d.learnerEmail || '',
+        d.cccdNumber || '',
         new Date(d.registrationDate).toLocaleDateString('vi-VN'),
         d.commissionAmount,
-      ]),
-    ];
-    const wsCommission = XLSX.utils.aoa_to_sheet(commission);
-    XLSX.utils.book_append_sheet(wb, wsCommission, 'Chi tiết hoa hồng');
+        '', // placeholder for image
+        '',
+        '',
+      ]);
+
+      // Set row height to accommodate images
+      row.height = 80;
+
+      // Embed ảnh 3x4
+      if (d.photo) {
+        try {
+          const imgResponse = await axios.get(d.photo, { responseType: 'arraybuffer' });
+          const imgId = wb.addImage({
+            base64: Buffer.from(imgResponse.data).toString('base64'),
+            extension: 'jpeg',
+          });
+          wsCommission.addImage(imgId, {
+            tl: { col: 7, row: row.number - 1 },
+            ext: { width: 60, height: 80 },
+          });
+        } catch (err) {
+          console.warn(`[buildSalaryExcel] Cannot load photo: ${d.photo}`);
+        }
+      }
+
+      // Embed CCCD mặt trước
+      if (d.cccdImageFront) {
+        try {
+          const imgResponse = await axios.get(d.cccdImageFront, { responseType: 'arraybuffer' });
+          const imgId = wb.addImage({
+            base64: Buffer.from(imgResponse.data).toString('base64'),
+            extension: 'jpeg',
+          });
+          wsCommission.addImage(imgId, {
+            tl: { col: 8, row: row.number - 1 },
+            ext: { width: 60, height: 80 },
+          });
+        } catch (err) {
+          console.warn(`[buildSalaryExcel] Cannot load cccdImageFront: ${d.cccdImageFront}`);
+        }
+      }
+
+      // Embed CCCD mặt sau
+      if (d.cccdImageBack) {
+        try {
+          const imgResponse = await axios.get(d.cccdImageBack, { responseType: 'arraybuffer' });
+          const imgId = wb.addImage({
+            base64: Buffer.from(imgResponse.data).toString('base64'),
+            extension: 'jpeg',
+          });
+          wsCommission.addImage(imgId, {
+            tl: { col: 9, row: row.number - 1 },
+            ext: { width: 60, height: 80 },
+          });
+        } catch (err) {
+          console.warn(`[buildSalaryExcel] Cannot load cccdImageBack: ${d.cccdImageBack}`);
+        }
+      }
+    }
   }
 
   // Sheet 4: Tổng hợp theo khóa học
   if (salaryData.courseCounts && salaryData.courseCounts.length > 0) {
-    const courseSummary = [
-      ['Khóa học', 'Số lượng'],
-      ...salaryData.courseCounts.map(cc => [
-        `${cc.courseCode} - ${cc.courseName}`,
-        cc.count,
-      ]),
-    ];
-    const wsCourse = XLSX.utils.aoa_to_sheet(courseSummary);
-    XLSX.utils.book_append_sheet(wb, wsCourse, 'Theo khóa học');
+    const wsCourse = wb.addWorksheet('Theo khóa học');
+    wsCourse.addRow(['Khóa học', 'Số lượng']);
+    wsCourse.getRow(1).font = { bold: true };
+    wsCourse.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
+    wsCourse.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    salaryData.courseCounts.forEach(cc => {
+      wsCourse.addRow([`${cc.courseCode} - ${cc.courseName}`, cc.count]);
+    });
+    wsCourse.getColumn(1).width = 30;
+    wsCourse.getColumn(2).width = 12;
   }
 
-  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  const buffer = await wb.xlsx.writeBuffer();
   return buffer;
 };
 
 // ============================================
-// HELPER: Build Excel tất cả lương (nhiều user)
+// HELPER: Build Excel tất cả lương (nhiều user) - có ảnh học viên
 // ============================================
-const buildAllSalaryExcel = (allSalaryData, targetMonth, targetYear) => {
-  const wb = XLSX.utils.book_new();
+const buildAllSalaryExcel = async (allSalaryData, targetMonth, targetYear) => {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'DriveCenter System';
+  wb.created = new Date();
 
   // Sheet 1: Tổng hợp
-  const summary = [
-    ['BẢNG LƯƠNG THÁNG', `${targetMonth}/${targetYear}`],
-    ['Ngày xuất', new Date().toLocaleString('vi-VN')],
-    ['Tổng nhân viên', allSalaryData.length],
-    [],
-    ['STT', 'Họ tên', 'Vai trò', 'Tổng giờ dạy', 'Tổng số buổi', 'Hoa hồng', 'Tổng lương'],
-  ];
-  allSalaryData.forEach((sd, idx) => {
-    summary.push([
-      idx + 1,
+  const wsSummary = wb.addWorksheet('Tổng hợp');
+  wsSummary.getCell('A1').value = 'BẢNG LƯƠNG THÁNG';
+  wsSummary.getCell('A1').font = { bold: true, size: 14 };
+  wsSummary.getCell('B1').value = `${targetMonth}/${targetYear}`;
+  wsSummary.getCell('A2').value = 'Ngày xuất';
+  wsSummary.getCell('B2').value = new Date().toLocaleString('vi-VN');
+  wsSummary.getCell('A3').value = 'Tổng nhân viên';
+  wsSummary.getCell('B3').value = allSalaryData.length;
+  wsSummary.getColumn(1).width = 20;
+  wsSummary.getColumn(2).width = 20;
+
+  const summaryHeaders = ['STT', 'Họ tên', 'Vai trò', 'Tổng giờ dạy', 'Tổng số buổi', 'Hoa hồng', 'Tổng lương'];
+  wsSummary.addRow(summaryHeaders);
+  const summaryHeaderRow = wsSummary.getRow(5);
+  summaryHeaderRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  summaryHeaderRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
+  let stt = 1;
+  allSalaryData.forEach((sd) => {
+    wsSummary.addRow([
+      stt++,
       sd.userName,
       sd.role === 'INSTRUCTOR' ? 'Giảng viên' : 'Tư vấn viên',
       sd.totalTeachingHours,
@@ -1328,46 +1444,138 @@ const buildAllSalaryExcel = (allSalaryData, targetMonth, targetYear) => {
       sd.totalSalary,
     ]);
   });
-  const wsSummary = XLSX.utils.aoa_to_sheet(summary);
-  XLSX.utils.book_append_sheet(wb, wsSummary, 'Tổng hợp');
+  ['STT', 'Họ tên', 'Vai trò', 'Tổng giờ dạy', 'Tổng số buổi', 'Hoa hồng', 'Tổng lương'].forEach((_, i) => {
+    wsSummary.getColumn(i + 1).width = i === 1 ? 20 : 15;
+  });
 
   // Sheet 2: Chi tiết giờ dạy (tất cả instructor)
-  const teachingRows = [['STT', 'Họ tên GV', 'Ngày', 'Ca', 'Học viên', 'Số giờ', 'Số tiền']];
-  allSalaryData.filter(sd => sd.role === 'INSTRUCTOR').forEach((sd) => {
-    (sd.teachingDetails || []).forEach(d => {
-      teachingRows.push([
-        teachingRows.length,
-        sd.userName,
-        new Date(d.date).toLocaleDateString('vi-VN'),
-        d.timeSlot,
-        d.learnerName,
-        d.hours,
-        d.amount,
-      ]);
+  const allTeaching = allSalaryData.filter(sd => sd.role === 'INSTRUCTOR');
+  if (allTeaching.length > 0 && allTeaching.some(sd => (sd.teachingDetails || []).length > 0)) {
+    const wsTeaching = wb.addWorksheet('Chi tiết giờ dạy');
+    wsTeaching.addRow(['STT', 'Họ tên GV', 'Ngày', 'Ca', 'Học viên', 'Số giờ', 'Số tiền']);
+    const tHeaderRow = wsTeaching.getRow(1);
+    tHeaderRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    tHeaderRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
+    let teachingIdx = 1;
+    allTeaching.forEach((sd) => {
+      (sd.teachingDetails || []).forEach(d => {
+        wsTeaching.addRow([
+          teachingIdx++,
+          sd.userName,
+          new Date(d.date).toLocaleDateString('vi-VN'),
+          d.timeSlot,
+          d.learnerName,
+          d.hours,
+          d.amount,
+        ]);
+      });
     });
-  });
-  const wsTeaching = XLSX.utils.aoa_to_sheet(teachingRows);
-  XLSX.utils.book_append_sheet(wb, wsTeaching, 'Chi tiết giờ dạy');
+    ['STT', 'Họ tên GV', 'Ngày', 'Ca', 'Học viên', 'Số giờ', 'Số tiền'].forEach((_, i) => {
+      wsTeaching.getColumn(i + 1).width = 18;
+    });
+  }
 
-  // Sheet 3: Chi tiết hoa hồng (tất cả consultant)
-  const commissionRows = [['STT', 'Họ tên TV', 'Khóa học', 'Học viên', 'Ngày nhận', 'Hoa hồng']];
-  allSalaryData.filter(sd => sd.role === 'CONSULTANT').forEach((sd) => {
-    (sd.commissionDetails || []).forEach(d => {
-      commissionRows.push([
-        commissionRows.length,
-        sd.userName,
-        `${d.courseCode} - ${d.courseName}`,
-        d.learnerName,
-        new Date(d.registrationDate).toLocaleDateString('vi-VN'),
-        d.commissionAmount,
-      ]);
-    });
-  });
-  const wsCommission = XLSX.utils.aoa_to_sheet(commissionRows);
-  XLSX.utils.book_append_sheet(wb, wsCommission, 'Chi tiết hoa hồng');
+  // Sheet 3: Chi tiết hoa hồng (tất cả consultant) - có ảnh
+  const allConsultants = allSalaryData.filter(sd => sd.role === 'CONSULTANT');
+  const hasCommission = allConsultants.some(sd => (sd.commissionDetails || []).length > 0);
+  if (hasCommission) {
+    const wsCommission = wb.addWorksheet('Chi tiết hoa hồng');
+    const headers = ['STT', 'Tư vấn viên', 'Khóa học', 'Tên học viên', 'SĐT', 'Email', 'CCCD', 'Ngày nhận', 'Hoa hồng', 'Ảnh 3x4', 'CCCD trước', 'CCCD sau'];
+    wsCommission.addRow(headers);
+    const cHeaderRow = wsCommission.getRow(1);
+    cHeaderRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    cHeaderRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
+    wsCommission.getColumn(1).width = 6;   // STT
+    wsCommission.getColumn(2).width = 18;  // Tư vấn viên
+    wsCommission.getColumn(3).width = 22;  // Khóa học
+    wsCommission.getColumn(4).width = 20;  // Tên học viên
+    wsCommission.getColumn(5).width = 13;  // SĐT
+    wsCommission.getColumn(6).width = 25;   // Email
+    wsCommission.getColumn(7).width = 14;   // CCCD
+    wsCommission.getColumn(8).width = 14;  // Ngày nhận
+    wsCommission.getColumn(9).width = 12;  // Hoa hồng
+    wsCommission.getColumn(10).width = 5;  // Ảnh 3x4
+    wsCommission.getColumn(11).width = 5;  // CCCD trước
+    wsCommission.getColumn(12).width = 5;  // CCCD sau
+
+    let commissionIdx = 1;
+    for (const sd of allConsultants) {
+      for (const d of (sd.commissionDetails || [])) {
+        const row = wsCommission.addRow([
+          commissionIdx++,
+          sd.userName,
+          `${d.courseCode} - ${d.courseName}`,
+          d.learnerName,
+          d.learnerPhone || '',
+          d.learnerEmail || '',
+          d.cccdNumber || '',
+          new Date(d.registrationDate).toLocaleDateString('vi-VN'),
+          d.commissionAmount,
+          '',
+          '',
+          '',
+        ]);
+        row.height = 80;
+
+        // Embed ảnh 3x4
+        if (d.photo) {
+          try {
+            const imgResponse = await axios.get(d.photo, { responseType: 'arraybuffer' });
+            const imgId = wb.addImage({
+              base64: Buffer.from(imgResponse.data).toString('base64'),
+              extension: 'jpeg',
+            });
+            wsCommission.addImage(imgId, {
+              tl: { col: 9, row: row.number - 1 },
+              ext: { width: 60, height: 80 },
+            });
+          } catch (err) {
+            console.warn(`[buildAllSalaryExcel] Cannot load photo: ${d.photo}`);
+          }
+        }
+
+        // Embed CCCD mặt trước
+        if (d.cccdImageFront) {
+          try {
+            const imgResponse = await axios.get(d.cccdImageFront, { responseType: 'arraybuffer' });
+            const imgId = wb.addImage({
+              base64: Buffer.from(imgResponse.data).toString('base64'),
+              extension: 'jpeg',
+            });
+            wsCommission.addImage(imgId, {
+              tl: { col: 10, row: row.number - 1 },
+              ext: { width: 60, height: 80 },
+            });
+          } catch (err) {
+            console.warn(`[buildAllSalaryExcel] Cannot load cccdImageFront: ${d.cccdImageFront}`);
+          }
+        }
+
+        // Embed CCCD mặt sau
+        if (d.cccdImageBack) {
+          try {
+            const imgResponse = await axios.get(d.cccdImageBack, { responseType: 'arraybuffer' });
+            const imgId = wb.addImage({
+              base64: Buffer.from(imgResponse.data).toString('base64'),
+              extension: 'jpeg',
+            });
+            wsCommission.addImage(imgId, {
+              tl: { col: 11, row: row.number - 1 },
+              ext: { width: 60, height: 80 },
+            });
+          } catch (err) {
+            console.warn(`[buildAllSalaryExcel] Cannot load cccdImageBack: ${d.cccdImageBack}`);
+          }
+        }
+      }
+    }
+  }
 
   // Sheet 4: Theo khóa học
-  const courseRows = [['Khóa học', 'Số lượng']];
+  const wsCourse = wb.addWorksheet('Theo khóa học');
+  wsCourse.addRow(['Khóa học', 'Số lượng']);
+  wsCourse.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  wsCourse.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
   const courseMap = {};
   allSalaryData.forEach((sd) => {
     (sd.courseCounts || []).forEach(cc => {
@@ -1376,12 +1584,13 @@ const buildAllSalaryExcel = (allSalaryData, targetMonth, targetYear) => {
     });
   });
   Object.entries(courseMap).forEach(([course, count]) => {
-    courseRows.push([course, count]);
+    wsCourse.addRow([course, count]);
   });
-  const wsCourse = XLSX.utils.aoa_to_sheet(courseRows);
-  XLSX.utils.book_append_sheet(wb, wsCourse, 'Theo khóa học');
+  wsCourse.getColumn(1).width = 30;
+  wsCourse.getColumn(2).width = 12;
 
-  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  const buffer = await wb.xlsx.writeBuffer();
+  return buffer;
 };
 
 // ============================================
@@ -1473,7 +1682,7 @@ export const exportAllSalaryExcel = async (req, res) => {
       }
     }
 
-    const excelBuffer = buildAllSalaryExcel(allSalaryData, targetMonth, targetYear);
+    const excelBuffer = await buildAllSalaryExcel(allSalaryData, targetMonth, targetYear);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`luong_tong_hop_${targetMonth}_${targetYear}.xlsx`)}`);
     res.send(excelBuffer);
@@ -1575,7 +1784,7 @@ export const exportSalaryCSV = async (req, res) => {
       { upsert: true, new: true }
     );
 
-    const excelBuffer = buildSalaryExcel(salaryData, targetMonth, targetYear);
+    const excelBuffer = await buildSalaryExcel(salaryData, targetMonth, targetYear);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`luong_${salaryData.userName}_${targetMonth}_${targetYear}.xlsx`)}`);
     res.send(excelBuffer);

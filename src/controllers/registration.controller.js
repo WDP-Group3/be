@@ -57,7 +57,7 @@ export const getAllRegistrations = async (req, res) => {
     const { learnerId, batchId, status, courseId, unassigned, paidFirstInstallment } = req.query;
     const filter = {};
 
-    if (req.user?.role === 'learner') {
+    if (req.user?.role === 'learner' || req.user?.role === 'USER') {
       filter.learnerId = req.userId;
     } else if (learnerId) {
       filter.learnerId = learnerId;
@@ -158,14 +158,12 @@ export const createRegistration = async (req, res) => {
       });
     }
 
-    // Kiểm tra đăng ký trùng
+    // Kiểm tra đăng ký trùng khóa học (chính xác cùng courseId)
     const existingRegistration = await Registration.findOne({
       learnerId,
+      courseId: actualCourseId,
       status: { $in: ['NEW', 'PROCESSING', 'STUDYING', 'WAITING'] },
-      $or: [
-        { batchId: batchId || null },
-        { courseId: actualCourseId }
-      ]
+      ...(batchId ? { batchId } : {}), // chỉ filter batchId khi có batchId
     });
 
     if (existingRegistration) {
@@ -185,12 +183,38 @@ export const createRegistration = async (req, res) => {
       });
     }
 
-    // Lấy thông tin course
-    const course = await Course.findById(actualCourseId);
-    if (!course) {
-      return res.status(404).json({ status: 'error', message: 'Không tìm thấy khoá học' });
+    // Kiểm tra loại trừ: A1/A2 chỉ đăng ký được 1, B1/B2 chỉ đăng ký được 1
+    // Lấy course code để xác định nhóm
+    const newCourse = await Course.findById(actualCourseId);
+    const newCourseCode = newCourse?.code || '';
+    const isGroupA = /^A[12]$/.test(newCourseCode); // A1 hoặc A2
+    const isGroupB = /^B[12]$/.test(newCourseCode); // B1 hoặc B2
+
+    if (isGroupA || isGroupB) {
+      const groupCodes = isGroupA ? ['A1', 'A2'] : ['B1', 'B2'];
+
+      // Tìm các registration đang active của nhóm này
+      const existingInGroup = await Registration.findOne({
+        learnerId,
+        status: { $in: ['NEW', 'PROCESSING', 'STUDYING', 'WAITING'] },
+      }).populate('courseId', 'code');
+
+      if (existingInGroup) {
+        const existingCode = existingInGroup.courseId?.code || '';
+        const existingIsGroupA = /^A[12]$/.test(existingCode);
+        const existingIsGroupB = /^B[12]$/.test(existingCode);
+
+        if ((isGroupA && existingIsGroupA) || (isGroupB && existingIsGroupB)) {
+          return res.status(400).json({
+            status: 'error',
+            message: `Bạn đã đăng ký khóa ${existingCode}. Nhóm ${isGroupA ? 'A1/A2' : 'B1/B2'} chỉ được đăng ký 1 khóa.`,
+          });
+        }
+      }
     }
 
+    // Lấy thông tin course (đã fetch ở trên cho group check)
+    const course = newCourse;
     const feePlanSnapshot = buildFeePlanSnapshot(course, paymentPlanType);
 
     const registration = new Registration({
@@ -250,6 +274,31 @@ export const assignRegistrationByAdmin = async (req, res) => {
       return res.status(400).json({ status: 'error', message: 'User được chọn không phải học viên' });
     }
     if (!batch) return res.status(404).json({ status: 'error', message: 'Không tìm thấy lớp học (batch)' });
+
+    // Kiểm tra loại trừ nhóm A1/A2 và B1/B2 khi gán khóa học
+    const newCourseCode = batch.courseId?.code || '';
+    const isGroupA = /^A[12]$/.test(newCourseCode);
+    const isGroupB = /^B[12]$/.test(newCourseCode);
+
+    if (isGroupA || isGroupB) {
+      const existingInGroup = await Registration.findOne({
+        learnerId,
+        status: { $in: ['NEW', 'PROCESSING', 'STUDYING', 'WAITING'] },
+      }).populate('courseId', 'code');
+
+      if (existingInGroup) {
+        const existingCode = existingInGroup.courseId?.code || '';
+        const existingIsGroupA = /^A[12]$/.test(existingCode);
+        const existingIsGroupB = /^B[12]$/.test(existingCode);
+
+        if ((isGroupA && existingIsGroupA) || (isGroupB && existingIsGroupB)) {
+          return res.status(400).json({
+            status: 'error',
+            message: `Học viên đã đăng ký khóa ${existingCode}. Nhóm ${isGroupA ? 'A1/A2' : 'B1/B2'} chỉ được đăng ký 1 khóa.`,
+          });
+        }
+      }
+    }
 
     const existingRegistration = await Registration.findOne({
       learnerId,
