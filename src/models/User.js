@@ -102,6 +102,12 @@ const userSchema = new mongoose.Schema(
       default: 0
     },
 
+    // [MỚI] Danh sách hạng học đã đăng ký của học viên (learner)
+    // Ví dụ: ["A1", "B2"] — lưu code của khóa học đã đăng ký
+    enrolledCourseCodes: {
+      type: [String],
+      default: [],
+    },
     // Thông tin hồ sơ cá nhân
     address: {
       type: String,
