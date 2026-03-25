@@ -159,13 +159,13 @@ export const deletePayment = async (req, res) => {
 };
 
 export const createPayment = async (req, res) => {
+  const { registrationId, amount, method = 'TRANSFER', receivedBy = 'CONSULTANT', paidAt, note = '' } = req.body;
+
+  if (!registrationId || !amount) {
+    return res.status(400).json({ status: 'error', message: 'registrationId và amount là bắt buộc' });
+  }
+
   try {
-    const { registrationId, amount, method = 'TRANSFER', receivedBy = 'CONSULTANT', paidAt, note = '' } = req.body;
-
-    if (!registrationId || !amount) {
-      return res.status(400).json({ status: 'error', message: 'registrationId và amount là bắt buộc' });
-    }
-
     const registration = await Registration.findById(registrationId)
       .populate({
         path: 'batchId',
@@ -193,59 +193,91 @@ export const createPayment = async (req, res) => {
       return res.status(400).json({ status: 'error', message: `Số tiền thu vượt công nợ còn lại (${remaining})` });
     }
 
+    const paidAtDate = paidAt ? new Date(paidAt) : new Date();
+
+    // ── ACID Phase 1: Tạo Payment ──────────────────────────────────
     const payment = await Payment.create({
       registrationId,
       amount: Number(amount),
       method,
       receivedBy,
-      paidAt: paidAt ? new Date(paidAt) : new Date(),
+      paidAt: paidAtDate,
       note,
     });
 
-    const result = await Payment.findById(payment._id).populate('registrationId', 'learnerId batchId status');
+    let paymentCreated = true;
+    let enrollment = null;
 
-    // 🔄 Tự động set firstPaymentDate nếu chưa có (thanh toán đợt 1)
-    if (!registration.firstPaymentDate) {
-      await Registration.findByIdAndUpdate(registrationId, {
-        firstPaymentDate: paidAt ? new Date(paidAt) : new Date()
-      });
+    // ── ACID Phase 2: Xử lý post-payment với compensating rollback ─────
+    try {
+      const updates = {};
+      let roleChanged = false;
 
-      // 🔄 Chuyển role USER → learner khi thanh toán đợt 1 thành công
-      const user = await User.findById(registration.learnerId);
-      if (user && user.role === 'USER') {
-        user.role = 'learner';
-        await user.save();
-        console.log(`✅ [PAYMENT] Đã chuyển user ${user.email} từ USER → learner`);
+      // 2a: Set firstPaymentDate + chuyển role USER → learner (idempotent)
+      if (!registration.firstPaymentDate) {
+        updates.firstPaymentDate = paidAtDate;
+
+        const user = await User.findById(registration.learnerId);
+        if (user && user.role === 'USER') {
+          user.role = 'learner';
+          await user.save();
+          roleChanged = true;
+          console.log(`✅ [PAYMENT] Đã chuyển user ${user.email} từ USER → learner`);
+        }
       }
+
+      // 2b: Cập nhật status sau thanh toán
+      if (['DRAFT', 'NEW', 'WAITING'].includes(registration.status)) {
+        updates.status = 'PROCESSING';
+      }
+
+      // Batch update Registration
+      if (Object.keys(updates).length > 0) {
+        await Registration.findByIdAndUpdate(registrationId, updates);
+      }
+
+      // 2c: Auto-enroll (idempotent)
+      enrollment = await enrollSinglelearner(registrationId);
+      console.log('💰 [PAYMENT] Kết quả auto-enroll:', enrollment);
+
+      // 2d: Emit real-time (fire & forget)
+      if (global.io && registration.learnerId) {
+        global.io.to(`user:${registration.learnerId}`).emit('payment-success', {
+          registrationId,
+          amount: payment.amount,
+          paidAt: payment.paidAt,
+          enrollment
+        });
+        console.log(`💰 Emitted payment-success to user:${registration.learnerId}`);
+      }
+
+    } catch (postErr) {
+      // ── Compensating Transaction: rollback Payment nếu post-payment thất bại ──
+      console.error('❌ [PAYMENT] Post-payment step failed, rolling back Payment:', postErr.message);
+      try {
+        await Payment.findByIdAndDelete(payment._id);
+        console.log(`🗑️ [PAYMENT] Đã xóa Payment ${payment._id} (rollback)`);
+      } catch (deleteErr) {
+        console.error('❌ [PAYMENT] Rollback failed:', deleteErr.message);
+        // Nếu rollback cũng fail → không throw, trả error về client
+        // Manual intervention needed → log để admin biết
+        console.error('⚠️ CRITICAL: Payment record exists but post-processing failed. Manual review needed.');
+        console.error(`   Payment ID: ${payment._id}, Registration: ${registrationId}`);
+      }
+      throw postErr; // Re-throw để client nhận error
     }
 
-    // 🔄 Tự động cập nhật trạng thái và gán học viên vào lớp nếu chưa được gán
-    // Chuyển NEW/WAITING -> PROCESSING khi đã thanh toán
-    if (['NEW', 'WAITING'].includes(registration.status)) {
-      await Registration.findByIdAndUpdate(registrationId, { status: 'PROCESSING' });
-    }
-
-    const enrollResult = await enrollSinglelearner(registrationId);
-    console.log('💰 [PAYMENT] Kết quả auto-enroll:', enrollResult);
-
-    // Emit real-time notification to user
-    if (global.io && registration.learnerId) {
-      global.io.to(`user:${registration.learnerId}`).emit('payment-success', {
-        registrationId,
-        amount: payment.amount,
-        paidAt: payment.paidAt,
-        enrollment: enrollResult
-      });
-      console.log(`💰 Emitted payment-success to user:${registration.learnerId}`);
-    }
+    const result = await Payment.findById(payment._id).populate('registrationId', 'learnerId batchId status');
 
     return res.status(201).json({
       status: 'success',
       message: 'Tạo giao dịch học phí thành công',
       data: result,
-      enrollment: enrollResult
+      enrollment
     });
+
   } catch (error) {
+    console.error('❌ [PAYMENT] createPayment error:', error.message);
     return res.status(500).json({ status: 'error', message: error.message });
   }
 };

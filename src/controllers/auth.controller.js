@@ -169,12 +169,30 @@ export const register = async (req, res) => {
       });
     }
 
+    // Validate phone format
+    const phoneClean = phone.replace(/\s/g, '');
+    if (!/^[0-9]{10,11}$/.test(phoneClean)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Số điện thoại phải là 10 hoặc 11 chữ số",
+      });
+    }
+
     // Check if user already exists
     const existingUser = await User.findOne({ email: email.toLowerCase() });
     if (existingUser) {
       return res.status(400).json({
         status: "error",
         message: "Email đã được sử dụng",
+      });
+    }
+
+    // Check phone uniqueness
+    const existingPhone = await User.findOne({ phone: phoneClean });
+    if (existingPhone) {
+      return res.status(400).json({
+        status: "error",
+        message: "Số điện thoại đã được sử dụng",
       });
     }
 
@@ -185,7 +203,7 @@ export const register = async (req, res) => {
     const user = new User({
       fullName: name,
       email: email.toLowerCase(),
-      phone,
+      phone: phoneClean,
       password: hashedPassword,
       role: "USER",
       status: "ACTIVE",
@@ -260,7 +278,19 @@ export const updateProfile = async (req, res) => {
     // Update fields
     if (name) user.fullName = name;
     if (email) user.email = email.toLowerCase();
-    if (phone) user.phone = phone;
+    if (phone) {
+      // Validate phone format: 10-11 digits
+      const phoneClean = phone.replace(/\s/g, '');
+      if (!/^[0-9]{10,11}$/.test(phoneClean)) {
+        return res.status(400).json({ status: 'error', message: 'Số điện thoại phải là 10 hoặc 11 chữ số' });
+      }
+      // Check uniqueness (exclude current user)
+      const existingPhone = await User.findOne({ phone: phoneClean, _id: { $ne: userId } });
+      if (existingPhone) {
+        return res.status(400).json({ status: 'error', message: 'Số điện thoại đã được sử dụng bởi người khác' });
+      }
+      user.phone = phoneClean;
+    }
     if (address !== undefined) user.address = address;
     if (dateOfBirth !== undefined) user.dateOfBirth = dateOfBirth;
     if (gender !== undefined) user.gender = gender;

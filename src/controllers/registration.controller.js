@@ -162,7 +162,7 @@ export const createRegistration = async (req, res) => {
     const existingRegistration = await Registration.findOne({
       learnerId,
       courseId: actualCourseId,
-      status: { $in: ['NEW', 'PROCESSING', 'STUDYING', 'WAITING'] },
+      status: { $in: ['DRAFT', 'NEW', 'PROCESSING', 'STUDYING', 'WAITING'] },
       ...(batchId ? { batchId } : {}), // chỉ filter batchId khi có batchId
     });
 
@@ -183,31 +183,33 @@ export const createRegistration = async (req, res) => {
       });
     }
 
-    // Kiểm tra loại trừ: A1/A2 chỉ đăng ký được 1, B1/B2 chỉ đăng ký được 1
-    // Lấy course code để xác định nhóm
+    // Kiểm tra loại trừ: chỉ đăng ký được 1 khóa Xe Máy (A1/A2), 1 khóa Ô Tô
+    // Dùng course.name để xác định nhóm thay vì regex trên code
     const newCourse = await Course.findById(actualCourseId);
-    const newCourseCode = newCourse?.code || '';
-    const isGroupA = /^A[12]$/.test(newCourseCode); // A1 hoặc A2
-    const isGroupB = /^B[12]$/.test(newCourseCode); // B1 hoặc B2
+    const newCourseName = (newCourse?.name || '').toLowerCase();
+
+    // Xác định nhóm dựa trên tên khóa học
+    const isGroupA = /xe\s*máy|a1|a2/i.test(newCourseName);
+    const isGroupB = /ô\s*tô|b\s|số\s*sàn|tự\s*động/i.test(newCourseName);
 
     if (isGroupA || isGroupB) {
-      const groupCodes = isGroupA ? ['A1', 'A2'] : ['B1', 'B2'];
-
-      // Tìm các registration đang active của nhóm này
-      const existingInGroup = await Registration.findOne({
+      // Tìm các registration đang active của learner
+      const existingRegs = await Registration.find({
         learnerId,
-        status: { $in: ['NEW', 'PROCESSING', 'STUDYING', 'WAITING'] },
-      }).populate('courseId', 'code');
+        status: { $in: ['DRAFT', 'NEW', 'PROCESSING', 'STUDYING', 'WAITING'] },
+      }).populate('courseId', 'name code');
 
-      if (existingInGroup) {
-        const existingCode = existingInGroup.courseId?.code || '';
-        const existingIsGroupA = /^A[12]$/.test(existingCode);
-        const existingIsGroupB = /^B[12]$/.test(existingCode);
+      for (const existingReg of existingRegs) {
+        const existingName = (existingReg.courseId?.name || '').toLowerCase();
+        const existingCode = existingReg.courseId?.code || '';
+        const existingIsGroupA = /xe\s*máy|a1|a2/i.test(existingName);
+        const existingIsGroupB = /ô\s*tô|b\s|số\s*sàn|tự\s*động/i.test(existingName);
 
+        // Cùng nhóm → block
         if ((isGroupA && existingIsGroupA) || (isGroupB && existingIsGroupB)) {
           return res.status(400).json({
             status: 'error',
-            message: `Bạn đã đăng ký khóa ${existingCode}. Nhóm ${isGroupA ? 'A1/A2' : 'B1/B2'} chỉ được đăng ký 1 khóa.`,
+            message: `Bạn đã đăng ký khóa ${existingCode || existingReg.courseId?.name}. Nhóm ${isGroupA ? 'Xe Máy' : 'Ô Tô'} chỉ được đăng ký 1 khóa.`,
           });
         }
       }
@@ -222,7 +224,7 @@ export const createRegistration = async (req, res) => {
       courseId: actualCourseId,
       batchId: batchId || null, // Có thể null nếu đăng ký theo course
       registerMethod,
-      status: batchId ? 'NEW' : 'WAITING', // Nếu không có batch thì vào danh sách chờ
+      status: 'DRAFT', // Chưa thanh toán nên chỉ ở trạng thái nháp
       paymentPlanType,
       feePlanSnapshot,
     });
@@ -275,26 +277,28 @@ export const assignRegistrationByAdmin = async (req, res) => {
     }
     if (!batch) return res.status(404).json({ status: 'error', message: 'Không tìm thấy lớp học (batch)' });
 
-    // Kiểm tra loại trừ nhóm A1/A2 và B1/B2 khi gán khóa học
+    // Kiểm tra loại trừ nhóm Xe Máy / Ô Tô khi gán khóa học
+    const newCourseName = (batch.courseId?.name || '').toLowerCase();
     const newCourseCode = batch.courseId?.code || '';
-    const isGroupA = /^A[12]$/.test(newCourseCode);
-    const isGroupB = /^B[12]$/.test(newCourseCode);
+    const isGroupA = /xe\s*máy|a1|a2/i.test(newCourseName);
+    const isGroupB = /ô\s*tô|b\s|số\s*sàn|tự\s*động/i.test(newCourseName);
 
     if (isGroupA || isGroupB) {
-      const existingInGroup = await Registration.findOne({
+      const existingRegs = await Registration.find({
         learnerId,
-        status: { $in: ['NEW', 'PROCESSING', 'STUDYING', 'WAITING'] },
-      }).populate('courseId', 'code');
+        status: { $in: ['DRAFT', 'NEW', 'PROCESSING', 'STUDING', 'WAITING'] },
+      }).populate('courseId', 'name code');
 
-      if (existingInGroup) {
-        const existingCode = existingInGroup.courseId?.code || '';
-        const existingIsGroupA = /^A[12]$/.test(existingCode);
-        const existingIsGroupB = /^B[12]$/.test(existingCode);
+      for (const existingReg of existingRegs) {
+        const existingName = (existingReg.courseId?.name || '').toLowerCase();
+        const existingCode = existingReg.courseId?.code || '';
+        const existingIsGroupA = /xe\s*máy|a1|a2/i.test(existingName);
+        const existingIsGroupB = /ô\s*tô|b\s|số\s*sàn|tự\s*động/i.test(existingName);
 
         if ((isGroupA && existingIsGroupA) || (isGroupB && existingIsGroupB)) {
           return res.status(400).json({
             status: 'error',
-            message: `Học viên đã đăng ký khóa ${existingCode}. Nhóm ${isGroupA ? 'A1/A2' : 'B1/B2'} chỉ được đăng ký 1 khóa.`,
+            message: `Học viên đã đăng ký khóa ${existingCode || existingReg.courseId?.name}. Nhóm ${isGroupA ? 'Xe Máy' : 'Ô Tô'} chỉ được đăng ký 1 khóa.`,
           });
         }
       }

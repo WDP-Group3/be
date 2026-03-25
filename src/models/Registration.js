@@ -24,8 +24,8 @@ const registrationSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['NEW', 'PROCESSING', 'STUDYING', 'COMPLETED', 'CANCELLED', 'WAITING'],
-    default: 'NEW',
+    enum: ['DRAFT', 'NEW', 'PROCESSING', 'STUDYING', 'COMPLETED', 'CANCELLED', 'WAITING'],
+    default: 'DRAFT',
   },
   paymentPlanType: {
     type: String,

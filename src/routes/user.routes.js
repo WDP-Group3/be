@@ -10,6 +10,8 @@ import {
   restoreUser,
   getUserStats,
   getInstructorsByLocation,
+  getLearnerEnrolledCourses,
+  updateLearnerEnrolledCourses,
 } from '../controllers/user.controller.js';
 import { authenticate } from '../middleware/auth.middleware.js';
 
@@ -38,5 +40,9 @@ router.patch('/:id', updateUser);
 router.patch('/:id/deactivate', deactivateUser);
 router.patch('/:id/restore', restoreUser);
 router.patch('/:id/change-role', changeUserRole);
+
+// [MỚI] Quản lý hạng học viên
+router.get('/:id/enrolled-courses', getLearnerEnrolledCourses);
+router.patch('/:id/enrolled-courses', updateLearnerEnrolledCourses);
 
 export default router;
