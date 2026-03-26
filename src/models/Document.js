@@ -46,8 +46,8 @@ const documentSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['PENDING', 'APPROVED', 'REJECTED'],
-    default: 'PENDING',
+    enum: ['DRAFT', 'PENDING', 'APPROVED', 'REJECTED'],
+    default: 'DRAFT',
   },
   isDeleted: {
     type: Boolean,

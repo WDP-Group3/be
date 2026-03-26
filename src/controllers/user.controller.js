@@ -1,5 +1,8 @@
 import User from '../models/User.js';
 import LearningLocation from '../models/LearningLocation.js';
+import Course from '../models/Course.js';
+import Registration from '../models/Registration.js';
+import Batch from '../models/Batch.js';
 import bcrypt from 'bcryptjs';
 
 // Helper function to format user response (remove password)
@@ -142,6 +145,40 @@ export const createUser = async (req, res) => {
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
+};
+
+// Helper to build fee plan snapshot (replicated from registration.controller.js to avoid circular deps if any)
+const buildFeePlanSnapshot = (course, paymentPlanType = 'INSTALLMENT') => {
+  const feePayments = Array.isArray(course?.feePayments) ? course.feePayments : [];
+  const totalFromInstallments = feePayments.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+  const fallbackCost = Number(course?.estimatedCost) || 0;
+  const totalFee = totalFromInstallments > 0 ? totalFromInstallments : fallbackCost;
+
+  if (paymentPlanType === 'FULL') {
+    return [{
+      name: 'Đóng 1 lần',
+      amount: totalFee,
+      dueDate: null,
+      note: 'Thanh toán toàn bộ học phí 1 lần',
+    }];
+  }
+
+  if (feePayments.length > 0) {
+    return feePayments.map((item, idx) => ({
+      name: item.name || `Đợt ${idx + 1}`,
+      amount: Number(item.amount) || 0,
+      dueDate: item.dueDate || null,
+      afterPreviousPaidDays: Number(item.afterPreviousPaidDays) || 0,
+      note: item.note || '',
+    }));
+  }
+
+  return [{
+    name: 'Đợt 1',
+    amount: totalFee,
+    dueDate: null,
+    note: 'Mặc định do khóa học chưa cấu hình đợt phí',
+  }];
 };
 
 // 4. Update User (Admin) - Cập nhật để sửa email, password, role, name...
@@ -334,6 +371,249 @@ export const restoreUser = async (req, res) => {
       status: 'success',
       data: formatUserResponse(user),
       message: 'Đã khôi phục tài khoản user'
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// ==========================================
+// [MỚI] QUẢN LÝ HẠNG HỌC VIÊN (learner)
+// ==========================================
+
+/**
+ * Lấy danh sách hạng học có thể chọn + trạng thái enrolled của 1 learner
+ * GET /api/users/:id/enrolled-courses
+ */
+export const getLearnerEnrolledCourses = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ status: 'error', message: 'User not found' });
+    }
+
+    // Lấy tất cả khóa học active
+    const courses = await Course.find({ status: 'Active' }).lean();
+
+    // enrolledCourseCodes từ User (migrate từ Registration hoặc admin đã set)
+    const userEnrolledCodes = new Set(user.enrolledCourseCodes || []);
+
+    // Với mỗi course trên hệ thống, xác định trạng thái
+    const courseStatuses = await Promise.all(
+      courses.map(async (course) => {
+        // Kiểm tra Registration: đã thanh toán chưa?
+        const reg = await Registration.findOne({
+          learnerId: id,
+          courseId: course._id,
+          firstPaymentDate: { $ne: null },
+        }).lean();
+
+        const paid = !!reg;
+
+        // inBatch = đã thanh toán + có batch OPEN
+        let inBatch = false;
+        if (reg?.batchId) {
+          const batch = await Batch.findById(reg.batchId).lean();
+          if (batch && batch.status === 'OPEN') {
+            inBatch = true;
+          }
+        }
+
+        // enrolled = đã lưu trong User.enrolledCourseCodes
+        // (dù chưa thanh toán vẫn hiện, để admin thấy và chỉnh sửa)
+        const enrolled = userEnrolledCodes.has(course.code);
+
+        return {
+          _id: course._id,
+          code: course.code,
+          name: course.name,
+          enrolled,
+          paid,
+          inBatch,
+        };
+      }),
+    );
+
+    res.json({
+      status: 'success',
+      data: {
+        enrolledCourseCodes: user.enrolledCourseCodes || [],
+        courses: courseStatuses,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+/**
+ * Cập nhật danh sách hạng học của learner
+ * PATCH /api/users/:id/enrolled-courses
+ * Body: { enrolledCourseCodes: ["A1", "B2"] }
+ */
+export const updateLearnerEnrolledCourses = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { enrolledCourseCodes } = req.body;
+
+    if (!Array.isArray(enrolledCourseCodes)) {
+      return res.status(400).json({ status: 'error', message: 'enrolledCourseCodes phải là array' });
+    }
+
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ status: 'error', message: 'User not found' });
+    }
+
+    // Lấy tất cả khóa học active để validate
+    const allCourses = await Course.find({ status: 'Active' }).lean();
+    const courseCodesMap = new Map(allCourses.map((c) => [c.code, c]));
+
+    // Validate: chỉ chấp nhận course codes hợp lệ
+    const validRequestedCodes = enrolledCourseCodes.filter((code) => courseCodesMap.has(code));
+
+    // Định nghĩa các nhóm category
+    const XE_MAY_REGEX = /^A[12]$/;
+    const O_TO_REGEX = /^[BCDEF]/; // B1, B2, C, D, E...
+
+    const requestedXeMay = validRequestedCodes.filter(c => XE_MAY_REGEX.test(c));
+    const requestedOTo = validRequestedCodes.filter(c => O_TO_REGEX.test(c));
+
+    // Rule: Chỉ được chọn tối đa 1 hạng trong mỗi nhóm
+    if (requestedXeMay.length > 1) {
+      return res.status(400).json({ status: 'error', message: 'Xe Máy chỉ được chọn tối đa 1 hạng (A1 hoặc A2)' });
+    }
+    if (requestedOTo.length > 1) {
+      return res.status(400).json({ status: 'error', message: 'Ô Tô chỉ được chọn tối đa 1 hạng (B1, B2, C...)' });
+    }
+
+    // Kiểm tra trạng thái hiện tại của user để xác định cái gì đang bị "khóa" (đã vào lớp)
+    const currentEnrolledCodes = user.enrolledCourseCodes || [];
+    const lockedCodes = [];
+    
+    for (const code of currentEnrolledCodes) {
+      const course = courseCodesMap.get(code);
+      if (!course) continue;
+
+      // Tìm registration tương ứng xem đã vào lớp (Batch OPEN) chưa
+      const reg = await Registration.findOne({
+        learnerId: id,
+        courseId: course._id,
+        batchId: { $ne: null },
+      }).lean();
+
+      if (reg?.batchId) {
+        const batch = await Batch.findById(reg.batchId).lean();
+        if (batch && batch.status === 'OPEN') {
+          lockedCodes.push(code);
+        }
+      }
+    }
+
+    // Nếu có code bị khóa, thì trong nhóm (category) đó, user PHẢI giữ nguyên code cũ
+    const currentXeMay = currentEnrolledCodes.filter(c => XE_MAY_REGEX.test(c))[0];
+    const currentOTo = currentEnrolledCodes.filter(c => O_TO_REGEX.test(c))[0];
+
+    const isXeMayLocked = lockedCodes.some(c => XE_MAY_REGEX.test(c));
+    const isOToLocked = lockedCodes.some(c => O_TO_REGEX.test(c));
+
+    if (isXeMayLocked && requestedXeMay[0] !== currentXeMay) {
+      return res.status(400).json({ 
+        status: 'error', 
+        message: `Không thể thay đổi hạng Xe máy (${currentXeMay}) vì học viên đã được xếp lớp.` 
+      });
+    }
+
+    if (isOToLocked && requestedOTo[0] !== currentOTo) {
+      return res.status(400).json({ 
+        status: 'error', 
+        message: `Không thể thay đổi hạng Ô tô (${currentOTo}) vì học viên đã được xếp lớp.` 
+      });
+    }
+
+    // --- SYNC REGISTRATIONS ---
+    const handleCategorySync = async (oldCode, newCode, regex) => {
+      // 1. Trường hợp xóa hạng (có cũ, không có mới)
+      if (oldCode && !newCode) {
+        const oldCourse = courseCodesMap.get(oldCode);
+        if (oldCourse) {
+          // Cancel registration cũ
+          await Registration.updateMany(
+            { learnerId: id, courseId: oldCourse._id, status: { $ne: 'CANCELLED' } },
+            { $set: { status: 'CANCELLED' } }
+          );
+        }
+      }
+      // 2. Trường hợp đổi hạng (có cũ, có mới và khác nhau)
+      else if (oldCode && newCode && oldCode !== newCode) {
+        const oldCourse = courseCodesMap.get(oldCode);
+        const newCourse = courseCodesMap.get(newCode);
+        if (oldCourse && newCourse) {
+          // Tìm registration cũ để cập nhật thành mới
+          const oldReg = await Registration.findOne({ 
+            learnerId: id, 
+            courseId: oldCourse._id,
+            status: { $ne: 'CANCELLED' }
+          });
+          
+          if (oldReg) {
+            oldReg.courseId = newCourse._id;
+            // Rebuild fee plan based on new course
+            oldReg.feePlanSnapshot = buildFeePlanSnapshot(newCourse, oldReg.paymentPlanType);
+            await oldReg.save();
+          } else {
+            // Nếu không tìm thấy reg cũ (lỗi dữ liệu?), tạo cái mới
+            const registration = new Registration({
+              learnerId: id,
+              courseId: newCourse._id,
+              registerMethod: 'CONSULTANT',
+              status: 'DRAFT',
+              paymentPlanType: 'INSTALLMENT',
+              feePlanSnapshot: buildFeePlanSnapshot(newCourse, 'INSTALLMENT'),
+            });
+            await registration.save();
+          }
+        }
+      }
+      // 3. Trường hợp thêm mới (không có cũ, có mới)
+      else if (!oldCode && newCode) {
+        const newCourse = courseCodesMap.get(newCode);
+        if (newCourse) {
+          // Kiểm tra xem đã có reg cho cái này chưa
+          const existing = await Registration.findOne({ 
+            learnerId: id, 
+            courseId: newCourse._id,
+            status: { $ne: 'CANCELLED' }
+          });
+          if (!existing) {
+            const registration = new Registration({
+              learnerId: id,
+              courseId: newCourse._id,
+              registerMethod: 'CONSULTANT',
+              status: 'DRAFT',
+              paymentPlanType: 'INSTALLMENT',
+              feePlanSnapshot: buildFeePlanSnapshot(newCourse, 'INSTALLMENT'),
+            });
+            await registration.save();
+          }
+        }
+      }
+    };
+
+    await handleCategorySync(currentXeMay, requestedXeMay[0], XE_MAY_REGEX);
+    await handleCategorySync(currentOTo, requestedOTo[0], O_TO_REGEX);
+
+    // Cập nhật User
+    user.enrolledCourseCodes = validRequestedCodes;
+    await user.save();
+
+    res.json({
+      status: 'success',
+      data: {
+        enrolledCourseCodes: user.enrolledCourseCodes,
+      },
+      message: 'Cập nhật hạng học thành công',
     });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });

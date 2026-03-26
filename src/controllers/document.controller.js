@@ -199,7 +199,7 @@ export const getMyDocument = async (req, res) => {
 
     let document = await Document.findOne({ learnerId, isDeleted: { $ne: true } }).populate(documentPopulate);
     if (!document) {
-      document = await Document.create({ learnerId, status: 'PENDING' });
+      document = await Document.create({ learnerId, status: 'DRAFT' });
       document = await Document.findById(document._id).populate(documentPopulate);
     }
 
@@ -214,6 +214,19 @@ export const uploadDocuments = async (req, res) => {
     const { registrationId, cccdImageFront, cccdImageBack, healthCertificate, photo, cccdNumber, consultantEmail } = req.body;
     const learnerId = req.userId;
 
+    // Validate CCCD format: 9 or 12 digits
+    if (cccdNumber) {
+      const cccdClean = cccdNumber.replace(/\s/g, '');
+      if (!/^[0-9]{9}$|^[0-9]{12}$/.test(cccdClean)) {
+        return res.status(400).json({ status: 'error', message: 'Số CMND/CCCD phải là 9 hoặc 12 chữ số' });
+      }
+      // Check uniqueness (exclude current user's document)
+      const existing = await Document.findOne({ cccdNumber: cccdClean, learnerId: { $ne: learnerId }, isDeleted: { $ne: true } });
+      if (existing) {
+        return res.status(400).json({ status: 'error', message: 'Số CMND/CCCD đã được sử dụng bởi người khác' });
+      }
+    }
+
     let registration = null;
     if (registrationId) {
       registration = await Registration.findById(registrationId);
@@ -224,7 +237,7 @@ export const uploadDocuments = async (req, res) => {
     }
 
     let document = await Document.findOne({ learnerId, isDeleted: { $ne: true } });
-    if (!document) document = new Document({ learnerId, status: 'PENDING' });
+    if (!document) document = new Document({ learnerId, status: 'DRAFT' });
 
     if (registration?._id) document.registrationId = registration._id;
     if (cccdImageFront) document.cccdImageFront = cccdImageFront;
@@ -276,7 +289,7 @@ export const getDocumentsByRegistration = async (req, res) => {
 
     let document = await Document.findOne({ learnerId: registration.learnerId, isDeleted: { $ne: true } }).populate(documentPopulate);
     if (!document) {
-      document = await Document.create({ learnerId: registration.learnerId, registrationId, status: 'PENDING' });
+      document = await Document.create({ learnerId: registration.learnerId, registrationId, status: 'DRAFT' });
       document = await Document.findById(document._id).populate(documentPopulate);
     }
 
