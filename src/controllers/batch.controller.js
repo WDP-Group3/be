@@ -95,6 +95,18 @@ export const createBatch = async (req, res) => {
       });
     }
 
+    const start = new Date(startDate);
+    const end = new Date(estimatedEndDate);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    if (start < today) {
+      return res.status(400).json({ status: 'error', message: 'Ngày bắt đầu không được trong quá khứ' });
+    }
+    if (end < start) {
+      return res.status(400).json({ status: 'error', message: 'Ngày kết thúc không được trước ngày bắt đầu' });
+    }
+
     const batch = await Batch.create({
       courseId,
       name,
@@ -137,6 +149,21 @@ export const updateBatch = async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
+
+    const existingBatch = await Batch.findById(id);
+    if (!existingBatch) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'Batch not found',
+      });
+    }
+
+    const start = updates.startDate ? new Date(updates.startDate) : new Date(existingBatch.startDate);
+    const end = updates.estimatedEndDate ? new Date(updates.estimatedEndDate) : new Date(existingBatch.estimatedEndDate);
+
+    if (end < start) {
+      return res.status(400).json({ status: 'error', message: 'Ngày kết thúc không được trước ngày bắt đầu' });
+    }
 
     const batch = await Batch.findByIdAndUpdate(id, updates, { new: true })
       .populate('courseId', 'code name')
