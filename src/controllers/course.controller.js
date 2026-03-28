@@ -125,20 +125,25 @@ export const createCourse = async (req, res) => {
       });
     }
 
-    // 2. Tạo object khớp hoàn toàn với Schema
+    // 2. Tự động tính estimatedCost từ tổng các đợt nếu có feePayments
+    const payments = feePayments || [];
+    const computedCost =
+      payments.length > 0
+        ? payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0)
+        : Number(estimatedCost) || 0;
+
     const newCourse = new Course({
       code,
       name,
-      estimatedCost: estimatedCost,
-      feePayments: feePayments || [],
+      estimatedCost: computedCost,
+      feePayments: payments,
       estimatedDuration,
       location: location || [],
       status: "Active",
       description,
       image,
-      location: location || [],
       note,
-      maxlearners: req.body.maxlearners || 50, // Số lượng học viên tối đa
+      maxlearners: req.body.maxlearners || 50,
     });
 
     await newCourse.save();
@@ -168,7 +173,15 @@ export const updateCourse = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const updates = req.body;
+    const updates = { ...req.body };
+
+    // Tự động tính lại estimatedCost từ tổng feePayments nếu có
+    if (Array.isArray(updates.feePayments) && updates.feePayments.length > 0) {
+      updates.estimatedCost = updates.feePayments.reduce(
+        (sum, p) => sum + (Number(p.amount) || 0),
+        0
+      );
+    }
 
     const course = await Course.findByIdAndUpdate(id, updates, { new: true });
     if (!course) {
