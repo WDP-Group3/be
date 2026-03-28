@@ -162,6 +162,7 @@ export const register = async (req, res) => {
   try {
     const { name, email, phone, password } = req.body;
 
+    // 1. Kiểm tra trường bắt buộc
     if (!name || !email || !phone || !password) {
       return res.status(400).json({
         status: "error",
@@ -169,17 +170,48 @@ export const register = async (req, res) => {
       });
     }
 
-    // Validate phone format
-    const phoneClean = phone.replace(/\s/g, '');
-    if (!/^[0-9]{10,11}$/.test(phoneClean)) {
+    // 2. Validate họ tên: chỉ chữ cái + khoảng trắng, tối thiểu 2 từ
+    const nameTrimmed = name.trim();
+    if (!/^[\p{L}\s]+$/u.test(nameTrimmed)) {
       return res.status(400).json({
         status: "error",
-        message: "Số điện thoại phải là 10 hoặc 11 chữ số",
+        message: "Họ tên chỉ được chứa chữ cái",
+      });
+    }
+    if (nameTrimmed.split(/\s+/).length < 2) {
+      return res.status(400).json({
+        status: "error",
+        message: "Vui lòng nhập đầy đủ họ và tên (ít nhất 2 từ)",
       });
     }
 
-    // Check if user already exists
-    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    // 3. Validate email format
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim())) {
+      return res.status(400).json({
+        status: "error",
+        message: "Email không hợp lệ",
+      });
+    }
+
+    // 4. Validate số điện thoại: chuẩn Việt Nam (0[3|5|7|8|9]xxxxxxxx, 10 số)
+    const phoneClean = phone.replace(/\s/g, '');
+    if (!/^(0[35789])[0-9]{8}$/.test(phoneClean)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Số điện thoại không hợp lệ (phải là số Việt Nam 10 chữ số, VD: 0912345678)",
+      });
+    }
+
+    // 5. Validate mật khẩu tối thiểu 8 ký tự
+    if (password.length < 8) {
+      return res.status(400).json({
+        status: "error",
+        message: "Mật khẩu phải có ít nhất 8 ký tự",
+      });
+    }
+
+    // 6. Kiểm tra email đã tồn tại
+    const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
     if (existingUser) {
       return res.status(400).json({
         status: "error",
@@ -187,7 +219,7 @@ export const register = async (req, res) => {
       });
     }
 
-    // Check phone uniqueness
+    // 7. Kiểm tra số điện thoại đã tồn tại
     const existingPhone = await User.findOne({ phone: phoneClean });
     if (existingPhone) {
       return res.status(400).json({
@@ -199,13 +231,13 @@ export const register = async (req, res) => {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create new user with USER role by default
+    // Create new user
     const user = new User({
-      fullName: name,
-      email: email.toLowerCase(),
+      fullName: nameTrimmed,
+      email: email.toLowerCase().trim(),
       phone: phoneClean,
       password: hashedPassword,
-      role: "USER",
+      role: "learner",
       status: "ACTIVE",
     });
 
@@ -214,7 +246,6 @@ export const register = async (req, res) => {
     // Generate token
     const token = generateToken(user._id);
 
-    // Return user and token
     res.status(201).json({
       status: "success",
       token,
@@ -223,10 +254,9 @@ export const register = async (req, res) => {
   } catch (error) {
     console.error("Register error:", error);
     if (error.code === 11000) {
-      return res.status(400).json({
-        status: "error",
-        message: "Email đã được sử dụng",
-      });
+      const field = Object.keys(error.keyPattern || {})[0];
+      const message = field === 'phone' ? 'Số điện thoại đã được sử dụng' : 'Email đã được sử dụng';
+      return res.status(400).json({ status: "error", message });
     }
     res.status(500).json({
       status: "error",
