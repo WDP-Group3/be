@@ -2,7 +2,6 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { createServer } from "http";
-import { Server } from "socket.io";
 import { connectDB } from "./config/db.js";
 import apiRoutes from "./routes/index.js";
 import {
@@ -15,6 +14,7 @@ import {
   startAttendanceReminderCron,
   sendInstructorBusyScheduleReminder,
 } from "./services/cron.job.js";
+import { initSocket } from "./services/socket.service.js";
 import Booking from "./models/Booking.js";
 import { sendNotificationEmail } from "./services/email.service.js";
 
@@ -149,8 +149,17 @@ app.get("/test-email-attendance", async (req, res) => {
         hour: 17,
         minute: 0,
       };
-      const classEndTime = new Date(booking.date);
-      classEndTime.setHours(hour, minute, 0, 0);
+      
+      const vietnamDate = new Date(booking.date.toLocaleString("en-US", { timeZone: "Asia/Ho_Chi_Minh" }));
+      const classYear = vietnamDate.getFullYear();
+      const classMonth = String(vietnamDate.getMonth() + 1).padStart(2, '0');
+      const classDateStr = String(vietnamDate.getDate()).padStart(2, '0');
+      const classHrStr = String(hour).padStart(2, '0');
+      const classMnStr = String(minute).padStart(2, '0');
+      
+      const absoluteEndTimeStr = `${classYear}-${classMonth}-${classDateStr}T${classHrStr}:${classMnStr}:00+07:00`;
+      const classEndTime = new Date(absoluteEndTimeStr);
+      
       const reminderTime = new Date(classEndTime.getTime() + 5 * 60 * 1000);
       const now = new Date();
 
@@ -278,42 +287,11 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Start server with Socket.io
+// Khởi chạy server
 const httpServer = createServer(app);
-const io = new Server(httpServer, {
-  cors: {
-    origin: [
-      process.env.FRONTEND_URL,
-      'http://localhost:5173',
-      'https://fe-git-main-nthm1806s-projects.vercel.app'
-    ].filter(Boolean),
-    credentials: true,
-  },
-});
 
-// Socket.io connection handling
-io.on("connection", (socket) => {
-  console.log(`🔌 Client connected: ${socket.id}`);
-
-  // Join user to their personal room
-  socket.on("join", (userId) => {
-    socket.join(`user:${userId}`);
-    console.log(`👤 User ${userId} joined room: user:${userId}`);
-  });
-
-  // Join admin room
-  socket.on("join-admin", () => {
-    socket.join("admin");
-    console.log(`👑 Admin joined room: admin`);
-  });
-
-  socket.on("disconnect", () => {
-    console.log(`🔌 Client disconnected: ${socket.id}`);
-  });
-});
-
-// Make io accessible to controllers via global
-global.io = io;
+// Bật Socket.io server thông qua socket.service.js để các controller gọi được io
+initSocket(httpServer);
 
 const server = httpServer.listen(PORT, () => {
   console.log(`🚀 Server đang chạy tại http://localhost:${PORT}`);

@@ -13,9 +13,9 @@ import { emitScheduleUpdate } from '../services/socket.service.js';
 const checkTimeDistance = (slotDateStr, slotTimeSlot) => {
   // 10 ca học theo frontend
   const SLOT_START_HOURS = { 
-    "1": 7, "2": 8.5, "3": 10, "4": 11.5, 
-    "5": 13, "6": 14.5, "7": 16, "8": 17.5, 
-    "9": 19, "10": 20.5 
+    "1": 7, "2": 8, "3": 9, "4": 10, 
+    "5": 11, "6": 13, "7": 14, "8": 15, 
+    "9": 16, "10": 17 
   };
   const startHour = SLOT_START_HOURS[String(slotTimeSlot)] || 7;
   
@@ -35,7 +35,8 @@ const checkBookingLimit = (slotDateStr) => {
   // 1. Tính ngày Chủ nhật của TUẦN SAU
   // Logic: Tìm CN tuần này -> Cộng thêm 7 ngày -> Ra CN tuần sau
   const currentDay = today.getDay(); // 0 (Sun) - 6 (Sat)
-  const daysUntilSunday = 0 - currentDay + (currentDay === 0 ? 0 : 7); // Khoảng cách đến CN tuần này
+  const isoDay = currentDay === 0 ? 7 : currentDay;
+  const daysUntilSunday = 7 - isoDay; // Khoảng cách đến CN tuần này
   
   const thisSunday = new Date(today);
   thisSunday.setDate(today.getDate() + daysUntilSunday);
@@ -65,7 +66,8 @@ const checkNextWeekBookingTime = (slotDateStr) => {
 
   // Tính ngày Chủ nhật tuần này
   const currentDay = now.getDay();
-  const daysUntilSunday = 0 - currentDay + (currentDay === 0 ? 0 : 7);
+  const isoDay = currentDay === 0 ? 7 : currentDay;
+  const daysUntilSunday = 7 - isoDay;
   const thisSunday = new Date(now);
   thisSunday.setDate(now.getDate() + daysUntilSunday);
   thisSunday.setHours(23, 59, 59, 999);
@@ -78,7 +80,7 @@ const checkNextWeekBookingTime = (slotDateStr) => {
   // Nếu ngày đặt là tuần sau -> kiểm tra thời gian
   // Tính 18:30 thứ 6 của tuần này
   const thisFriday = new Date(now);
-  const diffToFriday = 5 - currentDay;
+  const diffToFriday = 5 - isoDay;
   thisFriday.setDate(now.getDate() + diffToFriday);
   thisFriday.setHours(18, 30, 0, 0); // 18:30:00
 
@@ -461,15 +463,15 @@ const sendAttendanceNotificationEmail = async (booking) => {
 
   const SLOT_LABELS = {
     "1": "Ca 1 (07:00 - 08:00)",
-    "2": "Ca 2 (08:30 - 09:30)",
-    "3": "Ca 3 (10:00 - 11:00)",
-    "4": "Ca 4 (11:30 - 12:30)",
-    "5": "Ca 5 (13:00 - 14:00)",
-    "6": "Ca 6 (14:30 - 15:30)",
-    "7": "Ca 7 (16:00 - 17:00)",
-    "8": "Ca 8 (17:30 - 18:30)",
-    "9": "Ca 9 (19:00 - 20:00)",
-    "10": "Ca 10 (20:30 - 21:30)",
+    "2": "Ca 2 (08:00 - 09:00)",
+    "3": "Ca 3 (09:00 - 10:00)",
+    "4": "Ca 4 (10:00 - 11:00)",
+    "5": "Ca 5 (11:00 - 12:00)",
+    "6": "Ca 6 (13:00 - 14:00)",
+    "7": "Ca 7 (14:00 - 15:00)",
+    "8": "Ca 8 (15:00 - 16:00)",
+    "9": "Ca 9 (16:00 - 17:00)",
+    "10": "Ca 10 (17:00 - 18:00)",
   };
 
   if (booking.attendance === 'PRESENT') {
@@ -575,16 +577,17 @@ export const getBookingStatus = async (req, res) => {
   try {
     const now = new Date();
     const currentDay = now.getDay(); // 0 (Sun) - 6 (Sat)
+    const isoDay = currentDay === 0 ? 7 : currentDay;
 
     // Tính 18:30 thứ 6 của tuần này
     const thisFriday = new Date(now);
-    const diffToFriday = 5 - currentDay;
+    const diffToFriday = 5 - isoDay;
     thisFriday.setDate(now.getDate() + diffToFriday);
     thisFriday.setHours(18, 30, 0, 0);
 
     // Tính Chủ nhật tuần này
     const thisSunday = new Date(now);
-    const daysUntilSunday = 0 - currentDay + (currentDay === 0 ? 0 : 7);
+    const daysUntilSunday = 7 - isoDay;
     thisSunday.setDate(now.getDate() + daysUntilSunday);
     thisSunday.setHours(23, 59, 59, 999);
 
@@ -621,28 +624,28 @@ export const getBookingStatus = async (req, res) => {
 // 10 ca học theo frontend
 const SLOT_END_TIMES = {
   "1": { hour: 8, minute: 0 },    // Ca 1: 07:00-08:00
-  "2": { hour: 9, minute: 30 },  // Ca 2: 08:30-09:30
-  "3": { hour: 11, minute: 0 },  // Ca 3: 10:00-11:00
-  "4": { hour: 12, minute: 30 }, // Ca 4: 11:30-12:30
-  "5": { hour: 14, minute: 0 },  // Ca 5: 13:00-14:00
-  "6": { hour: 15, minute: 30 }, // Ca 6: 14:30-15:30
-  "7": { hour: 17, minute: 0 },  // Ca 7: 16:00-17:00
-  "8": { hour: 18, minute: 30 }, // Ca 8: 17:30-18:30
-  "9": { hour: 20, minute: 0 },  // Ca 9: 19:00-20:00
-  "10": { hour: 21, minute: 30 }, // Ca 10: 20:30-21:30
+  "2": { hour: 9, minute: 0 },    // Ca 2: 08:00-09:00
+  "3": { hour: 10, minute: 0 },   // Ca 3: 09:00-10:00
+  "4": { hour: 11, minute: 0 },   // Ca 4: 10:00-11:00
+  "5": { hour: 12, minute: 0 },   // Ca 5: 11:00-12:00
+  "6": { hour: 14, minute: 0 },   // Ca 6: 13:00-14:00
+  "7": { hour: 15, minute: 0 },   // Ca 7: 14:00-15:00
+  "8": { hour: 16, minute: 0 },   // Ca 8: 15:00-16:00
+  "9": { hour: 17, minute: 0 },   // Ca 9: 16:00-17:00
+  "10": { hour: 18, minute: 0 },  // Ca 10: 17:00-18:00
 };
 
 const SLOT_LABELS = {
   "1": "Ca 1 (07:00 - 08:00)",
-  "2": "Ca 2 (08:30 - 09:30)",
-  "3": "Ca 3 (10:00 - 11:00)",
-  "4": "Ca 4 (11:30 - 12:30)",
-  "5": "Ca 5 (13:00 - 14:00)",
-  "6": "Ca 6 (14:30 - 15:30)",
-  "7": "Ca 7 (16:00 - 17:00)",
-  "8": "Ca 8 (17:30 - 18:30)",
-  "9": "Ca 9 (19:00 - 20:00)",
-  "10": "Ca 10 (20:30 - 21:30)",
+  "2": "Ca 2 (08:00 - 09:00)",
+  "3": "Ca 3 (09:00 - 10:00)",
+  "4": "Ca 4 (10:00 - 11:00)",
+  "5": "Ca 5 (11:00 - 12:00)",
+  "6": "Ca 6 (13:00 - 14:00)",
+  "7": "Ca 7 (14:00 - 15:00)",
+  "8": "Ca 8 (15:00 - 16:00)",
+  "9": "Ca 9 (16:00 - 17:00)",
+  "10": "Ca 10 (17:00 - 18:00)",
 };
 
 // [TEST] Gửi mail nhắc điểm danh cho tất cả booking chưa điểm danh đã kết thúc

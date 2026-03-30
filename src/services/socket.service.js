@@ -5,7 +5,13 @@ let io;
 export const initSocket = (server) => {
   io = new Server(server, {
     cors: {
-      origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+      origin: [
+        process.env.FRONTEND_URL,
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+        "https://fe-git-main-nthm1806s-projects.vercel.app",
+      ].filter(Boolean),
       credentials: true,
     },
   });
@@ -30,6 +36,7 @@ export const initSocket = (server) => {
     });
   });
 
+  global.io = io;
   return io;
 };
 
