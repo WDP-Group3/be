@@ -1,11 +1,12 @@
 import SystemHoliday from '../models/SystemHoliday.js';
 import User from '../models/User.js';
+import Booking from '../models/Booking.js';
 import { sendNotificationEmail } from '../services/email.service.js';
 
 // Helper: Gửi email thông báo lịch nghỉ
 // - Toàn hệ thống: gửi cho tất cả INSTRUCTOR + learner + SALES
 // - Theo khu vực: gửi cho INSTRUCTOR (workingLocation) + learner (registration batch location) + SALES của khu vực đó
-const sendHolidayNotification = async (holiday, action = 'CREATE') => {
+const sendHolidayNotification = async (holiday, action = 'CREATE', excludeEmails = []) => {
   try {
     const actionText = action === 'CREATE' ? 'tạo mới' : (action === 'UPDATE' ? 'cập nhật' : 'xóa');
     const startDateStr = new Date(holiday.startDate).toLocaleDateString('vi-VN', { weekday: 'long', day: 'numeric', month: 'numeric', year: 'numeric' });
@@ -92,10 +93,10 @@ Ban Quản lý Drive Center`;
       learnersInBatches.forEach(id => targetUserIds.add(id.toString()));
     }
 
-    // Lấy thông tin email của các user
+    // Lấy thông tin email của các user (loại trừ những người đã nhận email thông báo huỷ ca cụ thể)
     const users = await User.find({
       _id: { $in: [...targetUserIds] },
-      email: { $exists: true, $ne: '' }
+      email: { $exists: true, $ne: '', $nin: excludeEmails }
     }).select('email fullName role');
 
     let successCount = 0;
@@ -162,22 +163,129 @@ export const createHoliday = async (req, res) => {
       });
     }
 
+    const startObj = new Date(startDate);
+    startObj.setHours(0, 0, 0, 0);
+    const endObj = new Date(endDate);
+    endObj.setHours(23, 59, 59, 999);
+
+    // [MỚI] Kiểm tra trùng lặp lịch nghỉ (Overlap Validation)
+    // Nếu tạo lịch "Toàn hệ thống" (location=null) -> trùng với BẤT KỲ lịch nào trong khoảng thời gian
+    // Nếu tạo lịch "Khu vực X" -> trùng với lịch "Toàn hệ thống" HOẶC lịch "Khu vực X"
+    const locationFilter = location 
+      ? { $or: [{ location: null }, { location }] }
+      : {};
+
+    const existingHoliday = await SystemHoliday.findOne({
+      startDate: { $lte: endObj },
+      endDate: { $gte: startObj },
+      ...locationFilter,
+      isActive: true // Chỉ check các lịch nghỉ đang active
+    });
+
+    if (existingHoliday) {
+      return res.status(400).json({
+        status: 'error',
+        message: `Lịch nghỉ này bị trùng lặp thời gian với lịch nghỉ: "${existingHoliday.title}" (${existingHoliday.location || 'Toàn hệ thống'}). Vui lòng chọn ngày khác.`
+      });
+    }
+
     const holiday = new SystemHoliday({
       title,
-      startDate: new Date(startDate),
-      endDate: new Date(endDate),
+      startDate: startObj,
+      endDate: endObj,
       description,
       location: location || null // null = toàn hệ thống
     });
 
     await holiday.save();
 
-    // Gửi email thông báo cho đối tượng liên quan
-    await sendHolidayNotification(holiday, 'CREATE');
+    // =============== [MỚI] HUỶ CÁC CA HỌC BỊ TRÙNG VỚI LỊCH NGHỈ ===============
 
+    // 1. Tìm các giáo viên bị ảnh hưởng bởi khu vực nghỉ lễ
+    let affectedInstructorIds = [];
+    if (!location) {
+      const allInst = await User.find({ role: 'INSTRUCTOR' }).select('_id');
+      affectedInstructorIds = allInst.map(u => u._id);
+    } else {
+      const areaInst = await User.find({ 
+        role: 'INSTRUCTOR',
+        workingLocation: { $regex: new RegExp(`^${location.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
+      }).select('_id');
+      affectedInstructorIds = areaInst.map(u => u._id);
+    }
+
+    // 2. Tìm tất cả booking trong khoảng thời gian đó của các giáo viên trên
+    const affectedBookings = await Booking.find({
+      date: { $gte: startObj, $lte: endObj },
+      instructorId: { $in: affectedInstructorIds },
+      status: { $nin: ['CANCELLED', 'REJECTED'] }
+    }).populate('learnerId', 'email fullName').populate('instructorId', 'email fullName');
+
+    const cancelledLearners = new Map(); // Dùng Map để tránh gửi 2 email cho 1 học viên bị huỷ 2 ca
+    const cancelledInstructors = new Map();
+
+    // 3. Thực hiện huỷ và lưu thông tin
+    for (const booking of affectedBookings) {
+      booking.status = 'CANCELLED';
+      booking.instructorNote = `Huỷ do lịch nghỉ lễ: ${title}`;
+      await booking.save();
+
+      if (booking.learnerId?.email) {
+        cancelledLearners.set(booking.learnerId.email, booking.learnerId.fullName);
+      }
+      if (booking.instructorId?.email) {
+        cancelledInstructors.set(booking.instructorId.email, booking.instructorId.fullName);
+      }
+    }
+
+    // [MỚI] Trả về response NGAY LẬP TỨC để tránh timeout trên màn hình Admin
     res.status(201).json({ status: 'success', data: holiday });
+
+    // 4. Gửi email chuyên biệt và chung - CHẠY NGẦM BACKGROUND
+    (async () => {
+      try {
+        for (const [email, name] of cancelledLearners.entries()) {
+          await sendNotificationEmail(
+            email,
+            `🔔 Thông báo: Huỷ lịch học do lịch nghỉ lễ - ${title}`,
+            `Kính gửi Học viên ${name},
+
+Lịch học của bạn trong khoảng thời gian từ ${startObj.toLocaleDateString('vi-VN')} đến ${endObj.toLocaleDateString('vi-VN')} đã bị hệ thống huỷ tự động do trung tâm có lịch nghỉ: ${title}.
+
+Vui lòng truy cập hệ thống để đăng ký lại lịch học vào ngày khác.
+
+Trân trọng!`
+          ).catch(e => console.error(e));
+        }
+
+        for (const [email, name] of cancelledInstructors.entries()) {
+          await sendNotificationEmail(
+            email,
+            `🔔 Thông báo: Huỷ lịch dạy do lịch nghỉ lễ - ${title}`,
+            `Kính gửi Thầy/Cô ${name},
+
+Các lịch dạy của Thầy/Cô trong khoảng thời gian từ ${startObj.toLocaleDateString('vi-VN')} đến ${endObj.toLocaleDateString('vi-VN')} đã bị huỷ tự động do hệ thống có lịch nghỉ: ${title}.
+
+Trân trọng!`
+          ).catch(e => console.error(e));
+        }
+
+        // Loại trừ những người vừa nhận email huỷ ca khỏi danh sách nhận email thông báo chung
+        const excludeEmails = [...cancelledLearners.keys(), ...cancelledInstructors.keys()];
+
+        // Gửi email thông báo chung cho các đối tượng CÒN LẠI không có lịch học
+        await sendHolidayNotification(holiday, 'CREATE', excludeEmails);
+      } catch (bgError) {
+        console.error('Background holiday email error:', bgError);
+      }
+    })();
+
   } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
+    if (!res.headersSent) {
+      res.status(500).json({ status: 'error', message: error.message });
+    } else {
+      console.error('Lỗi Holiday Controller (Outer Block):', error);
+    }
   }
 };
 
@@ -187,18 +295,49 @@ export const updateHoliday = async (req, res) => {
     const { id } = req.params;
     const { title, startDate, endDate, description, isActive, location } = req.body;
 
+    const existingTargetHoliday = await SystemHoliday.findById(id);
+    if (!existingTargetHoliday) {
+      return res.status(404).json({ status: 'error', message: 'Không tìm thấy lịch nghỉ' });
+    }
+
+    const startObj = startDate ? new Date(startDate) : existingTargetHoliday.startDate;
+    const endObj = endDate ? new Date(endDate) : existingTargetHoliday.endDate;
+    const loc = location !== undefined ? (location || null) : existingTargetHoliday.location;
+
     // Validate: endDate >= startDate
-    if (startDate && endDate && new Date(endDate) < new Date(startDate)) {
+    if (new Date(endObj) < new Date(startObj)) {
       return res.status(400).json({
         status: 'error',
         message: 'Ngày kết thúc phải lớn hơn hoặc bằng ngày bắt đầu'
       });
     }
 
+    startObj.setHours(0, 0, 0, 0);
+    endObj.setHours(23, 59, 59, 999);
+
+    const locationFilter = loc 
+      ? { $or: [{ location: null }, { location: loc }] }
+      : {};
+
+    const overlappingHoliday = await SystemHoliday.findOne({
+      _id: { $ne: id },
+      startDate: { $lte: endObj },
+      endDate: { $gte: startObj },
+      ...locationFilter,
+      isActive: true
+    });
+
+    if (overlappingHoliday) {
+      return res.status(400).json({
+        status: 'error',
+        message: `Cập nhật thất bại: Trùng lặp thời gian với lịch nghỉ tĩnh: "${overlappingHoliday.title}" (${overlappingHoliday.location || 'Toàn hệ thống'}). Vui lòng chọn ngày khác.`
+      });
+    }
+
     const updateData = { title, description, isActive };
-    if (startDate) updateData.startDate = new Date(startDate);
-    if (endDate) updateData.endDate = new Date(endDate);
-    if (location !== undefined) updateData.location = location || null;
+    if (startDate) updateData.startDate = startObj;
+    if (endDate) updateData.endDate = endObj;
+    if (location !== undefined) updateData.location = loc;
 
     const holiday = await SystemHoliday.findByIdAndUpdate(
       id,
@@ -206,16 +345,17 @@ export const updateHoliday = async (req, res) => {
       { new: true, runValidators: true }
     );
 
-    if (!holiday) {
-      return res.status(404).json({ status: 'error', message: 'Không tìm thấy lịch nghỉ' });
-    }
-
-    // Gửi email thông báo cập nhật
-    await sendHolidayNotification(holiday, 'UPDATE');
-
     res.json({ status: 'success', data: holiday });
+
+    // Gửi email thông báo cập nhật CHẠY NGẦM BACKGROUND
+    (async () => {
+      await sendHolidayNotification(holiday, 'UPDATE').catch(e => console.error('BG Email Warning:', e));
+    })();
+
   } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
+    if (!res.headersSent) {
+      res.status(500).json({ status: 'error', message: error.message });
+    }
   }
 };
 
@@ -229,15 +369,20 @@ export const deleteHoliday = async (req, res) => {
       return res.status(404).json({ status: 'error', message: 'Không tìm thấy lịch nghỉ' });
     }
 
-    // Gửi email thông báo xóa trước khi xóa
-    await sendHolidayNotification(holiday, 'DELETE');
-
     // Sau đó mới xóa
     await SystemHoliday.findByIdAndDelete(id);
 
     res.json({ status: 'success', message: 'Xóa lịch nghỉ thành công' });
+
+    // Gửi email thông báo xóa chạy ngầm
+    (async () => {
+      await sendHolidayNotification(holiday, 'DELETE').catch(e => console.error('BG Email Warning:', e));
+    })();
+
   } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
+    if (!res.headersSent) {
+      res.status(500).json({ status: 'error', message: error.message });
+    }
   }
 };
 

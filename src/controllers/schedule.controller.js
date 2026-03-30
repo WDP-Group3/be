@@ -407,8 +407,8 @@ const checkInstructorDeadline = (targetDateStr) => {
     };
   }
   
-  // Trường hợp 2: Tuần SAU hoặc xa hơn
-  if (isNextWeek || targetDate > thisWeekSunday) {
+  // Trường hợp 2: Tuần SAU
+  if (isNextWeek) {
     // Kiểm tra: Ngày báo bận là Thứ 7 hoặc CN -> KHÔNG CHO PHÉP
     if (isTargetWeekend) {
       return { 
@@ -445,14 +445,14 @@ const checkInstructorDeadline = (targetDateStr) => {
     }
   }
   
-  // Trường hợp 3: Tuần trước (quá khứ) - không cho phép
-  if (targetDate < thisWeekMonday) {
+  // Trường hợp 3: Tuần trước (quá khứ) hoặc xa hơn (tuần sau nữa) - không cho phép
+  if (targetDate < thisWeekMonday || targetDate > nextWeekSunday) {
     return { 
       allowed: false, 
       isEmergency: false,
-      weekType: 'past',
-      message: 'Không thể thay đổi lịch quá khứ.',
-      reason: 'past_week'
+      weekType: targetDate < thisWeekMonday ? 'past' : 'future',
+      message: targetDate < thisWeekMonday ? 'Không thể thay đổi lịch quá khứ.' : 'Chỉ có thể báo bận tối đa cho tuần sau.',
+      reason: targetDate < thisWeekMonday ? 'past_week' : 'too_far_future'
     };
   }
   
@@ -544,6 +544,13 @@ export const toggleBusy = async (req, res) => {
 
     const slotNumber = Number(timeSlot);
 
+    // [MỚI] Tìm lịch bận (Schedule) trong ca đó để xem có phải đang HỦY báo bận khẩn cấp không
+    const existingSchedule = await Schedule.findOne({
+      instructorId,
+      date: { $gte: startOfDay, $lte: endOfDay },
+      timeSlot: slotNumber
+    });
+
     // 4. Kiểm tra xem đã có Booking (Lịch học viên) chưa
     const existingBooking = await Booking.findOne({
       instructorId,
@@ -552,7 +559,50 @@ export const toggleBusy = async (req, res) => {
       status: { $nin: ['CANCELLED', 'REJECTED'] }
     }).populate('learnerId', 'fullName email phone');
 
-    // [MỚI] Nếu là emergency -> luôn cần admin duyệt (không tự động huỷ booking)
+    // Nếu đã có lịch bận và lịch bận đó là KHẨN CẤP -> Tạo Request yêu cầu HỦY BÁO BẬN
+    if (existingSchedule && existingSchedule.isEmergency) {
+      const instructorInfo = await User.findById(instructorId).select('fullName email workingLocation');
+      
+      const request = await Request.create({
+        user: instructorId,
+        type: 'INSTRUCTOR_BUSY',
+        reason: `Giáo viên ${instructorInfo.fullName} xin HỦY báo bận khẩn cấp ngày ${inputDate.toLocaleDateString('vi-VN')} ca ${timeSlot}.`,
+        metadata: {
+          date: inputDate,
+          timeSlot: slotNumber,
+          isEmergency: true,
+          requiresAdminApproval: true,
+          instructorName: instructorInfo.fullName,
+          instructorEmail: instructorInfo.email,
+          instructorLocation: instructorInfo.workingLocation,
+          action: 'RESTORE_SCHEDULE' // Admin duyệt sẽ xóa Schedule
+        }
+      });
+
+      return res.status(200).json({
+        status: 'pending_approval',
+        message: 'Yêu cầu hủy báo bận khẩn cấp đã được gửi cho admin duyệt.',
+        requestId: request._id,
+        requiresApproval: true
+      });
+    }
+
+    // Nếu đã có lịch bận nhưng KHÔNG PHẢI KHẨN CẤP -> Hủy ngay lập tức (không cần duyệt)
+    if (existingSchedule && !existingSchedule.isEmergency) {
+      await Schedule.findByIdAndDelete(existingSchedule._id);
+      
+      emitScheduleUpdate({ instructorId, date: startOfDay, timeSlot: slotNumber, status: 'AVAILABLE' });
+
+      return res.json({ 
+        status: 'success', 
+        message: 'Đã mở lại lịch thành công', 
+        action: 'removed',
+        isEmergency: false
+      });
+    }
+
+    // [MỚI] Giai đoạn này tức là CHƯA CÓ lịch báo bận -> TẠO MỚI báo bận
+    // Nếu là emergency -> luôn cần admin duyệt (không tự động huỷ booking)
     // Tạo request cho admin
     if (isEmergency) {
       const instructorInfo = await User.findById(instructorId).select('fullName email workingLocation');
@@ -593,27 +643,7 @@ export const toggleBusy = async (req, res) => {
       });
     }
 
-    // 5. Tìm lịch bận (Schedule) trong CẢ NGÀY hôm đó
-    const existingSchedule = await Schedule.findOne({
-      instructorId,
-      date: { $gte: startOfDay, $lte: endOfDay },
-      timeSlot: slotNumber
-    });
-
-    if (existingSchedule) {
-      // Nếu TÌM THẤY -> XÓA NGAY (không tính là emergency khi hủy)
-      await Schedule.findByIdAndDelete(existingSchedule._id);
-      
-      // Bắn socket thông báo lịch trống
-      emitScheduleUpdate({ instructorId, date: startOfDay, timeSlot: slotNumber, status: 'AVAILABLE' });
-
-      return res.json({ 
-        status: 'success', 
-        message: 'Đã mở lại lịch thành công', 
-        action: 'removed',
-        isEmergency: existingSchedule.isEmergency || false
-      });
-    } else {
+    {
       // Nếu KHÔNG THẤY -> TẠO MỚI (chỉ khi không phải emergency - emergency đã return ở trên)
       
       // Lấy thông tin giáo viên
@@ -735,19 +765,21 @@ export const getPublicSchedule = async (req, res) => {
       $lte: filterEnd
     };
 
-    // 1. Lấy các slot GV đã báo bận
     const busySchedules = await Schedule.find({
       instructorId,
       date: filterDate,
       type: 'BUSY'
-    }).lean();
+    })
+      .populate('instructorId', 'fullName phone email')
+      .lean();
 
-    // 2. Lấy các slot đã có người khác đặt
     const bookedSchedules = await Booking.find({
       instructorId,
       date: filterDate,
       status: { $nin: ['CANCELLED', 'REJECTED'] }
-    }).lean();
+    })
+      .populate('instructorId', 'fullName phone email')
+      .lean();
 
     // 3. Lấy các ngày nghỉ lễ trong khoảng (chỉ nghỉ toàn hệ thống + nghỉ khu vực của thầy)
     const instructorInfo = await User.findById(instructorId).select('workingLocation').lean();
@@ -919,7 +951,40 @@ export const toggleBusyAllDay = async (req, res) => {
     const allSlots = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     let existingBookings = [];
 
-    // Kiểm tra tất cả các ca trong ngày
+    // [MỚI] Lấy tất cả lịch bận (Schedule) trong ngày hôm nay của giáo viên
+    const existingSchedules = await Schedule.find({
+      instructorId,
+      date: { $gte: startOfDay, $lte: endOfDay }
+    });
+
+    // Nếu đã bận full 10 ca và TẤT CẢ đều là KHẨN CẤP -> tạo Request HỦY KHẨN CẤP CẢ NGÀY
+    const emergencySchedules = existingSchedules.filter(s => s.isEmergency);
+    if (emergencySchedules.length === 10) {
+      const request = await Request.create({
+        user: instructorId,
+        type: 'INSTRUCTOR_BUSY',
+        reason: `Giáo viên ${instructorInfo.fullName} xin HỦY báo bận khẩn cấp cả ngày ${inputDate.toLocaleDateString('vi-VN')}.`,
+        metadata: {
+          date: inputDate,
+          timeSlot: 'all',
+          isEmergency: true,
+          requiresAdminApproval: true,
+          instructorName: instructorInfo.fullName,
+          instructorEmail: instructorInfo.email,
+          instructorLocation: instructorInfo.workingLocation,
+          action: 'RESTORE_SCHEDULE' // Admin duyệt sẽ xóa toàn bộ Schedule ngày đó
+        }
+      });
+
+      return res.status(200).json({
+        status: 'pending_approval',
+        message: 'Yêu cầu hủy báo bận khẩn cấp cả ngày đã được gửi cho admin duyệt.',
+        requestId: request._id,
+        requiresApproval: true
+      });
+    }
+
+    // Kiểm tra tất cả các ca trong ngày xem có khóa nào đã được học viên đặt không
     for (const slotNumber of allSlots) {
       const existingBooking = await Booking.findOne({
         instructorId,
@@ -936,7 +1001,8 @@ export const toggleBusyAllDay = async (req, res) => {
       }
     }
 
-    // [MỚI] Nếu là emergency -> luôn cần admin duyệt
+    // [MỚI] Giai đoạn này là TẠO MỚI báo bận khẩn cấp (nếu isEmergency = true)
+    // Nếu là emergency -> luôn cần admin duyệt
     if (isEmergency) {
       // Tạo request cho admin duyệt
       const request = await Request.create({
