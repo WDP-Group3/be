@@ -65,6 +65,10 @@ const courseSchema = new mongoose.Schema(
       type: Number,
       default: 0, // Số giờ thực hành bắt buộc (0 = không giới hạn)
     },
+    feeEffectiveDate: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true, // Nên để true

@@ -4,6 +4,7 @@ import Course from '../models/Course.js';
 import Invoice from '../models/Invoice.js';
 import User from '../models/User.js';
 import { enrollSinglelearner } from '../services/enrollment.service.js';
+import { buildFeePlanSnapshot } from '../utils/feeHelper.js';
 
 const getFeePlanFromRegistration = (registration) => {
   const course = registration?.batchId?.courseId;
@@ -18,7 +19,44 @@ const getFeePlanFromRegistration = (registration) => {
     dueDate: item.dueDate || null,
     afterPreviousPaidDays: Number(item.afterPreviousPaidDays) || 0,
     note: item.note || '',
+    paymented: item.paymented || false,
   }));
+};
+
+/**
+ * Cập nhật trạng thái paymented trong feePlanSnapshot dựa trên tổng tiền đã đóng
+ */
+const syncFeePlanStatus = async (registrationId) => {
+  const [registration, payments] = await Promise.all([
+    Registration.findById(registrationId),
+    Payment.find({ registrationId })
+  ]);
+
+  if (!registration || !Array.isArray(registration.feePlanSnapshot) || registration.feePlanSnapshot.length === 0) {
+    return;
+  }
+
+  const totalPaid = payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+  let accumulated = 0;
+  let modified = false;
+
+  registration.feePlanSnapshot = registration.feePlanSnapshot.map((item) => {
+    accumulated += Number(item.amount) || 0;
+    const isActuallyPaid = totalPaid >= accumulated;
+    if (item.paymented !== isActuallyPaid) {
+      modified = true;
+    }
+    return {
+      ...item.toObject ? item.toObject() : item,
+      paymented: isActuallyPaid
+    };
+  });
+
+  if (modified) {
+    registration.markModified('feePlanSnapshot');
+    await registration.save();
+    console.log(`✅ [SYNC] Đã cập nhật trạng thái nộp tiền cho Registration ${registrationId}`);
+  }
 };
 
 const buildTuitionItems = (registrations, payments) => {
@@ -149,6 +187,9 @@ export const deletePayment = async (req, res) => {
     await Invoice.deleteMany({ paymentId: payment._id });
     await Payment.findByIdAndDelete(id);
 
+    // Sync lại trạng thái nộp tiền trong Registration
+    await syncFeePlanStatus(payment.registrationId);
+
     return res.json({
       status: 'success',
       message: 'Đã xóa giao dịch học phí',
@@ -235,6 +276,9 @@ export const createPayment = async (req, res) => {
       if (Object.keys(updates).length > 0) {
         await Registration.findByIdAndUpdate(registrationId, updates);
       }
+
+      // 2d: Sync trạng thái từng đợt nộp phí (paymented: true/false)
+      await syncFeePlanStatus(registrationId);
 
       // 2c: Auto-enroll (idempotent)
       enrollment = await enrollSinglelearner(registrationId);
@@ -345,8 +389,15 @@ export const getTuitionInfo = async (req, res) => {
 
     let registrations = await Registration.find(filter)
       .populate('learnerId', 'fullName phone email')
-      .populate('courseId', 'code name estimatedCost feePayments')
-      .populate({ path: 'batchId', populate: { path: 'courseId', model: Course } })
+      .populate('courseId', 'code name estimatedCost feePayments feeEffectiveDate updatedAt')
+      .populate({ 
+        path: 'batchId', 
+        populate: { 
+          path: 'courseId', 
+          model: Course,
+          select: 'code name estimatedCost feePayments feeEffectiveDate updatedAt'
+        } 
+      })
       .select('+firstPaymentDate')
       .sort({ createdAt: -1 });
 
@@ -366,10 +417,53 @@ export const getTuitionInfo = async (req, res) => {
       });
     }
 
+    // Lazy update: Kiểm tra nếu đã đến ngày áp dụng giá mới mà học viên chưa đóng đợt 1 thì cập nhật snapshot
+    const today = new Date();
+    let registrationsModified = false;
+    for (const reg of registrations) {
+      const course = reg.batchId?.courseId || reg.courseId;
+      if (!course || !course.feeEffectiveDate) continue;
+
+      const effectiveDate = new Date(course.feeEffectiveDate);
+      if (today >= effectiveDate && reg.feePlanSnapshot && reg.feePlanSnapshot.length > 0 && reg.feePlanSnapshot[0].paymented === false) {
+        // Kiểm tra xem snapshot hiện tại đã là giá mới chưa? 
+        // Đơn giản nhất là build lại snapshot từ course hiện tại và so sánh/cập nhật
+        const currentSnapshotTotal = reg.feePlanSnapshot.reduce((sum, item) => sum + (item.amount || 0), 0);
+        if (currentSnapshotTotal !== course.estimatedCost) {
+          reg.feePlanSnapshot = buildFeePlanSnapshot(course, reg.paymentPlanType);
+          await reg.save();
+          registrationsModified = true;
+          console.log(`[LAZY-UPDATE] Updated Registration ${reg._id} to new fee ${course.estimatedCost}`);
+        }
+      }
+    }
+
+    // Nếu có bản ghi bị thay đổi, refetch để đảm bảo data đồng nhất (hoặc update local objects)
+    // Để an toàn và đơn giản, nếu có thay đổi thì Query lại registrations
+    if (registrationsModified) {
+       registrations = await Registration.find(filter)
+        .populate('learnerId', 'fullName phone email')
+        .populate('courseId', 'code name estimatedCost feePayments feeEffectiveDate feeUpdateScheduledAt')
+        .populate({ path: 'batchId', populate: { path: 'courseId', model: Course } })
+        .select('+firstPaymentDate')
+        .sort({ createdAt: -1 });
+    }
+
     const registrationIds = registrations.map((r) => r._id);
     const allPayments = await Payment.find({ registrationId: { $in: registrationIds } }).sort({ paidAt: 1 });
 
     let items = buildTuitionItems(registrations, allPayments);
+
+    // Bổ sung date fields vào items để FE dễ xử lý
+    items = items.map((item, idx) => {
+      const reg = registrations[idx];
+      const course = reg.batchId?.courseId || reg.courseId;
+      return {
+        ...item,
+        feeEffectiveDate: course?.feeEffectiveDate || null,
+        feeUpdateScheduledAt: course?.updatedAt || null,
+      };
+    });
 
     // Filter by status if provided (status is calculated in buildTuitionItems)
     console.log('[tuition-info] Status filter:', status, '| Items before filter:', items.length);
