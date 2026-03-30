@@ -3,6 +3,7 @@ import User from '../models/User.js';
 import Registration from '../models/Registration.js';
 import Schedule from '../models/Schedule.js';
 import Booking from '../models/Booking.js';
+import LearningLocation from '../models/LearningLocation.js';
 import { sendNotificationEmail } from '../services/email.service.js';
 
 // [HELPER] Tháng hiện tại "YYYY-MM"
@@ -223,7 +224,85 @@ export const updateRequestStatus = async (req, res) => {
         if (status === 'APPROVED' && request.type === 'INSTRUCTOR_BUSY' && requestToUpdate.status !== 'APPROVED') {
             const metadata = request.metadata || {};
             
-            // 1. Tạo schedule bận
+            // [MỚI] Nếu là đơn HỦY báo bận khẩn cấp (RESTORE_SCHEDULE)
+            if (metadata.action === 'RESTORE_SCHEDULE' && metadata.date) {
+                const startOfDay = new Date(metadata.date);
+                startOfDay.setHours(0, 0, 0, 0);
+                const endOfDay = new Date(metadata.date);
+                endOfDay.setHours(23, 59, 59, 999);
+
+                let slotsToRestore = metadata.timeSlot === 'all' ? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] : [Number(metadata.timeSlot)];
+                
+                // Xoá Schedule bận (mở lại lịch)
+                await Schedule.deleteMany({
+                    instructorId: request.user,
+                    date: { $gte: startOfDay, $lte: endOfDay },
+                    timeSlot: { $in: slotsToRestore },
+                    isEmergency: true
+                });
+
+                // Lấy courseIds giáo viên đang dạy
+                const locs = await LearningLocation.find({ 'instructors.instructorId': request.user });
+                const courseIds = [];
+                locs.forEach(loc => {
+                    loc.instructors.forEach(inst => {
+                        if (inst.instructorId.toString() === request.user.toString()) courseIds.push(inst.courseId);
+                    });
+                });
+
+                // Tìm học viên đang học các khóa đó
+                if (courseIds.length > 0) {
+                    const regs = await Registration.find({
+                        courseId: { $in: courseIds },
+                        status: { $in: ['STUDYING', 'PROCESSING', 'NEW'] }
+                    }).populate('learnerId', 'email fullName');
+
+                    const emailsSent = new Set();
+                    for (const reg of regs) {
+                        if (reg.learnerId?.email && !emailsSent.has(reg.learnerId.email)) {
+                            emailsSent.add(reg.learnerId.email);
+                            await sendNotificationEmail(
+                                reg.learnerId.email,
+                                '🔔 Thông báo: Lịch học vừa được mở lại',
+                                `Kính gửi Học viên ${reg.learnerId.fullName},
+
+Giáo viên đã huỷ báo bận và mở lại lịch học vào ngày ${new Date(metadata.date).toLocaleDateString('vi-VN')} ca ${metadata.timeSlot === 'all' ? 'cả ngày' : metadata.timeSlot}.
+
+Bạn có thể vào hệ thống để đăng ký học nếu cần thiết.
+
+Trân trọng!`
+                            ).catch(e => console.error(e));
+                        }
+                    }
+                }
+
+                // Giảm counter emergency leave cho giáo viên (vì đã huỷ báo bận khẩn cấp)
+                const instructorInfo = await User.findById(request.user);
+                if (instructorInfo && instructorInfo.emergencyLeaveCount > 0) {
+                    instructorInfo.emergencyLeaveCount -= 1;
+                    await instructorInfo.save();
+                }
+
+                if (instructorInfo?.email) {
+                    await sendNotificationEmail(
+                        instructorInfo.email,
+                        '✅ Thông báo: Đơn xin huỷ báo bận đã được duyệt',
+                        `Kính gửi Thầy/Cô ${instructorInfo.fullName},
+
+Đơn xin huỷ báo bận khẩn cấp của Thầy/Cô đã được admin duyệt. Lịch dạy đã được mở lại thành công.
+
+Trân trọng!`
+                    ).catch(e => console.error(e));
+                }
+
+                return res.json({
+                    status: 'success',
+                    data: request,
+                    message: `Đã cập nhật trạng thái thành ${status} và mở lại lịch`
+                });
+            }
+
+            // 1. Tạo schedule bận (Cho báo bận bình thường - CANCEL_BOOKING)
             if (metadata.date && metadata.timeSlot) {
                 const startOfDay = new Date(metadata.date);
                 startOfDay.setHours(0, 0, 0, 0);

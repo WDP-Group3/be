@@ -71,7 +71,14 @@ export const create = async (req, res) => {
       areaName: areaName.trim(),
       yardName: (yardName || '').trim(),
       googleMapAddress: (googleMapAddress || '').trim(),
-      instructors: Array.isArray(instructors) ? instructors : [],
+      instructors: Array.isArray(instructors) 
+        ? instructors.reduce((acc, curr) => {
+            if (curr.instructorId && curr.courseId && !acc.find(i => String(i.instructorId) === String(curr.instructorId))) {
+              acc.push(curr);
+            }
+            return acc;
+          }, [])
+        : [],
     };
     const doc = await LearningLocation.create(normalized);
     if (doc.instructors && doc.instructors.length > 0) {
@@ -107,14 +114,19 @@ export const update = async (req, res) => {
     if (googleMapAddress != null) doc.googleMapAddress = (googleMapAddress || '').trim();
 
     if (Array.isArray(instructors)) {
-      const validInstructors = instructors
-        .map((i) => {
-          const instId = i.instructorId?._id || i.instructorId;
-          const courseId = i.courseId?._id || i.courseId;
-          if (!instId || !courseId) return null;
-          return { instructorId: instId, courseId };
-        })
-        .filter(Boolean);
+      const validInstructors = [];
+      const seenInstIds = new Set();
+      instructors.forEach((i) => {
+        const instId = i.instructorId?._id || i.instructorId;
+        const courseId = i.courseId?._id || i.courseId;
+        if (instId && courseId) {
+          const idStr = String(instId);
+          if (!seenInstIds.has(idStr)) {
+            seenInstIds.add(idStr);
+            validInstructors.push({ instructorId: instId, courseId });
+          }
+        }
+      });
       const newInstructorIds = validInstructors.map((i) => i.instructorId?.toString?.() || i.instructorId);
       const oldInstructorIds = (doc.instructors || []).map((i) => i.instructorId?.toString?.() || i.instructorId);
       const removedIds = oldInstructorIds.filter((id) => !newInstructorIds.includes(id));

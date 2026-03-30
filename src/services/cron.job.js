@@ -38,12 +38,12 @@ export const startFridayReminderCron = () => {
 };
 
 // [CRON JOB] Kiểm tra và gửi email nhắc nhở điểm danh
-// Các ca học kết thúc lúc :00 hoặc :30, chạy cron vào đầu mỗi giờ để kiểm tra một lượt
+// Các ca học kết thúc lúc :00, chạy cron vào 5 phút sau mỗi 1 tiếng đồng hồ
 export const startAttendanceReminderCron = () => {
-  console.log('⏰ Cron job "Attendance Reminder" đã được khởi động - Chạy mỗi 1 tiếng đồng hồ (phút 00)');
+  console.log('⏰ Cron job "Attendance Reminder" đã được khởi động - Chạy lúc phút 05 của mỗi giờ');
 
-  // Chạy chính xác mỗi 1 tiếng đồng hồ (phút thứ 00 của mọi giờ)
-  cron.schedule('0 * * * *', async () => {
+  // Chạy chính xác vào phút thứ 05 của mọi giờ
+  cron.schedule('5 * * * *', async () => {
     console.log('🔔 [CRON ATTENDANCE] Đang kiểm tra các buổi học cần điểm danh (mỗi 1h)...');
     
     try {
@@ -57,28 +57,28 @@ export const startAttendanceReminderCron = () => {
 // Thời gian kết thúc các ca học (theo frontend: 10 ca)
 const SLOT_END_TIMES = {
   "1": { hour: 8, minute: 0 },    // Ca 1: 07:00-08:00
-  "2": { hour: 9, minute: 30 },  // Ca 2: 08:30-09:30
-  "3": { hour: 11, minute: 0 },  // Ca 3: 10:00-11:00
-  "4": { hour: 12, minute: 30 }, // Ca 4: 11:30-12:30
-  "5": { hour: 14, minute: 0 },  // Ca 5: 13:00-14:00
-  "6": { hour: 15, minute: 30 }, // Ca 6: 14:30-15:30
-  "7": { hour: 17, minute: 0 },  // Ca 7: 16:00-17:00
-  "8": { hour: 18, minute: 30 }, // Ca 8: 17:30-18:30
-  "9": { hour: 20, minute: 0 },  // Ca 9: 19:00-20:00
-  "10": { hour: 21, minute: 30 }, // Ca 10: 20:30-21:30
+  "2": { hour: 9, minute: 0 },    // Ca 2: 08:00-09:00
+  "3": { hour: 10, minute: 0 },   // Ca 3: 09:00-10:00
+  "4": { hour: 11, minute: 0 },   // Ca 4: 10:00-11:00
+  "5": { hour: 12, minute: 0 },   // Ca 5: 11:00-12:00
+  "6": { hour: 14, minute: 0 },   // Ca 6: 13:00-14:00
+  "7": { hour: 15, minute: 0 },   // Ca 7: 14:00-15:00
+  "8": { hour: 16, minute: 0 },   // Ca 8: 15:00-16:00
+  "9": { hour: 17, minute: 0 },   // Ca 9: 16:00-17:00
+  "10": { hour: 18, minute: 0 },  // Ca 10: 17:00-18:00
 };
 
 const SLOT_LABELS = {
   "1": "Ca 1 (07:00 - 08:00)",
-  "2": "Ca 2 (08:30 - 09:30)",
-  "3": "Ca 3 (10:00 - 11:00)",
-  "4": "Ca 4 (11:30 - 12:30)",
-  "5": "Ca 5 (13:00 - 14:00)",
-  "6": "Ca 6 (14:30 - 15:30)",
-  "7": "Ca 7 (16:00 - 17:00)",
-  "8": "Ca 8 (17:30 - 18:30)",
-  "9": "Ca 9 (19:00 - 20:00)",
-  "10": "Ca 10 (20:30 - 21:30)",
+  "2": "Ca 2 (08:00 - 09:00)",
+  "3": "Ca 3 (09:00 - 10:00)",
+  "4": "Ca 4 (10:00 - 11:00)",
+  "5": "Ca 5 (11:00 - 12:00)",
+  "6": "Ca 6 (13:00 - 14:00)",
+  "7": "Ca 7 (14:00 - 15:00)",
+  "8": "Ca 8 (15:00 - 16:00)",
+  "9": "Ca 9 (16:00 - 17:00)",
+  "10": "Ca 10 (17:00 - 18:00)",
 };
 
 // Hàm kiểm tra và gửi nhắc nhở điểm danh
@@ -100,9 +100,17 @@ const checkAndSendAttendanceReminders = async () => {
   for (const booking of bookings) {
     const { hour, minute } = SLOT_END_TIMES[String(booking.timeSlot)] || { hour: 17, minute: 0 };
     
-    // Tính thời điểm kết thúc ca học + 5 phút
-    const classEndTime = new Date(booking.date);
-    classEndTime.setHours(hour, minute, 0, 0);
+    // [FIX] Tính thời điểm kết thúc ca học tuyệt đối theo múi giờ Việt Nam (UTC+7)
+    // Chống trôi múi giờ nếu máy chủ chạy UTC thay vì Local ICT
+    const vietnamDate = new Date(booking.date.toLocaleString("en-US", { timeZone: "Asia/Ho_Chi_Minh" }));
+    const classYear = vietnamDate.getFullYear();
+    const classMonth = String(vietnamDate.getMonth() + 1).padStart(2, '0');
+    const classDateStr = String(vietnamDate.getDate()).padStart(2, '0');
+    const classHrStr = String(hour).padStart(2, '0');
+    const classMnStr = String(minute).padStart(2, '0');
+    
+    const absoluteEndTimeStr = `${classYear}-${classMonth}-${classDateStr}T${classHrStr}:${classMnStr}:00+07:00`;
+    const classEndTime = new Date(absoluteEndTimeStr);
     
     const reminderTime = new Date(classEndTime.getTime() + 5 * 60 * 1000); // +5 phút
     const now = new Date();
