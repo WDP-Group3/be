@@ -5,6 +5,7 @@ import Schedule from '../models/Schedule.js';
 import Booking from '../models/Booking.js';
 import LearningLocation from '../models/LearningLocation.js';
 import { sendNotificationEmail } from '../services/email.service.js';
+import { emitScheduleUpdate } from '../services/socket.service.js';
 
 // [HELPER] Tháng hiện tại "YYYY-MM"
 const getCurrentMonth = () => {
@@ -119,6 +120,9 @@ export const createRequest = async (req, res) => {
                 }
             }
         }
+
+        // Kích hoạt socket cho admin
+        emitScheduleUpdate({ status: 'NEW_REQUEST', type: newRequest.type });
 
         res.status(201).json({
             status: 'success',
@@ -241,7 +245,7 @@ export const updateRequestStatus = async (req, res) => {
                     isEmergency: true
                 });
 
-                // Lấy courseIds giáo viên đang dạy
+                // Lấy courseIds giáo viên đang dạy (Chạy ngầm ở background sau khi trả response)
                 const locs = await LearningLocation.find({ 'instructors.instructorId': request.user });
                 const courseIds = [];
                 locs.forEach(loc => {
@@ -250,56 +254,58 @@ export const updateRequestStatus = async (req, res) => {
                     });
                 });
 
-                // Tìm học viên đang học các khóa đó
-                if (courseIds.length > 0) {
-                    const regs = await Registration.find({
-                        courseId: { $in: courseIds },
-                        status: { $in: ['STUDYING', 'PROCESSING', 'NEW'] }
-                    }).populate('learnerId', 'email fullName');
+                // Kích hoạt Realtime cập nhật lịch giáo viên
+                emitScheduleUpdate({ instructorId: request.user, status: 'SCHEDULE_RESTORED' });
 
-                    const emailsSent = new Set();
-                    for (const reg of regs) {
-                        if (reg.learnerId?.email && !emailsSent.has(reg.learnerId.email)) {
-                            emailsSent.add(reg.learnerId.email);
-                            await sendNotificationEmail(
-                                reg.learnerId.email,
-                                '🔔 Thông báo: Lịch học vừa được mở lại',
-                                `Kính gửi Học viên ${reg.learnerId.fullName},
-
-Giáo viên đã huỷ báo bận và mở lại lịch học vào ngày ${new Date(metadata.date).toLocaleDateString('vi-VN')} ca ${metadata.timeSlot === 'all' ? 'cả ngày' : metadata.timeSlot}.
-
-Bạn có thể vào hệ thống để đăng ký học nếu cần thiết.
-
-Trân trọng!`
-                            ).catch(e => console.error(e));
-                        }
-                    }
-                }
-
-                // Giảm counter emergency leave cho giáo viên (vì đã huỷ báo bận khẩn cấp)
-                const instructorInfo = await User.findById(request.user);
-                if (instructorInfo && instructorInfo.emergencyLeaveCount > 0) {
-                    instructorInfo.emergencyLeaveCount -= 1;
-                    await instructorInfo.save();
-                }
-
-                if (instructorInfo?.email) {
-                    await sendNotificationEmail(
-                        instructorInfo.email,
-                        '✅ Thông báo: Đơn xin huỷ báo bận đã được duyệt',
-                        `Kính gửi Thầy/Cô ${instructorInfo.fullName},
-
-Đơn xin huỷ báo bận khẩn cấp của Thầy/Cô đã được admin duyệt. Lịch dạy đã được mở lại thành công.
-
-Trân trọng!`
-                    ).catch(e => console.error(e));
-                }
-
-                return res.json({
+                res.json({
                     status: 'success',
                     data: request,
                     message: `Đã cập nhật trạng thái thành ${status} và mở lại lịch`
                 });
+
+                // Chạy ngầm việc gửi email
+                (async () => {
+                    try {
+                        // Tìm học viên đang học các khóa đó
+                        if (courseIds.length > 0) {
+                            const regs = await Registration.find({
+                                courseId: { $in: courseIds },
+                                status: { $in: ['STUDYING', 'PROCESSING', 'NEW'] }
+                            }).populate('learnerId', 'email fullName');
+
+                            const emailsSent = new Set();
+                            for (const reg of regs) {
+                                if (reg.learnerId?.email && !emailsSent.has(reg.learnerId.email)) {
+                                    emailsSent.add(reg.learnerId.email);
+                                    await sendNotificationEmail(
+                                        reg.learnerId.email,
+                                        '🔔 Thông báo: Lịch học vừa được mở lại',
+                                        `Kính gửi Học viên ${reg.learnerId.fullName},\n\nGiáo viên đã huỷ báo bận và mở lại lịch học vào ngày ${new Date(metadata.date).toLocaleDateString('vi-VN')} ca ${metadata.timeSlot === 'all' ? 'cả ngày' : metadata.timeSlot}.\n\nBạn có thể vào hệ thống để đăng ký học nếu cần thiết.\n\nTrân trọng!`
+                                    ).catch(e => console.error(e));
+                                }
+                            }
+                        }
+
+                        // Giảm counter emergency leave cho giáo viên (vì đã huỷ báo bận khẩn cấp)
+                        const instructorInfo = await User.findById(request.user);
+                        if (instructorInfo && instructorInfo.emergencyLeaveCount > 0) {
+                            instructorInfo.emergencyLeaveCount -= 1;
+                            await instructorInfo.save();
+                        }
+
+                        if (instructorInfo?.email) {
+                            await sendNotificationEmail(
+                                instructorInfo.email,
+                                '✅ Thông báo: Đơn xin huỷ báo bận đã được duyệt',
+                                `Kính gửi Thầy/Cô ${instructorInfo.fullName},\n\nĐơn xin huỷ báo bận khẩn cấp của Thầy/Cô đã được admin duyệt. Lịch dạy đã được mở lại thành công.\n\nTrân trọng!`
+                            ).catch(e => console.error(e));
+                        }
+                    } catch (err) {
+                        console.error('Lỗi khi gửi email ngầm (RESTORE_SCHEDULE):', err);
+                    }
+                })();
+
+                return; // Kết thúc sớm nhánh RESTORE_SCHEDULE
             }
 
             // 1. Tạo schedule bận (Cho báo bận bình thường - CANCEL_BOOKING)
@@ -402,41 +408,68 @@ Trân trọng!`
                 }
             }
 
-            // 3. Tăng counter emergency leave cho giáo viên
-            await incrementEmergencyLeave(request.user);
+            // Kích hoạt Realtime cập nhật lịch giáo viên và admin
+            emitScheduleUpdate({ instructorId: request.user, status: 'SCHEDULE_CANCELLED' });
 
-            // 4. Gửi email thông báo cho giáo viên
-            const instructorInfo = await User.findById(request.user);
-            if (instructorInfo?.email) {
-                await sendNotificationEmail(
-                    instructorInfo.email,
-                    '✅ Thông báo: Đơn báo bận khẩn cấp đã được duyệt',
-                    `Kính gửi Thầy/Cô ${instructorInfo.fullName},
+            res.json({
+                status: 'success',
+                data: request,
+                message: `Đã cập nhật trạng thái thành ${status}`
+            });
 
-Đơn báo bận khẩn cấp của Thầy/Cô đã được admin duyệt.
+            // Chạy ngầm việc gửi email
+            (async () => {
+                try {
+                    // 3. Tăng counter emergency leave cho giáo viên
+                    await incrementEmergencyLeave(request.user);
 
-Thông tin đơn:
-- Ngày báo bận: ${metadata.date ? new Date(metadata.date).toLocaleDateString('vi-VN') : 'N/A'}
-- Ca: ${metadata.timeSlot === 'all' ? 'Cả ngày' : metadata.timeSlot}
-- Lý do: ${request.reason}
+                    for (const booking of bookingsToCancel) {
+                        // Gửi email thông báo cho học viên
+                        if (booking.learnerId?.email) {
+                            await sendNotificationEmail(
+                                booking.learnerId.email,
+                                '🔔 Thông báo: Lịch học đã bị huỷ do giáo viên báo bận khẩn cấp (đã được duyệt)',
+                                `Kính gửi Học viên ${booking.learnerId.fullName},\n\nLịch học của bạn đã bị huỷ do giáo viên báo bận khẩn cấp và đã được admin duyệt.\n\nThông tin lịch học bị huỷ:\n- Ngày: ${new Date(metadata.date).toLocaleDateString('vi-VN')}\n- Ca: ${booking.timeSlot}\n\nLý do: ${request.reason}\n\nVui lòng liên hệ giáo viên hoặc admin để đặt lịch học bù.\n\nTrân trọng!`
+                            ).catch(e => console.error(e));
+                        }
+                    }
 
-${metadata.action === 'CANCEL_BOOKING' ? 'Các lịch học của học viên đã được huỷ và thông báo.' : ''}
+                    // 4. Gửi email thông báo cho giáo viên
+                    const instructorInfo = await User.findById(request.user);
+                    if (instructorInfo?.email) {
+                        await sendNotificationEmail(
+                            instructorInfo.email,
+                            '✅ Thông báo: Đơn báo bận khẩn cấp đã được duyệt',
+                            `Kính gửi Thầy/Cô ${instructorInfo.fullName},\n\nĐơn báo bận khẩn cấp của Thầy/Cô đã được admin duyệt.\n\nThông tin đơn:\n- Ngày báo bận: ${metadata.date ? new Date(metadata.date).toLocaleDateString('vi-VN') : 'N/A'}\n- Ca: ${metadata.timeSlot === 'all' ? 'Cả ngày' : metadata.timeSlot}\n- Lý do: ${request.reason}\n\n${metadata.action === 'CANCEL_BOOKING' ? 'Các lịch học của học viên đã được huỷ và thông báo.' : ''}\n\nTrân trọng!`
+                        ).catch(e => console.error(e));
+                    }
+                } catch (err) {
+                    console.error('Lỗi khi gửi email ngầm (CANCEL_BOOKING):', err);
+                }
+            })();
 
-Trân trọng!`
-                );
-            }
+            return; // Kết thúc nhánh APPROVED INSTRUCTOR_BUSY
         }
 
-        // [MỚI] Gửi email khi từ chối đơn INSTRUCTOR_BUSY
+        // Trả về response ngay để không bị block loading UI cho các case khác (REJECTED, etc)
+        res.json({
+            status: 'success',
+            data: request,
+            message: `Đã cập nhật trạng thái thành ${status}`,
+        });
+
+        // [MỚI] Chạy việc gửi email REJECTED ngầm cho đơn INSTRUCTOR_BUSY
         if (status === 'REJECTED' && request.type === 'INSTRUCTOR_BUSY' && requestToUpdate.status !== 'REJECTED') {
             const metadata = request.metadata || {};
-            const instructorInfo = await User.findById(request.user);
-            
-            if (instructorInfo?.email) {
-                await sendNotificationEmail(
-                    instructorInfo.email,
-                    '❌ Thông báo: Đơn báo bận khẩn cấp đã bị từ chối',
-                    `Kính gửi Thầy/Cô ${instructorInfo.fullName},
+            (async () => {
+                try {
+                    const instructorInfo = await User.findById(request.user);
+                    
+                    if (instructorInfo?.email) {
+                        await sendNotificationEmail(
+                            instructorInfo.email,
+                            '❌ Thông báo: Đơn báo bận khẩn cấp đã bị từ chối',
+                            `Kính gửi Thầy/Cô ${instructorInfo.fullName},
 
 Rất tiếc, đơn báo bận khẩn cấp của Thầy/Cô đã bị từ chối.
 
@@ -448,15 +481,13 @@ Thông tin đơn:
 Vui lòng liên hệ admin để biết thêm chi tiết.
 
 Trân trọng!`
-                );
-            }
+                        );
+                    }
+                } catch (err) {
+                    console.error('Lỗi khi gửi email ngầm (REJECTED):', err);
+                }
+            })();
         }
-
-        res.json({
-            status: 'success',
-            data: request,
-            message: `Đã cập nhật trạng thái thành ${status}`,
-        });
     } catch (error) {
         res.status(500).json({ status: 'error', message: error.message });
     }

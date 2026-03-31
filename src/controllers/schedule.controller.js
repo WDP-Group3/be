@@ -499,29 +499,13 @@ export const toggleBusy = async (req, res) => {
     const deadlineCheck = checkInstructorDeadline(date);
     const isEmergency = deadlineCheck.isEmergency; // Sử dụng isEmergency từ checkInstructorDeadline
 
-    // [MỚI] Kiểm tra: Chỉ cho phép báo bận theo ca (toggleBusy) khi:
-    // - Là tuần SAU VÀ trước deadline 18h Thứ 6
-    // Các trường hợp khác phải dùng báo bận cả ngày (toggleBusyAllDay)
-    const canUsePerSlot = deadlineCheck.weekType === 'next' && !isEmergency;
-    
-    if (!canUsePerSlot) {
-      // Nếu tuần hiện tại hoặc sau deadline -> yêu cầu dùng báo bận cả ngày
-      if (deadlineCheck.weekType === 'current') {
-        return res.status(400).json({ 
-          status: 'error', 
-          message: 'Trong tuần hiện tại, vui lòng sử dụng chức năng "Báo bận cả ngày" thay vì báo từng ca.' 
-        });
-      } else if (deadlineCheck.reason === 'after_deadline_requires_all_day') {
-        return res.status(400).json({ 
-          status: 'error', 
-          message: 'Đã quá hạn 18h Thứ 6. Vui lòng sử dụng chức năng "Báo bận cả ngày" cho tuần sau.' 
-        });
-      } else if (deadlineCheck.reason === 'past_date' || deadlineCheck.reason === 'past_week') {
-        return res.status(400).json({ 
-          status: 'error', 
-          message: 'Không thể thay đổi lịch quá khứ.' 
-        });
-      }
+    // [MỚI] Kiểm tra: Báo bận theo ca
+    // Vẫn cho phép emergency (khẩn cấp) báo bận theo ca
+    if (deadlineCheck.reason === 'past_date' || deadlineCheck.reason === 'past_week') {
+      return res.status(400).json({ 
+        status: 'error', 
+        message: 'Không thể thay đổi lịch trình trong quá khứ.' 
+      });
     }
 
     // 2. Nếu là emergency -> kiểm tra giới hạn 2 lần/tháng
