@@ -2,6 +2,7 @@ import SystemHoliday from '../models/SystemHoliday.js';
 import User from '../models/User.js';
 import Booking from '../models/Booking.js';
 import { sendNotificationEmail } from '../services/email.service.js';
+import { emitScheduleUpdate } from '../services/socket.service.js';
 
 // Helper: Gửi email thông báo lịch nghỉ
 // - Toàn hệ thống: gửi cho tất cả INSTRUCTOR + learner + SALES
@@ -169,11 +170,11 @@ export const createHoliday = async (req, res) => {
     endObj.setHours(23, 59, 59, 999);
 
     // [MỚI] Kiểm tra trùng lặp lịch nghỉ (Overlap Validation)
-    // Nếu tạo lịch "Toàn hệ thống" (location=null) -> trùng với BẤT KỲ lịch nào trong khoảng thời gian
-    // Nếu tạo lịch "Khu vực X" -> trùng với lịch "Toàn hệ thống" HOẶC lịch "Khu vực X"
+    // Nếu tạo lịch "Toàn hệ thống" (location=null) -> CHỈ trùng với lịch Toàn hệ thống khác (không bị chặn bởi lịch khu vực)
+    // Nếu tạo lịch "Khu vực X" -> bị chặn bởi lịch "Toàn hệ thống" HOẶC lịch "Khu vực X"
     const locationFilter = location 
       ? { $or: [{ location: null }, { location }] }
-      : {};
+      : { location: null };
 
     const existingHoliday = await SystemHoliday.findOne({
       startDate: { $lte: endObj },
@@ -237,6 +238,9 @@ export const createHoliday = async (req, res) => {
         cancelledInstructors.set(booking.instructorId.email, booking.instructorId.fullName);
       }
     }
+
+    // [MỚI] Kích hoạt Realtime cập nhật lịch nghỉ lễ cho toàn bộ phía học viên & giáo viên
+    emitScheduleUpdate({ status: 'HOLIDAY_CREATED', location: holiday.location });
 
     // [MỚI] Trả về response NGAY LẬP TỨC để tránh timeout trên màn hình Admin
     res.status(201).json({ status: 'success', data: holiday });
@@ -315,9 +319,10 @@ export const updateHoliday = async (req, res) => {
     startObj.setHours(0, 0, 0, 0);
     endObj.setHours(23, 59, 59, 999);
 
+    // [MỚI] Overlap Validation cho Update Lịch nghỉ
     const locationFilter = loc 
       ? { $or: [{ location: null }, { location: loc }] }
-      : {};
+      : { location: null }; // Toàn hệ thống chỉ check trùng với Toàn hệ thống khác
 
     const overlappingHoliday = await SystemHoliday.findOne({
       _id: { $ne: id },
@@ -345,6 +350,9 @@ export const updateHoliday = async (req, res) => {
       { new: true, runValidators: true }
     );
 
+    // Kích hoạt Realtime
+    emitScheduleUpdate({ status: 'HOLIDAY_UPDATED', location: holiday.location });
+
     res.json({ status: 'success', data: holiday });
 
     // Gửi email thông báo cập nhật CHẠY NGẦM BACKGROUND
@@ -368,6 +376,9 @@ export const deleteHoliday = async (req, res) => {
     if (!holiday) {
       return res.status(404).json({ status: 'error', message: 'Không tìm thấy lịch nghỉ' });
     }
+
+    // Kích hoạt Realtime
+    emitScheduleUpdate({ status: 'HOLIDAY_DELETED', location: holiday.location });
 
     // Sau đó mới xóa
     await SystemHoliday.findByIdAndDelete(id);

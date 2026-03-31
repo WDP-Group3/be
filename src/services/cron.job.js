@@ -3,6 +3,7 @@ import Notification from '../models/Notification.js';
 import Booking from '../models/Booking.js';
 import User from '../models/User.js';
 import Schedule from '../models/Schedule.js';
+import Request from '../models/Request.js';
 import { sendNotificationEmail } from './email.service.js';
 
 // [CRON JOB] Gửi thông báo nhắc nhở giáo viên đăng ký lịch bận
@@ -50,6 +51,48 @@ export const startAttendanceReminderCron = () => {
       await checkAndSendAttendanceReminders();
     } catch (error) {
       console.error('❌ [CRON ATTENDANCE] Lỗi khi kiểm tra điểm danh:', error);
+    }
+  });
+};
+
+// [CRON JOB] Nhắc nhở Admin xử lý các đơn từ bị tồn đọng quá 24h
+export const startPendingRequestsReminderCron = () => {
+  console.log('⏰ Cron job "Admin Request Reminder" đã được khởi động - Chạy lúc 08:00 sáng mỗi ngày');
+
+  // Chạy lúc 08:00 sáng mỗi ngày
+  cron.schedule('0 8 * * *', async () => {
+    console.log('🔔 [CRON ADMIN] Đang kiểm tra các đơn từ tồn đọng quá 24h...');
+    try {
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      
+      const count = await Request.countDocuments({
+        status: 'PENDING',
+        createdAt: { $lte: twentyFourHoursAgo }
+      });
+
+      if (count > 0) {
+        const admins = await User.find({ role: 'ADMIN' });
+        for (const admin of admins) {
+          if (admin.email) {
+            await sendNotificationEmail(
+              admin.email,
+              '⚠️ NHẮC NHỞ QUAN TRỌNG: Đơn từ/Yêu cầu chưa xử lý',
+              `Kính gửi Admin ${admin.fullName},
+
+Hệ thống ghi nhận hiện đang có ${count} đơn từ đã tồn đọng HƠN 24 GIỜ nhưng chưa được phê duyệt hoặc từ chối.
+
+Sự chậm trễ này có thể làm ảnh hưởng lớn đến thời khóa biểu và việc đóng phí của học viên và giáo viên.
+
+Vui lòng truy cập Hệ thống Quản trị -> mục Sinh viên - Đơn từ để giải quyết ngay lập tức.
+
+Trân trọng!`
+            ).catch(e => console.error('Lỗi khi gửi email Admin:', e));
+          }
+        }
+        console.log(`✅ [CRON ADMIN] Đã gửi thông báo nhắc admin xử lý ${count} đơn từ tồn đọng.`);
+      }
+    } catch (error) {
+      console.error('❌ [CRON ADMIN] Lỗi khi kiểm tra đơn từ tồn đọng:', error);
     }
   });
 };
@@ -117,11 +160,11 @@ const checkAndSendAttendanceReminders = async () => {
 
     // Nếu đã đến hoặc qua thời điểm kết thúc + 5 phút
     if (now >= reminderTime) {
-      // Gửi email nhắc nhở cho cả giáo viên và học viên
-      await sendAttendanceReminderEmail(booking);
-      
-      // Đánh dấu đã gửi email nhắc nhở (chỉ gửi 1 lần duy nhất)
+      // Đánh dấu đã gửi (Khóa ngay cờ này TRƯỚC KHI thực hiện gửi email để chống Race Condition)
       await Booking.findByIdAndUpdate(booking._id, { attendanceReminderSent: true });
+
+      // Gửi email nhắc nhở cho cả giáo viên và học viên
+      await sendAttendanceReminderEmail(booking).catch(e => console.error('Lỗi gửi email điểm danh ngầm:', e));
       
       reminderCount++;
     }
