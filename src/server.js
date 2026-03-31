@@ -13,6 +13,7 @@ import {
   startFridayReminderCron,
   startAttendanceReminderCron,
   sendInstructorBusyScheduleReminder,
+  startPendingRequestsReminderCron,
 } from "./services/cron.job.js";
 import { initSocket } from "./services/socket.service.js";
 import Booking from "./models/Booking.js";
@@ -61,6 +62,9 @@ startFridayReminderCron();
 
 // Khởi động cron job nhắc nhở điểm danh (chạy mỗi 5 phút)
 startAttendanceReminderCron();
+
+// Khởi động cron job nhắc Admin xử lý đơn từ
+startPendingRequestsReminderCron();
 
 // Routes
 app.get("/", (req, res) => {
