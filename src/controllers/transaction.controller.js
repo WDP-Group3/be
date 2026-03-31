@@ -101,7 +101,8 @@ export const checkStatus = async (req, res) => {
     const payload = req.body || {};
     console.log('📥 [SEPAY WEBHOOK] Received payload:', JSON.stringify(payload));
 
-    const transferContent = payload.transferContent || payload.content || payload.description || '';
+    const match = payload.transferContent || payload.content || payload.description || '';
+    const transferContent = match.match(/HP[A-Z0-9]+/)?.[0].trim();
     if (!transferContent) {
       return res.status(400).json({ status: 'error', message: 'Thiếu transferContent' });
     }
@@ -128,7 +129,7 @@ export const checkStatus = async (req, res) => {
 
     if (!transaction) {
       // Thử tìm theo normalized content
-      const normalizedTransfer = normalizeContent(transferContent);
+      const normalizedTransfer = transferContent;
       console.log('🔍 [SEPAY] Searching with normalized:', normalizedTransfer);
 
       // Lấy tất cả transaction chưa xử lý và so sánh

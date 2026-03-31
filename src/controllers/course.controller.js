@@ -29,7 +29,12 @@ export const getAllCourses = async (req, res) => {
 
     // Lọc status
     if (status) {
-      query.status = status;
+      if (status !== "ALL") {
+        query.status = status;
+      }
+    } else {
+      // Mặc định chỉ lấy các khoá học Active (không bị ẩn)
+      query.status = "Active";
     }
 
     const skip = (page - 1) * limit;
