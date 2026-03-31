@@ -60,7 +60,7 @@ export const autoEnrolllearners = async (courseId, options = {}) => {
       console.log(`✅ [AUTO-ENROLL] Đã tạo batch mới cho khoá học: ${course.name}`);
     }
 
-    const maxlearners = batch.maxlearners || course.maxlearners || 50;
+    const maxlearners = batch.maxlearners || 50;
 
     // 3. Tính số slot còn trống
     const enrolledCount = await Registration.countDocuments({
@@ -220,7 +220,7 @@ export const enrollSinglelearner = async (registrationId) => {
       };
     }
 
-    const maxlearners = batch.maxlearners || course.maxlearners || 50;
+    const maxlearners = batch.maxlearners || 50;
 
     // 5. Đếm số HV hiện tại
     const enrolledCount = await Registration.countDocuments({

@@ -3,6 +3,7 @@ import Registration from '../models/Registration.js';
 import Course from '../models/Course.js';
 import Invoice from '../models/Invoice.js';
 import User from '../models/User.js';
+import Transaction from '../models/Transaction.js';
 import { enrollSinglelearner } from '../services/enrollment.service.js';
 import { buildFeePlanSnapshot } from '../utils/feeHelper.js';
 
@@ -389,13 +390,13 @@ export const getTuitionInfo = async (req, res) => {
 
     let registrations = await Registration.find(filter)
       .populate('learnerId', 'fullName phone email')
-      .populate('courseId', 'code name estimatedCost feePayments feeEffectiveDate updatedAt')
+      .populate('courseId', 'code name estimatedCost feePayments updatedAt')
       .populate({ 
         path: 'batchId', 
         populate: { 
           path: 'courseId', 
           model: Course,
-          select: 'code name estimatedCost feePayments feeEffectiveDate updatedAt'
+          select: 'code name estimatedCost feePayments updatedAt'
         } 
       })
       .select('+firstPaymentDate')
@@ -417,51 +418,57 @@ export const getTuitionInfo = async (req, res) => {
       });
     }
 
-    // Lazy update: Kiểm tra nếu đã đến ngày áp dụng giá mới mà học viên chưa đóng đợt 1 thì cập nhật snapshot
-    const today = new Date();
-    let registrationsModified = false;
+
+
+    // ── SYNC & CLEANUP Logic ───────────────────────────────────────────
+    const finalRegistrations = [];
     for (const reg of registrations) {
       const course = reg.batchId?.courseId || reg.courseId;
-      if (!course || !course.feeEffectiveDate) continue;
+      const firstInstallmentUnpaid = reg.feePlanSnapshot?.[0]?.paymented === false;
 
-      const effectiveDate = new Date(course.feeEffectiveDate);
-      if (today >= effectiveDate && reg.feePlanSnapshot && reg.feePlanSnapshot.length > 0 && reg.feePlanSnapshot[0].paymented === false) {
-        // Kiểm tra xem snapshot hiện tại đã là giá mới chưa? 
-        // Đơn giản nhất là build lại snapshot từ course hiện tại và so sánh/cập nhật
-        const currentSnapshotTotal = reg.feePlanSnapshot.reduce((sum, item) => sum + (item.amount || 0), 0);
-        if (currentSnapshotTotal !== course.estimatedCost) {
-          reg.feePlanSnapshot = buildFeePlanSnapshot(course, reg.paymentPlanType);
-          await reg.save();
-          registrationsModified = true;
-          console.log(`[LAZY-UPDATE] Updated Registration ${reg._id} to new fee ${course.estimatedCost}`);
+      // 1. Case: Course deleted from DB
+      if (!course) {
+        if (firstInstallmentUnpaid) {
+          console.log(`🗑️ [CLEANUP] Deleted registration ${reg._id} because its course is missing & unpaid.`);
+          await Registration.findByIdAndDelete(reg._id);
+          await Payment.deleteMany({ registrationId: reg._id });
+          await Invoice.deleteMany({ registrationId: reg._id });
+          await Transaction.deleteMany({ registrationId: reg._id });
+          continue; // Skip adding to final list
+        }
+      } else {
+        // 2. Case: Course exists but price/installments updated
+        if (firstInstallmentUnpaid) {
+          // Rule: If 1st installment is unpaid, always follow the latest course fee structure
+          const newFeePlan = buildFeePlanSnapshot(course, reg.paymentPlanType || 'INSTALLMENT');
+          
+          // Basic comparison: check if counts or amounts changed
+          const snapshot = reg.feePlanSnapshot || [];
+          const isDifferent = snapshot.length !== newFeePlan.length || 
+            snapshot.some((item, idx) => Number(item.amount) !== Number(newFeePlan[idx]?.amount));
+
+          if (isDifferent) {
+            console.log(`🔄 [SYNC] Updating registration ${reg._id} with new course fees.`);
+            reg.feePlanSnapshot = newFeePlan;
+            reg.markModified('feePlanSnapshot');
+            await reg.save();
+          }
         }
       }
+      finalRegistrations.push(reg);
     }
+    // ───────────────────────────────────────────────────────────────────
 
-    // Nếu có bản ghi bị thay đổi, refetch để đảm bảo data đồng nhất (hoặc update local objects)
-    // Để an toàn và đơn giản, nếu có thay đổi thì Query lại registrations
-    if (registrationsModified) {
-       registrations = await Registration.find(filter)
-        .populate('learnerId', 'fullName phone email')
-        .populate('courseId', 'code name estimatedCost feePayments feeEffectiveDate feeUpdateScheduledAt')
-        .populate({ path: 'batchId', populate: { path: 'courseId', model: Course } })
-        .select('+firstPaymentDate')
-        .sort({ createdAt: -1 });
-    }
-
-    const registrationIds = registrations.map((r) => r._id);
+    const registrationIds = finalRegistrations.map((r) => r._id);
     const allPayments = await Payment.find({ registrationId: { $in: registrationIds } }).sort({ paidAt: 1 });
 
-    let items = buildTuitionItems(registrations, allPayments);
+    let items = buildTuitionItems(finalRegistrations, allPayments);
 
-    // Bổ sung date fields vào items để FE dễ xử lý
-    items = items.map((item, idx) => {
-      const reg = registrations[idx];
-      const course = reg.batchId?.courseId || reg.courseId;
+    // Bổ sung các thông tin khác vào items (loại bỏ feeEffectiveDate logic cũ)
+    items = items.map((item) => {
       return {
         ...item,
-        feeEffectiveDate: course?.feeEffectiveDate || null,
-        feeUpdateScheduledAt: course?.updatedAt || null,
+        // (Xóa field feeUpdateScheduledAt hoặc các field liên quan đến luồng cũ nếu cần)
       };
     });
 

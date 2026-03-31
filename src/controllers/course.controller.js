@@ -146,7 +146,6 @@ export const createCourse = async (req, res) => {
       description,
       image,
       note,
-      maxlearners: req.body.maxlearners || 50,
     });
 
     await newCourse.save();
@@ -183,16 +182,6 @@ export const updateCourse = async (req, res) => {
       return res.status(404).json({ status: "error", message: "Course not found" });
     }
 
-    // Validate feeEffectiveDate
-    if (updates.feeEffectiveDate) {
-      const effectiveDate = new Date(updates.feeEffectiveDate);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      if (effectiveDate < today) {
-        return res.status(400).json({ status: "error", message: "Ngày áp dụng không được trong quá khứ" });
-      }
-    }
-
     // Tự động tính lại estimatedCost từ tổng feePayments nếu có
     let newEstimatedCost = oldCourse.estimatedCost;
     if (Array.isArray(updates.feePayments) && updates.feePayments.length > 0) {
@@ -203,27 +192,21 @@ export const updateCourse = async (req, res) => {
       updates.estimatedCost = newEstimatedCost;
     }
 
-    // Nếu giá thay đổi, ghi lại thời điểm thay đổi (Mặc định sẽ được updatedAt ghi lại)
+    // Cập nhật khoá học (Bỏ feeEffectiveDate logic)
     const course = await Course.findByIdAndUpdate(id, updates, { new: true });
 
-    // Logic: Khi giá tiền của khóa học thay đổi
-    // CHỈ cập nhật ngay lập tức nếu KHÔNG CÓ ngày áp dụng trong tương lai
-    const effectiveDate = course.feeEffectiveDate ? new Date(course.feeEffectiveDate) : null;
-    const isPastOrToday = !effectiveDate || effectiveDate <= new Date();
-
-    if (updates.feePayments && oldCourse.estimatedCost !== course.estimatedCost && isPastOrToday) {
-      // 1. Tìm tất cả các Registration của khóa học này
+    // Khi giá hoặc các đợt đóng phí thay đổi, cập nhật ngay lập tức cho các registration chưa đóng đợt 1
+    if (updates.feePayments && (oldCourse.estimatedCost !== course.estimatedCost)) {
       const registrations = await Registration.find({ courseId: id });
 
       for (const reg of registrations) {
-        // 2. Kiểm tra xem đợt 1 đã đóng chưa
+        // Kiểm tra xem đợt 1 đã đóng chưa
         if (reg.feePlanSnapshot && reg.feePlanSnapshot.length > 0 && reg.feePlanSnapshot[0].paymented === false) {
-          
-          // 3. Cập nhật lại feePlanSnapshot trong Registration theo giá mới/đợt mới của khóa học
+          // Cập nhật lại feePlanSnapshot theo giá mới/đợt mới
           reg.feePlanSnapshot = buildFeePlanSnapshot(course, reg.paymentPlanType);
           await reg.save();
 
-          // 4. Cập nhật Payment (nếu cần theo yêu cầu cũ của bạn)
+          // Cập nhật Payment liên quan
           await Payment.updateMany(
             { registrationId: reg._id },
             { amount: course.estimatedCost }
@@ -246,6 +229,20 @@ export const updateCourse = async (req, res) => {
 export const deleteCourse = async (req, res) => {
   try {
     const { id } = req.params;
+
+    // 1. Tìm các Registration liên quan đến khóa học này
+    const registrations = await Registration.find({ courseId: id });
+
+    // 2. Xóa các hồ sơ chưa đóng tiền đợt 1
+    for (const reg of registrations) {
+      if (reg.feePlanSnapshot && reg.feePlanSnapshot.length > 0 && reg.feePlanSnapshot[0].paymented === false) {
+        await Registration.findByIdAndDelete(reg._id);
+        // Xóa luôn các Payment (giao dịch) liên quan nếu có
+        await Payment.deleteMany({ registrationId: reg._id });
+      }
+    }
+
+    // 3. Xóa khóa học
     const course = await Course.findByIdAndDelete(id);
 
     if (!course) {
@@ -256,7 +253,7 @@ export const deleteCourse = async (req, res) => {
 
     res.json({
       status: "success",
-      message: "Xoá khoá học thành công",
+      message: "Xoá khoá học thành công và đã dọn dẹp các hồ sơ liên quan chưa thanh toán",
     });
 
   } catch (error) {
