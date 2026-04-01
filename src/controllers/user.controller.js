@@ -315,10 +315,8 @@ export const getInstructorsByLocation = async (req, res) => {
     if (courseIds.length > 0) filter.taughtCourses = { $in: courseIds };
 
     let instructors = await User.find(filter);
-    if (instructors.length === 0 && courseIds.length > 0) {
-      delete filter.taughtCourses;
-      instructors = await User.find(filter);
-    }
+    // [FIX] Bỏ logic fallback "xóa điều kiện khóa học nếu không tìm thấy thầy" 
+    // để bắt buộc lọc khắt khe theo cả Địa điểm HOẶC Khóa học như yêu cầu.
 
     res.json({ status: 'success', data: formatUserResponse(instructors) });
   } catch (error) {
