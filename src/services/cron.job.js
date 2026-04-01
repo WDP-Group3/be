@@ -156,9 +156,16 @@ const checkAndSendAttendanceReminders = async () => {
     const classEndTime = new Date(absoluteEndTimeStr);
     
     const reminderTime = new Date(classEndTime.getTime() + 5 * 60 * 1000); // +5 phút
+    const expirationTime = new Date(classEndTime.getTime() + 60 * 60 * 1000); // +60 phút (Giới hạn tối đa)
     const now = new Date();
 
-    // Nếu đã đến hoặc qua thời điểm kết thúc + 5 phút
+    // Nếu quá hạn gửi email (> 1 tiếng sau ca học) -> Đánh dấu là đã gửi để bỏ qua luồng, KHÔNG gửi email nhắc nhở nữa
+    if (now > expirationTime) {
+      await Booking.findByIdAndUpdate(booking._id, { attendanceReminderSent: true });
+      continue;
+    }
+
+    // Nếu đã đến hoặc qua thời điểm kết thúc + 5 phút (Và vẫn <= 60 phút)
     if (now >= reminderTime) {
       // Đánh dấu đã gửi (Khóa ngay cờ này TRƯỚC KHI thực hiện gửi email để chống Race Condition)
       await Booking.findByIdAndUpdate(booking._id, { attendanceReminderSent: true });
