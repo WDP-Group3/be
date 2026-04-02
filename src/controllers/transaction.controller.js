@@ -4,6 +4,7 @@ import Payment from '../models/Payment.js';
 import Registration from '../models/Registration.js';
 import User from '../models/User.js';
 import { enrollSinglelearner } from '../services/enrollment.service.js';
+import { recalculateUpcomingDueDates } from './payment.controller.js';
 
 const SEPAY_BANK_CODE = process.env.SEPAY_BANK_CODE || '';
 const SEPAY_BANK_ACCOUNT = process.env.SEPAY_BANK_ACCOUNT || '';
@@ -102,7 +103,7 @@ export const checkStatus = async (req, res) => {
     console.log('📥 [SEPAY WEBHOOK] Received payload:', JSON.stringify(payload));
 
     const match = payload.transferContent || payload.content || payload.description || '';
-    const transferContent = match.match(/HP[A-Z0-9]+/)?.[0].trim();
+    const transferContent = match.match(/HP[A-Z0-9-]+/)?.[0].trim();
     if (!transferContent) {
       return res.status(400).json({ status: 'error', message: 'Thiếu transferContent' });
     }
@@ -224,9 +225,12 @@ export const checkStatus = async (req, res) => {
         if (Object.keys(updates).length > 0) {
           await Registration.findByIdAndUpdate(registration._id, updates);
         }
+
+        // 3b: Tự tính lại dueDate đợt tiếp theo từ ngày đóng thực tế
+        await recalculateUpcomingDueDates(transaction.registrationId, paidAt);
       }
 
-      // 3b: Auto-enroll (idempotent — check batchId exists)
+      // 3c: Auto-enroll (idempotent — check batchId exists)
       enrollment = await enrollSinglelearner(transaction.registrationId);
 
       // 3c: Emit real-time (fire & forget)
@@ -361,9 +365,12 @@ export const confirmTransaction = async (req, res) => {
         if (Object.keys(updates).length > 0) {
           await Registration.findByIdAndUpdate(registration._id, updates);
         }
+
+        // 3b: Tự tính lại dueDate đợt tiếp theo từ ngày đóng thực tế
+        await recalculateUpcomingDueDates(transaction.registrationId, paidAt);
       }
 
-      // 3b: Auto-enroll (idempotent)
+      // 3c: Auto-enroll (idempotent)
       enrollment = await enrollSinglelearner(transaction.registrationId);
 
       // 3c: Emit real-time
