@@ -516,20 +516,32 @@ export const updateLearnerEnrolledCourses = async (req, res) => {
         const oldCourse = courseCodesMap.get(oldCode);
         const newCourse = courseCodesMap.get(newCode);
         if (oldCourse && newCourse) {
-          // Tìm registration cũ để cập nhật thành mới
-          const oldReg = await Registration.findOne({ 
-            learnerId: id, 
+          // Tìm registration cũ cùng nhóm (DRAFT hoặc đã đóng tiền)
+          const oldReg = await Registration.findOne({
+            learnerId: id,
             courseId: oldCourse._id,
             status: { $ne: 'CANCELLED' }
           });
-          
+
           if (oldReg) {
-            oldReg.courseId = newCourse._id;
-            // Rebuild fee plan based on new course
-            oldReg.feePlanSnapshot = buildFeePlanSnapshot(newCourse, oldReg.paymentPlanType);
-            await oldReg.save();
-          } else {
-            // Nếu không tìm thấy reg cũ (lỗi dữ liệu?), tạo cái mới
+            if (oldReg.firstPaymentDate) {
+              // Đã đóng tiền → cancel và tạo DRAFT mới
+              oldReg.status = 'CANCELLED';
+              await oldReg.save();
+            } else {
+              // Chưa đóng tiền (DRAFT) → xóa luôn
+              await Registration.findByIdAndDelete(oldReg._id);
+              console.log(`[updateEnrolledCourses] Đã xóa DRAFT cũ "${oldCourse.name}" khi đổi sang "${newCourse.name}"`);
+            }
+          }
+
+          // Tạo DRAFT mới cho khóa mới
+          const existingNew = await Registration.findOne({
+            learnerId: id,
+            courseId: newCourse._id,
+            status: { $ne: 'CANCELLED' }
+          });
+          if (!existingNew) {
             const registration = new Registration({
               learnerId: id,
               courseId: newCourse._id,
@@ -539,6 +551,7 @@ export const updateLearnerEnrolledCourses = async (req, res) => {
               feePlanSnapshot: buildFeePlanSnapshot(newCourse, 'INSTALLMENT'),
             });
             await registration.save();
+            console.log(`[updateEnrolledCourses] Đã tạo DRAFT mới "${newCourse.name}"`);
           }
         }
       }
@@ -566,6 +579,17 @@ export const updateLearnerEnrolledCourses = async (req, res) => {
         }
       }
     };
+
+    // Cleanup: Xóa tất cả DRAFT registrations cũ (chưa đóng tiền) trước khi sync mới
+    // Nếu đã đóng tiền → status đã là PROCESSING/STUDYING rồi, không bị ảnh hưởng
+    const deletedDrafts = await Registration.deleteMany({
+      learnerId: id,
+      status: 'DRAFT',
+      firstPaymentDate: null,
+    });
+    if (deletedDrafts.deletedCount > 0) {
+      console.log(`[updateEnrolledCourses] Đã xóa ${deletedDrafts.deletedCount} DRAFT cũ cho user ${id}`);
+    }
 
     await handleCategorySync(currentXeMay, requestedXeMay[0], XE_MAY_REGEX);
     await handleCategorySync(currentOTo, requestedOTo[0], O_TO_REGEX);

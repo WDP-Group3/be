@@ -249,3 +249,413 @@ export const sendRejectionEmail = async (email, roleName) => {
   const message = `Rất tiếc, yêu cầu nâng quyền lên **${roleName}** của bạn đã bị từ chối. Tài khoản của bạn vẫn giữ quyền Học viên.`;
   return sendNotificationEmail(email, title, message);
 };
+
+/**
+ * Gửi email nhắc học phí trước hạn
+ * @param {string} email
+ * @param {object} data - { learnerName, courseName, installmentName, amount, dueDate, daysLeft }
+ */
+export const sendFeeReminderBeforeEmail = async (email, data) => {
+  const { learnerName, courseName, installmentName, amount, dueDate, daysLeft } = data;
+  const amountStr = Number(amount).toLocaleString('vi-VN');
+  const dueDateStr = new Date(dueDate).toLocaleDateString('vi-VN', {
+    weekday: 'long', day: 'numeric', month: 'numeric', year: 'numeric',
+  });
+
+  const isUrgent = daysLeft <= 1;
+  const title = isUrgent
+    ? '⚠️ THƯA GẤP: Hạn đóng học phí vào NGÀY MAI!'
+    : `⏰ Nhắc nhở: Hạn đóng học phí còn ${daysLeft} ngày`;
+
+  const urgencyColor = isUrgent ? '#f59e0b' : '#2563eb';
+  const urgencyBg = isUrgent ? '#fef3c7' : '#dbeafe';
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; }
+    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+    .header { background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: white; padding: 30px; text-align: center; border-radius: 12px 12px 0 0; }
+    .content { background: #ffffff; padding: 40px 30px; border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 12px 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+    .urgency-banner { background: ${urgencyBg}; border-left: 4px solid ${urgencyColor}; padding: 15px 20px; margin: 20px 0; border-radius: 4px; }
+    .urgency-text { color: ${urgencyColor}; font-size: 18px; font-weight: bold; margin: 0; }
+    .detail-table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+    .detail-table td { padding: 10px 0; border-bottom: 1px solid #f0f0f0; }
+    .detail-table td:first-child { color: #666; width: 40%; }
+    .detail-table td:last-child { font-weight: 600; }
+    .cta-button { display: inline-block; background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: white; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: bold; margin: 20px 0; }
+    .footer { text-align: center; margin-top: 25px; color: #888; font-size: 13px; }
+    h1 { margin: 0; font-size: 24px; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Drive Center</h1>
+      <p style="margin: 10px 0 0; opacity: 0.9;">Nhắc nhở đóng học phí</p>
+    </div>
+    <div class="content">
+      <p>Xin chào <strong>${learnerName}</strong>,</p>
+      <p>Hệ thống ghi nhận bạn có một đợt đóng học phí sắp đến hạn.</p>
+
+      <div class="urgency-banner">
+        <p class="urgency-text">⏰ Còn ${daysLeft === 1 ? 'NGÀY MAI' : daysLeft + ' ngày'} — Hạn đóng: ${dueDateStr}</p>
+      </div>
+
+      <table class="detail-table">
+        <tr><td>Khóa học</td><td>${courseName}</td></tr>
+        <tr><td>Đợt đóng tiền</td><td>${installmentName}</td></tr>
+        <tr><td>Số tiền</td><td style="color:#1e3c72;">${amountStr} VND</td></tr>
+        <tr><td>Hạn đóng</td><td>${dueDateStr}</td></tr>
+      </table>
+
+      <p>Vui lòng đóng tiền đúng hạn để không ảnh hưởng đến lịch học và quá trình thi cử.</p>
+
+      <center>
+        <a href="https://drivecenter.com/portal/payments" class="cta-button">Đóng tiền ngay</a>
+      </center>
+
+      <p>Nếu bạn đã đóng tiền, vui lòng bỏ qua email này hoặc liên hệ bộ phận tư vấn.</p>
+    </div>
+    <div class="footer">
+      <p>© ${new Date().getFullYear()} Drive Center. All rights reserved.</p>
+      <p>Đây là email tự động, vui lòng không phản hồi email này.</p>
+    </div>
+  </div>
+</body>
+</html>`;
+
+  const text = `
+NHẮC NHỞ ĐÓNG HỌC PHÍ — Drive Center
+
+Kính gửi ${learnerName},
+
+Bạn có một đợt đóng học phí sắp đến hạn trong ${daysLeft === 1 ? 'NGÀY MAI' : daysLeft + ' ngày'}!
+
+Thông tin đóng phí:
+- Khóa học: ${courseName}
+- Đợt: ${installmentName}
+- Số tiền: ${amountStr} VND
+- Hạn đóng: ${dueDateStr}
+
+Vui lòng đóng tiền đúng hạn để không ảnh hưởng đến lịch học.
+Truy cập: https://drivecenter.com/portal/payments
+
+© ${new Date().getFullYear()} Drive Center.`;
+
+  const transporter = createTransporter();
+  const mailOptions = {
+    from: process.env.SMTP_FROM || '"Drive Center" <noreply@drivecenter.com>',
+    to: email,
+    subject: `${title} — Drive Center`,
+    html,
+    text,
+  };
+
+  const info = await transporter.sendMail(mailOptions);
+  if (info.messageId && info.messageId.startsWith('mock-')) {
+    console.log(`✅ [FeeReminder] Email nhắc học phí (${daysLeft} ngày) đã được xử lý cho ${email} (mock mode)`);
+  } else {
+    console.log(`✅ [FeeReminder] Email nhắc học phí (${daysLeft} ngày) đã gửi tới ${email}`);
+  }
+  return { success: true, messageId: info.messageId };
+};
+
+/**
+ * Gửi email nhắc học phí đúng hạn hôm nay
+ */
+export const sendFeeReminderDueTodayEmail = async (email, data) => {
+  const { learnerName, courseName, installmentName, amount, dueDate } = data;
+  const amountStr = Number(amount).toLocaleString('vi-VN');
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; }
+    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+    .header { background: linear-gradient(135deg, #b45309 0%, #d97706 100%); color: white; padding: 30px; text-align: center; border-radius: 12px 12px 0 0; }
+    .content { background: #ffffff; padding: 40px 30px; border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 12px 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+    .alert-banner { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px 20px; margin: 20px 0; border-radius: 4px; }
+    .alert-text { color: #92400e; font-size: 18px; font-weight: bold; margin: 0; }
+    .detail-table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+    .detail-table td { padding: 10px 0; border-bottom: 1px solid #f0f0f0; }
+    .detail-table td:first-child { color: #666; width: 40%; }
+    .detail-table td:last-child { font-weight: 600; }
+    .cta-button { display: inline-block; background: linear-gradient(135deg, #b45309 0%, #d97706 100%); color: white; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: bold; margin: 20px 0; }
+    .footer { text-align: center; margin-top: 25px; color: #888; font-size: 13px; }
+    h1 { margin: 0; font-size: 24px; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Drive Center</h1>
+      <p style="margin: 10px 0 0; opacity: 0.9;">Nhắc nhở đóng học phí</p>
+    </div>
+    <div class="content">
+      <p>Xin chào <strong>${learnerName}</strong>,</p>
+      <p>Hệ thống nhắc nhở bạn: <strong>hạn đóng học phí là HÔM NAY!</strong></p>
+
+      <div class="alert-banner">
+        <p class="alert-text">⚠️ HẠN ĐÓNG HỌC PHÍ HÔM NAY!</p>
+      </div>
+
+      <table class="detail-table">
+        <tr><td>Khóa học</td><td>${courseName}</td></tr>
+        <tr><td>Đợt đóng tiền</td><td>${installmentName}</td></tr>
+        <tr><td>Số tiền</td><td style="color:#b45309;">${amountStr} VND</td></tr>
+      </table>
+
+      <p>Vui lòng đóng tiền <strong>NGAY HÔM NAY</strong> để không ảnh hưởng đến quá trình học tập.</p>
+
+      <center>
+        <a href="https://drivecenter.com/portal/payments" class="cta-button">Đóng tiền ngay</a>
+      </center>
+    </div>
+    <div class="footer">
+      <p>© ${new Date().getFullYear()} Drive Center. All rights reserved.</p>
+    </div>
+  </div>
+</body>
+</html>`;
+
+  const text = `
+⚠️ HẠN ĐÓNG HỌC PHÍ HÔM NAY! — Drive Center
+
+Kính gửi ${learnerName},
+
+Hạn đóng học phí là HÔM NAY!
+
+- Khóa học: ${courseName}
+- Đợt: ${installmentName}
+- Số tiền: ${amountStr} VND
+
+Vui lòng đóng tiền ngay hôm nay.
+Truy cập: https://drivecenter.com/portal/payments
+
+© ${new Date().getFullYear()} Drive Center.`;
+
+  const transporter = createTransporter();
+  const mailOptions = {
+    from: process.env.SMTP_FROM || '"Drive Center" <noreply@drivecenter.com>',
+    to: email,
+    subject: `⚠️ HẠN ĐÓNG HỌC PHÍ HÔM NAY! — Drive Center`,
+    html,
+    text,
+  };
+
+  const info = await transporter.sendMail(mailOptions);
+  console.log(`✅ [FeeReminder] Email hạn đóng hôm nay đã gửi tới ${email}`);
+  return { success: true, messageId: info.messageId };
+};
+
+/**
+ * Gửi email nhắc học phí quá hạn
+ * @param {string} email
+ * @param {object} data - { learnerName, courseName, installmentName, amount, dueDate, daysOverdue }
+ */
+export const sendFeeReminderOverdueEmail = async (email, data) => {
+  const { learnerName, courseName, installmentName, amount, dueDate, daysOverdue } = data;
+  const amountStr = Number(amount).toLocaleString('vi-VN');
+  const dueDateStr = new Date(dueDate).toLocaleDateString('vi-VN', {
+    day: 'numeric', month: 'numeric', year: 'numeric',
+  });
+
+  const isCritical = daysOverdue >= 7;
+  const title = isCritical
+    ? '🚨 KHẨN CẤP: Học phí quá hạn ' + daysOverdue + ' ngày!'
+    : daysOverdue === 1
+    ? '⚠️ THƯA BẠN: Hạn đóng học phí đã quá hạn 1 ngày'
+    : `⚠️ CẢNH BÁO: Học phí quá hạn ${daysOverdue} ngày`;
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; }
+    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+    .header { background: ${isCritical ? 'linear-gradient(135deg, #991b1b 0%, #dc2626 100%)' : 'linear-gradient(135deg, #b91c1c 0%, #ef4444 100%)'}; color: white; padding: 30px; text-align: center; border-radius: 12px 12px 0 0; }
+    .content { background: #ffffff; padding: 40px 30px; border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 12px 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+    .alert-banner { background: #fee2e2; border-left: 4px solid #dc2626; padding: 15px 20px; margin: 20px 0; border-radius: 4px; }
+    .alert-text { color: #991b1b; font-size: 18px; font-weight: bold; margin: 0; }
+    .warning-text { color: #dc2626; font-size: 14px; font-weight: 600; margin: 10px 0 0; }
+    .detail-table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+    .detail-table td { padding: 10px 0; border-bottom: 1px solid #f0f0f0; }
+    .detail-table td:first-child { color: #666; width: 40%; }
+    .detail-table td:last-child { font-weight: 600; }
+    .cta-button { display: inline-block; background: linear-gradient(135deg, #991b1b 0%, #dc2626 100%); color: white; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: bold; margin: 20px 0; }
+    .footer { text-align: center; margin-top: 25px; color: #888; font-size: 13px; }
+    h1 { margin: 0; font-size: 24px; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Drive Center</h1>
+      <p style="margin: 10px 0 0; opacity: 0.9;">Thông báo quá hạn đóng học phí</p>
+    </div>
+    <div class="content">
+      <p>Xin chào <strong>${learnerName}</strong>,</p>
+      <p>Hệ thống ghi nhận bạn có <strong>đợt đóng học phí đã quá hạn</strong>.</p>
+
+      <div class="alert-banner">
+        <p class="alert-text">⚠️ Đã quá hạn ${daysOverdue} ngày!</p>
+        <p class="warning-text">Vui lòng đóng tiền ngay để tránh ảnh hưởng đến lịch thi và hồ sơ.</p>
+      </div>
+
+      <table class="detail-table">
+        <tr><td>Khóa học</td><td>${courseName}</td></tr>
+        <tr><td>Đợt đóng tiền</td><td>${installmentName}</td></tr>
+        <tr><td>Số tiền</td><td style="color:#dc2626;">${amountStr} VND</td></tr>
+        <tr><td>Hạn đóng (quá)</td><td style="color:#dc2626;">${dueDateStr}</td></tr>
+      </table>
+
+      <p>Vui lòng đóng tiền <strong>ngay hôm nay</strong> để tránh bị tạm ngưng lịch học và không được tham gia thi.</p>
+
+      <center>
+        <a href="https://drivecenter.com/portal/payments" class="cta-button">Đóng tiền ngay</a>
+      </center>
+
+      <p>Nếu bạn đã đóng tiền, vui lòng bỏ qua email này hoặc liên hệ bộ phận tư vấn.</p>
+    </div>
+    <div class="footer">
+      <p>© ${new Date().getFullYear()} Drive Center. All rights reserved.</p>
+      <p>Đây là email tự động, vui lòng không phản hồi email này.</p>
+    </div>
+  </div>
+</body>
+</html>`;
+
+  const text = `
+⚠️ THƯA BẠN: Học phí đã QUÁ HẠN ${daysOverdue} ngày! — Drive Center
+
+Kính gửi ${learnerName},
+
+Bạn có đợt đóng học phí đã QUÁ HẠN ${daysOverdue} ngày!
+
+- Khóa học: ${courseName}
+- Đợt: ${installmentName}
+- Số tiền: ${amountStr} VND
+- Hạn đóng (đã quá): ${dueDateStr}
+
+Vui lòng đóng tiền ngay hôm nay để tránh ảnh hưởng đến lịch thi.
+Truy cập: https://drivecenter.com/portal/payments
+
+© ${new Date().getFullYear()} Drive Center.`;
+
+  const transporter = createTransporter();
+  const mailOptions = {
+    from: process.env.SMTP_FROM || '"Drive Center" <noreply@drivecenter.com>',
+    to: email,
+    subject: `${title} — Drive Center`,
+    html,
+    text,
+  };
+
+  const info = await transporter.sendMail(mailOptions);
+  if (info.messageId && info.messageId.startsWith('mock-')) {
+    console.log(`✅ [FeeReminder] Email quá hạn (${daysOverdue} ngày) đã được xử lý cho ${email} (mock mode)`);
+  } else {
+    console.log(`✅ [FeeReminder] Email quá hạn (${daysOverdue} ngày) đã gửi tới ${email}`);
+  }
+  return { success: true, messageId: info.messageId };
+};
+
+/**
+ * Gửi email báo admin khi học viên quá hạn học phí
+ * @param {string} email
+ * @param {object} data - { learnerName, learnerEmail, courseName, installmentName, amount, dueDate, daysOverdue }
+ */
+export const sendFeeOverdueAdminEmail = async (email, data) => {
+  const { learnerName, learnerEmail, courseName, installmentName, amount, dueDate, daysOverdue } = data;
+  const amountStr = Number(amount).toLocaleString('vi-VN');
+  const dueDateStr = new Date(dueDate).toLocaleDateString('vi-VN', {
+    day: 'numeric', month: 'numeric', year: 'numeric',
+  });
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; }
+    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+    .header { background: linear-gradient(135deg, #991b1b 0%, #dc2626 100%); color: white; padding: 30px; text-align: center; border-radius: 12px 12px 0 0; }
+    .content { background: #ffffff; padding: 40px 30px; border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 12px 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+    .alert-banner { background: #fee2e2; border-left: 4px solid #dc2626; padding: 15px 20px; margin: 20px 0; border-radius: 4px; }
+    .alert-text { color: #991b1b; font-size: 18px; font-weight: bold; margin: 0; }
+    .detail-table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+    .detail-table td { padding: 10px 0; border-bottom: 1px solid #f0f0f0; }
+    .detail-table td:first-child { color: #666; width: 40%; }
+    .detail-table td:last-child { font-weight: 600; }
+    .footer { text-align: center; margin-top: 25px; color: #888; font-size: 13px; }
+    h1 { margin: 0; font-size: 24px; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Drive Center</h1>
+      <p style="margin: 10px 0 0; opacity: 0.9;">[ADMIN] Học viên quá hạn học phí</p>
+    </div>
+    <div class="content">
+      <div class="alert-banner">
+        <p class="alert-text">🚨 Học viên quá hạn học phí ${daysOverdue} ngày!</p>
+      </div>
+
+      <table class="detail-table">
+        <tr><td>Học viên</td><td>${learnerName}</td></tr>
+        <tr><td>Email</td><td>${learnerEmail}</td></tr>
+        <tr><td>Khóa học</td><td>${courseName}</td></tr>
+        <tr><td>Đợt quá hạn</td><td>${installmentName}</td></tr>
+        <tr><td>Số tiền</td><td style="color:#dc2626;">${amountStr} VND</td></tr>
+        <tr><td>Hạn đóng</td><td>${dueDateStr}</td></tr>
+        <tr><td>Số ngày quá hạn</td><td style="color:#dc2626; font-weight:bold;">${daysOverdue} ngày</td></tr>
+      </table>
+
+      <p>Vui lòng kiểm tra và liên hệ học viên để xử lý.</p>
+    </div>
+    <div class="footer">
+      <p>© ${new Date().getFullYear()} Drive Center. Email tự động từ hệ thống.</p>
+    </div>
+  </div>
+</body>
+</html>`;
+
+  const text = `
+🚨 [ADMIN] Học viên quá hạn học phí ${daysOverdue} ngày! — Drive Center
+
+Học viên: ${learnerName}
+Email: ${learnerEmail}
+Khóa học: ${courseName}
+Đợt: ${installmentName}
+Số tiền: ${amountStr} VND
+Hạn đóng: ${dueDateStr}
+Số ngày quá hạn: ${daysOverdue} ngày
+
+Vui lòng kiểm tra và liên hệ học viên để xử lý.
+
+© ${new Date().getFullYear()} Drive Center.`;
+
+  const transporter = createTransporter();
+  const mailOptions = {
+    from: process.env.SMTP_FROM || '"Drive Center" <noreply@drivecenter.com>',
+    to: email,
+    subject: `🚨 [ADMIN] Học viên quá hạn học phí: ${learnerName} - ${courseName} - Đợt ${installmentName}`,
+    html,
+    text,
+  };
+
+  const info = await transporter.sendMail(mailOptions);
+  console.log(`✅ [FeeReminder] Email báo admin đã gửi tới ${email}`);
+  return { success: true, messageId: info.messageId };
+};

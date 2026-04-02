@@ -60,6 +60,94 @@ const syncFeePlanStatus = async (registrationId) => {
   }
 };
 
+/**
+ * Sau khi đóng tiền, tự động tính lại dueDate các đợt tiếp theo
+ * từ ngày đóng thực tế của đợt vừa đóng.
+ *
+ * Ví dụ:
+ *   Đợt 1 hạn 08/04, SV đóng ngày 02/04 (trễ 6 ngày so với hạn)
+ *   Đợt 2: dueDate = ngày đóng đợt 1 (02/04) + 30 ngày = 02/05
+ *   (thay vì 08/04 + 30 = 08/05)
+ *
+ * @param {string} registrationId
+ * @param {Date} lastPaidAt - Ngày đóng đợt mới nhất
+ */
+export const recalculateUpcomingDueDates = async (registrationId, lastPaidAt) => {
+  const reg = await Registration.findById(registrationId)
+    .select('+firstPaymentDate');
+  if (!reg || !Array.isArray(reg.feePlanSnapshot) || reg.feePlanSnapshot.length === 0) return;
+
+  const addDays = (date, days) => {
+    const result = new Date(date);
+    result.setDate(result.getDate() + (Number(days) || 0));
+    return result;
+  };
+
+  // Bước 1: Tìm ngày đóng của từng đợt từ bảng Payment
+  const payments = await Payment.find({ registrationId })
+    .sort({ paidAt: 1 })
+    .select('amount paidAt');
+
+  // Tính xem đợt nào đã đóng vào ngày nào
+  // accumulated >= threshold → đợt đó đã đóng
+  const feePlan = reg.feePlanSnapshot;
+  let accumulated = 0;
+  const paidDates = []; // paidDates[i] = ngày đợt i được đóng
+
+  for (let i = 0; i < feePlan.length; i++) {
+    accumulated += Number(feePlan[i].amount) || 0;
+
+    // Tìm payment đầu tiên mà tổng đạt mốc này
+    let running = 0;
+    for (const p of payments) {
+      running += Number(p.amount) || 0;
+      if (running >= accumulated) {
+        paidDates[i] = new Date(p.paidAt);
+        break;
+      }
+    }
+  }
+
+  // Bước 2: Tính lại dueDate cascade từ ngày đóng thực tế
+  let prevDueDate = new Date(reg.createdAt);
+  let changed = false;
+
+  for (let i = 0; i < feePlan.length; i++) {
+    const fee = feePlan[i];
+
+    // Nếu đợt đã đóng: dùng ngày đóng thực tế làm base cho đợt sau
+    if (fee.paymented && paidDates[i]) {
+      prevDueDate = paidDates[i];
+      continue;
+    }
+
+    // Đợt chưa đóng: tính lại dueDate nếu chưa có cố định (admin set)
+    if (!fee.paymented && !fee.dueDate) {
+      const newDueDate = addDays(prevDueDate, Number(fee.afterPreviousPaidDays) || 0);
+      const oldDueDate = fee.dueDate ? new Date(fee.dueDate).getTime() : null;
+
+      if (oldDueDate !== newDueDate.getTime()) {
+        fee.dueDate = newDueDate;
+        changed = true;
+        console.log(
+          `📅 [DUE DATE] Reg ${registrationId} | Đợt ${i + 1} "${fee.name}": ${oldDueDate ? new Date(oldDueDate).toLocaleDateString('vi-VN') : 'null'} → ${newDueDate.toLocaleDateString('vi-VN')}`
+        );
+      }
+    }
+
+    // Cập nhật prevDueDate cho đợt tiếp theo
+    prevDueDate = fee.dueDate
+      ? new Date(fee.dueDate)
+      : addDays(prevDueDate, Number(fee.afterPreviousPaidDays) || 0);
+  }
+
+  if (changed) {
+    reg.markModified('feePlanSnapshot');
+    await reg.save();
+    console.log(`✅ [DUE DATE] Đã cập nhật dueDate cho Registration ${registrationId}`);
+  }
+};
+
 const buildTuitionItems = (registrations, payments) => {
   return registrations.map((registration) => {
     const batch = registration.batchId;
@@ -281,6 +369,10 @@ export const createPayment = async (req, res) => {
       // 2d: Sync trạng thái từng đợt nộp phí (paymented: true/false)
       await syncFeePlanStatus(registrationId);
 
+      // 2e: Tự động tính dueDate đợt tiếp theo từ ngày đóng thực tế
+      // Đợt i: dueDate = ngày đóng đợt i-1 + afterPreviousPaidDays đợt i
+      await recalculateUpcomingDueDates(registrationId, paidAtDate);
+
       // 2c: Auto-enroll (idempotent)
       enrollment = await enrollSinglelearner(registrationId);
       console.log('💰 [PAYMENT] Kết quả auto-enroll:', enrollment);
@@ -388,21 +480,77 @@ export const getTuitionInfo = async (req, res) => {
 
     if (courseId) filter.courseId = courseId;
 
-    let registrations = await Registration.find(filter)
-      .populate('learnerId', 'fullName phone email')
-      .populate('courseId', 'code name estimatedCost feePayments updatedAt')
-      .populate({ 
-        path: 'batchId', 
-        populate: { 
-          path: 'courseId', 
-          model: Course,
-          select: 'code name estimatedCost feePayments updatedAt'
-        } 
-      })
-      .select('+firstPaymentDate')
-      .sort({ createdAt: -1 });
+    // ── Tách sync feePlan ra khỏi read endpoint ────────────────────────
+    // Sync + cleanup chỉ chạy khi có search/filter (ít request), không block student page
+    const needsSync = !!search;
+    const finalRegistrations = [];
 
-    if (!registrations.length) {
+    if (needsSync) {
+      // Chỉ sync khi admin search — tách ra để student page không bị chậm
+      let registrations = await Registration.find(filter)
+        .populate('learnerId', 'fullName phone email')
+        .populate('courseId', 'code name estimatedCost feePayments updatedAt')
+        .populate({
+          path: 'batchId',
+          populate: {
+            path: 'courseId',
+            model: Course,
+            select: 'code name estimatedCost feePayments updatedAt',
+          },
+        })
+        .select('+firstPaymentDate')
+        .sort({ createdAt: -1 });
+
+      for (const reg of registrations) {
+        const course = reg.batchId?.courseId || reg.courseId;
+        const firstInstallmentUnpaid = reg.feePlanSnapshot?.[0]?.paymented === false;
+
+        if (!course && firstInstallmentUnpaid) {
+          // Cleanup: xóa registration có course đã bị xóa + unpaid
+          console.log(`🗑️ [CLEANUP] Deleted registration ${reg._id} (course missing & unpaid).`);
+          await Registration.findByIdAndDelete(reg._id);
+          await Payment.deleteMany({ registrationId: reg._id });
+          await Invoice.deleteMany({ registrationId: reg._id });
+          await Transaction.deleteMany({ registrationId: reg._id });
+          continue;
+        }
+
+        if (course && firstInstallmentUnpaid) {
+          const newFeePlan = buildFeePlanSnapshot(course, reg.paymentPlanType || 'INSTALLMENT');
+          const snapshot = reg.feePlanSnapshot || [];
+          const isDifferent =
+            snapshot.length !== newFeePlan.length ||
+            snapshot.some((item, idx) => Number(item.amount) !== Number(newFeePlan[idx]?.amount));
+
+          if (isDifferent) {
+            console.log(`🔄 [SYNC] Updating registration ${reg._id} with new course fees.`);
+            reg.feePlanSnapshot = newFeePlan;
+            reg.markModified('feePlanSnapshot');
+            await reg.save();
+          }
+        }
+        finalRegistrations.push(reg);
+      }
+    } else {
+      // Student page: chỉ lấy data, không sync (feePlan đã được sync khi tạo registration)
+      // Thêm limit để tránh fetch quá nhiều
+      finalRegistrations.push(...(await Registration.find(filter)
+        .populate('learnerId', 'fullName phone email')
+        .populate('courseId', 'code name estimatedCost feePayments updatedAt')
+        .populate({
+          path: 'batchId',
+          populate: {
+            path: 'courseId',
+            model: Course,
+            select: 'code name estimatedCost feePayments updatedAt',
+          },
+        })
+        .select('+firstPaymentDate')
+        .sort({ createdAt: -1 })
+        .limit(100)));
+    }
+
+    if (!finalRegistrations.length) {
       return res.json({
         status: 'success',
         data: {
@@ -413,51 +561,10 @@ export const getTuitionInfo = async (req, res) => {
           canPayNow: false,
           isOverdue: false,
           items: [],
-          pagination: { total: 0, page, limit, totalPages: 0 }
+          pagination: { total: 0, page, limit, totalPages: 0 },
         },
       });
     }
-
-
-
-    // ── SYNC & CLEANUP Logic ───────────────────────────────────────────
-    const finalRegistrations = [];
-    for (const reg of registrations) {
-      const course = reg.batchId?.courseId || reg.courseId;
-      const firstInstallmentUnpaid = reg.feePlanSnapshot?.[0]?.paymented === false;
-
-      // 1. Case: Course deleted from DB
-      if (!course) {
-        if (firstInstallmentUnpaid) {
-          console.log(`🗑️ [CLEANUP] Deleted registration ${reg._id} because its course is missing & unpaid.`);
-          await Registration.findByIdAndDelete(reg._id);
-          await Payment.deleteMany({ registrationId: reg._id });
-          await Invoice.deleteMany({ registrationId: reg._id });
-          await Transaction.deleteMany({ registrationId: reg._id });
-          continue; // Skip adding to final list
-        }
-      } else {
-        // 2. Case: Course exists but price/installments updated
-        if (firstInstallmentUnpaid) {
-          // Rule: If 1st installment is unpaid, always follow the latest course fee structure
-          const newFeePlan = buildFeePlanSnapshot(course, reg.paymentPlanType || 'INSTALLMENT');
-          
-          // Basic comparison: check if counts or amounts changed
-          const snapshot = reg.feePlanSnapshot || [];
-          const isDifferent = snapshot.length !== newFeePlan.length || 
-            snapshot.some((item, idx) => Number(item.amount) !== Number(newFeePlan[idx]?.amount));
-
-          if (isDifferent) {
-            console.log(`🔄 [SYNC] Updating registration ${reg._id} with new course fees.`);
-            reg.feePlanSnapshot = newFeePlan;
-            reg.markModified('feePlanSnapshot');
-            await reg.save();
-          }
-        }
-      }
-      finalRegistrations.push(reg);
-    }
-    // ───────────────────────────────────────────────────────────────────
 
     const registrationIds = finalRegistrations.map((r) => r._id);
     const allPayments = await Payment.find({ registrationId: { $in: registrationIds } }).sort({ paidAt: 1 });
