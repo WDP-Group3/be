@@ -150,7 +150,7 @@ export const createRegistration = async (req, res) => {
     }
 
     // Kiểm tra loại trừ: chỉ đăng ký được 1 khóa Xe Máy (A1/A2), 1 khóa Ô Tô
-    // Dùng course.name để xác định nhóm thay vì regex trên code
+    // Dùng course.name để xác định nhóm
     const newCourse = await Course.findById(actualCourseId);
     const newCourseName = (newCourse?.name || '').toLowerCase();
 
@@ -158,11 +158,15 @@ export const createRegistration = async (req, res) => {
     const isGroupA = /xe\s*máy|a1|a2/i.test(newCourseName);
     const isGroupB = /ô\s*tô|b\s|số\s*sàn|tự\s*động/i.test(newCourseName);
 
+    console.log(`[CREATE REG] course="${newCourseName}" isGroupA=${isGroupA} isGroupB=${isGroupB}`);
+
+    // Chỉ BLOCK nếu có registration ĐÃ ĐÓNG TIỀN (firstPaymentDate != null) cùng nhóm
     if (isGroupA || isGroupB) {
-      // Tìm các registration đang active của learner
       const existingRegs = await Registration.find({
         learnerId,
-        status: { $in: ['DRAFT', 'NEW', 'PROCESSING', 'STUDYING', 'WAITING'] },
+        status: { $in: ['NEW', 'PROCESSING', 'STUDYING', 'WAITING'] },
+
+        firstPaymentDate: { $ne: null },
       }).populate('courseId', 'name code');
 
       for (const existingReg of existingRegs) {
@@ -171,12 +175,37 @@ export const createRegistration = async (req, res) => {
         const existingIsGroupA = /xe\s*máy|a1|a2/i.test(existingName);
         const existingIsGroupB = /ô\s*tô|b\s|số\s*sàn|tự\s*động/i.test(existingName);
 
-        // Cùng nhóm → block
+        // Cùng nhóm + đã đóng tiền → block
         if ((isGroupA && existingIsGroupA) || (isGroupB && existingIsGroupB)) {
           return res.status(400).json({
             status: 'error',
-            message: `Bạn đã đăng ký khóa ${existingCode || existingReg.courseId?.name}. Nhóm ${isGroupA ? 'Xe Máy' : 'Ô Tô'} chỉ được đăng ký 1 khóa.`,
+            message: `Bạn đã đóng học phí khóa ${existingCode || existingReg.courseId?.name}. Nhóm ${isGroupA ? 'Xe Máy' : 'Ô Tô'} chỉ được đăng ký 1 khóa.`,
           });
+        }
+      }
+
+      // Xóa DRAFT cũ cùng nhóm (chưa đóng tiền) khi đổi sang khóa khác trong nhóm
+      const oldDraftRegs = await Registration.find({
+        learnerId,
+        courseId: { $ne: actualCourseId },
+        status: 'DRAFT',
+        firstPaymentDate: null,
+      }).populate('courseId', 'name code');
+
+      console.log(`[CREATE REG] Tìm thấy ${oldDraftRegs.length} DRAFT cũ để kiểm tra`);
+
+      for (const oldReg of oldDraftRegs) {
+        const oldName = (oldReg.courseId?.name || '').toLowerCase();
+        const oldIsGroupA = /xe\s*máy|a1|a2/i.test(oldName);
+        const oldIsGroupB = /ô\s*tô|b\s|số\s*sàn|tự\s*động/i.test(oldName);
+
+        // Chỉ xóa DRAFT cũ nếu CÙNG NHÓM với khóa mới
+        // (A1 DRAFT + đăng ký A2 → xóa A1; B1 DRAFT + đăng ký B2 → xóa B1)
+        // A1 DRAFT + đăng ký B1 → giữ A1 (khác nhóm)
+        const sameGroup = (oldIsGroupA && isGroupA) || (oldIsGroupB && isGroupB);
+        if (sameGroup) {
+          await Registration.findByIdAndDelete(oldReg._id);
+          console.log(`[REG SWITCH] Đã xóa DRAFT cũ "${oldName}" để đổi sang "${newCourse?.name}"`);
         }
       }
     }
@@ -257,15 +286,18 @@ export const assignRegistrationByAdmin = async (req, res) => {
     }
 
     // Kiểm tra loại trừ nhóm Xe Máy / Ô Tô khi gán khóa học
+    // CHỈ block nếu đã đóng tiền. DRAFT (chưa đóng) → cho phép đổi khóa cùng nhóm
     const newCourseName = (batch.courseId?.name || '').toLowerCase();
     const newCourseCode = batch.courseId?.code || '';
     const isGroupA = /xe\s*máy|a1|a2/i.test(newCourseName);
     const isGroupB = /ô\s*tô|b\s|số\s*sàn|tự\s*động/i.test(newCourseName);
 
     if (isGroupA || isGroupB) {
+      // Chỉ BLOCK nếu đã đóng tiền cùng nhóm
       const existingRegs = await Registration.find({
         learnerId,
         status: { $in: ['DRAFT', 'NEW', 'PROCESSING', 'STUDYING', 'WAITING'] },
+        firstPaymentDate: { $ne: null },
       }).populate('courseId', 'name code');
 
       for (const existingReg of existingRegs) {
@@ -280,9 +312,30 @@ export const assignRegistrationByAdmin = async (req, res) => {
         if ((isGroupA && existingIsGroupA) || (isGroupB && existingIsGroupB)) {
           return res.status(400).json({
             status: 'error',
-            message: `Học viên đã có hồ sơ đăng ký khóa ${existingCode || existingReg.courseId?.name}. Nhóm ${isGroupA ? 'Xe Máy' : 'Ô Tô'} chỉ được đăng ký 1 hạng.`,
+            message: `Học viên đã đóng học phí khóa ${existingCode || existingReg.courseId?.name}. Nhóm ${isGroupA ? 'Xe Máy' : 'Ô Tô'} chỉ được đăng ký 1 khóa.`,
           });
         }
+      }
+    }
+
+    // Xóa DRAFT cũ cùng nhóm (chưa đóng tiền) khi gán khóa mới
+    const batchCourseName = (batch.courseId?.name || '').toLowerCase();
+    const batchIsGroupA = /xe\s*máy|a1|a2/i.test(batchCourseName);
+    const batchIsGroupB = /ô\s*tô|b\s|số\s*sàn|tự\s*động/i.test(batchCourseName);
+    const oldDraftRegs = await Registration.find({
+      learnerId,
+      status: 'DRAFT',
+      firstPaymentDate: null,
+    }).populate('courseId', 'name code');
+
+    for (const oldReg of oldDraftRegs) {
+      const oldName = (oldReg.courseId?.name || '').toLowerCase();
+      const oldIsGroupA = /xe\s*máy|a1|a2/i.test(oldName);
+      const oldIsGroupB = /ô\s*tô|b\s|số\s*sàn|tự\s*động/i.test(oldName);
+      const sameGroup = (oldIsGroupA && batchIsGroupA) || (oldIsGroupB && batchIsGroupB);
+      if (sameGroup) {
+        await Registration.findByIdAndDelete(oldReg._id);
+        console.log(`[ASSIGN] Đã xóa DRAFT cũ "${oldReg.courseId?.name}" khi gán khóa mới "${batch.courseId?.name}"`);
       }
     }
 
@@ -883,4 +936,4 @@ export const getFeeSubmissions = async (req, res) => {
     console.error('Error getFeeSubmissions:', error);
     res.status(500).json({ status: 'error', message: error.message });
   }
-};
+}; 
