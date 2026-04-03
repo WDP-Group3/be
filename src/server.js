@@ -15,6 +15,7 @@ import {
   sendInstructorBusyScheduleReminder,
   startPendingRequestsReminderCron,
   startDueDateReminderCron,
+  startNotificationExpirationCron,
   startDraftCleanupCron,
 } from "./services/cron.job.js";
 import { initSocket } from "./services/socket.service.js";
@@ -74,6 +75,8 @@ startPendingRequestsReminderCron();
 // Khởi động cron job nhắc học viên hạn đóng phí (09:00 mỗi ngày)
 startDueDateReminderCron();
 
+// Khởi động cron job nhắc Admin thông báo sắp hết hạn
+startNotificationExpirationCron();
 // Khởi động cron job dọn DRAFT quá hạn (01:00 mỗi ngày)
 startDraftCleanupCron();
 

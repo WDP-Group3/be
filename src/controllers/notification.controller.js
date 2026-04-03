@@ -206,9 +206,14 @@ export const updateNotification = async (req, res) => {
     if (expirationDays) {
       const days = parseInt(expirationDays);
       if (!isNaN(days) && days > 0) {
-        const expireAt = new Date(notification.createdAt); // Should this be from Now or CreatedAt? "kể từ ngày tạo". User said "kể từ ngày tạo sau 30 nagyf".
+        // [Optimized] Always calculate from Now to handle "extensions"
+        const expireAt = new Date();
         expireAt.setDate(expireAt.getDate() + days);
         notification.expireAt = expireAt;
+        // Reset warning flags if life is extended beyond 2 days
+        if (days > 2) {
+          notification.expirationWarningSent = false;
+        }
       }
     }
 
