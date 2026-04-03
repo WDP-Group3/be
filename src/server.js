@@ -14,6 +14,7 @@ import {
   startAttendanceReminderCron,
   sendInstructorBusyScheduleReminder,
   startPendingRequestsReminderCron,
+  startNotificationExpirationCron
 } from "./services/cron.job.js";
 import { initSocket } from "./services/socket.service.js";
 import Booking from "./models/Booking.js";
