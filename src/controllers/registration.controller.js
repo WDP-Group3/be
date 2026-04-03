@@ -9,6 +9,7 @@ import Payment from '../models/Payment.js';
 import Leads from '../models/Leads.js';
 
 import { buildFeePlanSnapshot } from '../utils/feeHelper.js';
+import { emitScheduleUpdate } from '../services/socket.service.js';
 
 const hasCompleteDocumentProfile = (doc) => !!(
   doc?.cccdNumber
@@ -149,7 +150,7 @@ export const createRegistration = async (req, res) => {
     }
 
     // Kiểm tra loại trừ: chỉ đăng ký được 1 khóa Xe Máy (A1/A2), 1 khóa Ô Tô
-    // Dùng course.name để xác định nhóm thay vì regex trên code
+    // Dùng course.name để xác định nhóm
     const newCourse = await Course.findById(actualCourseId);
     const newCourseName = (newCourse?.name || '').toLowerCase();
 
@@ -157,11 +158,15 @@ export const createRegistration = async (req, res) => {
     const isGroupA = /xe\s*máy|a1|a2/i.test(newCourseName);
     const isGroupB = /ô\s*tô|b\s|số\s*sàn|tự\s*động/i.test(newCourseName);
 
+    console.log(`[CREATE REG] course="${newCourseName}" isGroupA=${isGroupA} isGroupB=${isGroupB}`);
+
+    // Chỉ BLOCK nếu có registration ĐÃ ĐÓNG TIỀN (firstPaymentDate != null) cùng nhóm
     if (isGroupA || isGroupB) {
-      // Tìm các registration đang active của learner
       const existingRegs = await Registration.find({
         learnerId,
-        status: { $in: ['DRAFT', 'NEW', 'PROCESSING', 'STUDYING', 'WAITING'] },
+        status: { $in: ['NEW', 'PROCESSING', 'STUDYING', 'WAITING'] },
+
+        firstPaymentDate: { $ne: null },
       }).populate('courseId', 'name code');
 
       for (const existingReg of existingRegs) {
@@ -170,12 +175,37 @@ export const createRegistration = async (req, res) => {
         const existingIsGroupA = /xe\s*máy|a1|a2/i.test(existingName);
         const existingIsGroupB = /ô\s*tô|b\s|số\s*sàn|tự\s*động/i.test(existingName);
 
-        // Cùng nhóm → block
+        // Cùng nhóm + đã đóng tiền → block
         if ((isGroupA && existingIsGroupA) || (isGroupB && existingIsGroupB)) {
           return res.status(400).json({
             status: 'error',
-            message: `Bạn đã đăng ký khóa ${existingCode || existingReg.courseId?.name}. Nhóm ${isGroupA ? 'Xe Máy' : 'Ô Tô'} chỉ được đăng ký 1 khóa.`,
+            message: `Bạn đã đóng học phí khóa ${existingCode || existingReg.courseId?.name}. Nhóm ${isGroupA ? 'Xe Máy' : 'Ô Tô'} chỉ được đăng ký 1 khóa.`,
           });
+        }
+      }
+
+      // Xóa DRAFT cũ cùng nhóm (chưa đóng tiền) khi đổi sang khóa khác trong nhóm
+      const oldDraftRegs = await Registration.find({
+        learnerId,
+        courseId: { $ne: actualCourseId },
+        status: 'DRAFT',
+        firstPaymentDate: null,
+      }).populate('courseId', 'name code');
+
+      console.log(`[CREATE REG] Tìm thấy ${oldDraftRegs.length} DRAFT cũ để kiểm tra`);
+
+      for (const oldReg of oldDraftRegs) {
+        const oldName = (oldReg.courseId?.name || '').toLowerCase();
+        const oldIsGroupA = /xe\s*máy|a1|a2/i.test(oldName);
+        const oldIsGroupB = /ô\s*tô|b\s|số\s*sàn|tự\s*động/i.test(oldName);
+
+        // Chỉ xóa DRAFT cũ nếu CÙNG NHÓM với khóa mới
+        // (A1 DRAFT + đăng ký A2 → xóa A1; B1 DRAFT + đăng ký B2 → xóa B1)
+        // A1 DRAFT + đăng ký B1 → giữ A1 (khác nhóm)
+        const sameGroup = (oldIsGroupA && isGroupA) || (oldIsGroupB && isGroupB);
+        if (sameGroup) {
+          await Registration.findByIdAndDelete(oldReg._id);
+          console.log(`[REG SWITCH] Đã xóa DRAFT cũ "${oldName}" để đổi sang "${newCourse?.name}"`);
         }
       }
     }
@@ -241,20 +271,39 @@ export const assignRegistrationByAdmin = async (req, res) => {
       return res.status(400).json({ status: 'error', message: 'User được chọn không phải học viên' });
     }
     if (!batch) return res.status(404).json({ status: 'error', message: 'Không tìm thấy lớp học (batch)' });
+    if (batch.status === 'CLOSED') {
+      return res.status(400).json({ status: 'error', message: 'Lớp học đã khóa danh sách (CLOSED). Không thể gán thêm học viên.'});
+    }
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const batchStart = new Date(batch.startDate);
+    batchStart.setHours(0, 0, 0, 0);
+    if (today >= batchStart) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Đã đến ngày khai giảng. Danh sách lớp đã được chốt, không thể thêm học viên.'
+      });
+    }
 
     // Kiểm tra loại trừ nhóm Xe Máy / Ô Tô khi gán khóa học
+    // CHỈ block nếu đã đóng tiền. DRAFT (chưa đóng) → cho phép đổi khóa cùng nhóm
     const newCourseName = (batch.courseId?.name || '').toLowerCase();
     const newCourseCode = batch.courseId?.code || '';
     const isGroupA = /xe\s*máy|a1|a2/i.test(newCourseName);
     const isGroupB = /ô\s*tô|b\s|số\s*sàn|tự\s*động/i.test(newCourseName);
 
     if (isGroupA || isGroupB) {
+      // Chỉ BLOCK nếu đã đóng tiền cùng nhóm
       const existingRegs = await Registration.find({
         learnerId,
-        status: { $in: ['DRAFT', 'NEW', 'PROCESSING', 'STUDING', 'WAITING'] },
+        status: { $in: ['DRAFT', 'NEW', 'PROCESSING', 'STUDYING', 'WAITING'] },
+        firstPaymentDate: { $ne: null },
       }).populate('courseId', 'name code');
 
       for (const existingReg of existingRegs) {
+        // [FIX] Bỏ qua lỗi nếu môn học đang check chính là môn học ta đang cố gán xếp lớp
+        if (existingReg.courseId?._id?.toString() === batch.courseId?._id?.toString()) continue;
+
         const existingName = (existingReg.courseId?.name || '').toLowerCase();
         const existingCode = existingReg.courseId?.code || '';
         const existingIsGroupA = /xe\s*máy|a1|a2/i.test(existingName);
@@ -263,9 +312,30 @@ export const assignRegistrationByAdmin = async (req, res) => {
         if ((isGroupA && existingIsGroupA) || (isGroupB && existingIsGroupB)) {
           return res.status(400).json({
             status: 'error',
-            message: `Học viên đã đăng ký khóa ${existingCode || existingReg.courseId?.name}. Nhóm ${isGroupA ? 'Xe Máy' : 'Ô Tô'} chỉ được đăng ký 1 khóa.`,
+            message: `Học viên đã đóng học phí khóa ${existingCode || existingReg.courseId?.name}. Nhóm ${isGroupA ? 'Xe Máy' : 'Ô Tô'} chỉ được đăng ký 1 khóa.`,
           });
         }
+      }
+    }
+
+    // Xóa DRAFT cũ cùng nhóm (chưa đóng tiền) khi gán khóa mới
+    const batchCourseName = (batch.courseId?.name || '').toLowerCase();
+    const batchIsGroupA = /xe\s*máy|a1|a2/i.test(batchCourseName);
+    const batchIsGroupB = /ô\s*tô|b\s|số\s*sàn|tự\s*động/i.test(batchCourseName);
+    const oldDraftRegs = await Registration.find({
+      learnerId,
+      status: 'DRAFT',
+      firstPaymentDate: null,
+    }).populate('courseId', 'name code');
+
+    for (const oldReg of oldDraftRegs) {
+      const oldName = (oldReg.courseId?.name || '').toLowerCase();
+      const oldIsGroupA = /xe\s*máy|a1|a2/i.test(oldName);
+      const oldIsGroupB = /ô\s*tô|b\s|số\s*sàn|tự\s*động/i.test(oldName);
+      const sameGroup = (oldIsGroupA && batchIsGroupA) || (oldIsGroupB && batchIsGroupB);
+      if (sameGroup) {
+        await Registration.findByIdAndDelete(oldReg._id);
+        console.log(`[ASSIGN] Đã xóa DRAFT cũ "${oldReg.courseId?.name}" khi gán khóa mới "${batch.courseId?.name}"`);
       }
     }
 
@@ -347,14 +417,52 @@ export const assignRegistrationByAdmin = async (req, res) => {
 export const unassignRegistration = async (req, res) => {
   try {
     const { id } = req.params;
-    const registration = await Registration.findById(id);
+    const registration = await Registration.findById(id).populate('batchId');
     if (!registration) {
       return res.status(404).json({ status: 'error', message: 'Không tìm thấy đăng ký' });
     }
 
+    if (registration.batchId && new Date(registration.batchId.startDate).setHours(0,0,0,0) <= new Date().setHours(0,0,0,0)) {
+      const batchStartDate = new Date(registration.batchId.startDate).toLocaleDateString('vi-VN');
+      return res.status(400).json({
+        status: 'error',
+        message: `Không thể xóa học viên khỏi lớp này vì lớp đã khai giảng từ ngày ${batchStartDate}. Nếu cần xử lý đặc biệt, vui lòng liên hệ admin hệ thống.`
+      });
+    }
+
+    const originalBatchId = registration.batchId._id;
+
     registration.batchId = null;
     registration.status = 'WAITING';
     await registration.save();
+
+    // Hủy bỏ các lịch học (booking) TRONG TƯƠNG LAI của học viên thuộc batch bị kick
+    if (originalBatchId) {
+      const now = new Date();
+      now.setHours(0, 0, 0, 0); // Hủy từ ngày hôm nay trở đi
+
+      const futureBookings = await Booking.find({
+        learnerId: registration.learnerId,
+        batchId: originalBatchId,
+        date: { $gte: now },
+        status: { $ne: 'CANCELLED' }
+      });
+
+      for (const b of futureBookings) {
+        b.status = 'CANCELLED';
+        b.instructorNote = 'Học viên đã rời danh sách lớp học.';
+        await b.save();
+
+        // Cập nhật realtime cho Giảng viên biết ca đó đã trống
+        emitScheduleUpdate({
+          instructorId: b.instructorId,
+          learnerId: b.learnerId,
+          date: b.date,
+          timeSlot: b.timeSlot,
+          status: 'CANCELLED'
+        });
+      }
+    }
 
     return res.json({
       status: 'success',
@@ -449,7 +557,7 @@ export const getMyCoursesWithProgress = async (req, res) => {
       status: { $in: ['NEW', 'PROCESSING', 'STUDYING', 'COMPLETED'] }
     })
       .populate('courseId', 'code name requiredPracticeHours')
-      .populate('batchId', 'location startDate courseId')
+      .populate('batchId', 'name location startDate courseId')
       .lean();
 
     // Map batchId từ registration -> courseId (dùng để map khi batch trong booking không tồn tại)
@@ -468,30 +576,37 @@ export const getMyCoursesWithProgress = async (req, res) => {
       learnerId: learnerObjId,
       $or: [
         { attendance: 'PRESENT' },
+        { attendance: 'ABSENT' },
         { status: 'COMPLETED', attendance: { $exists: false } }
       ]
     })
-      .select('batchId')
+      .select('batchId attendance status')
       .lean();
 
     const tempProgressMap = {};
+    const tempAbsentMap = {}; // [MỚI] Track riêng số ca vắng
     let countNoBatch = 0;
     for (const b of completedBookingsWithBatch) {
       if (!b.batchId) {
         countNoBatch++;
         continue;
       }
+      
+      const isAbsent = b.attendance === 'ABSENT';
+      
       // Lookup batch để lấy courseId (batch phải tồn tại trong DB)
       const Batch = mongoose.model('Batch');
       const batch = await Batch.findById(b.batchId).select('courseId').lean();
       if (batch?.courseId) {
         const cid = batch.courseId.toString();
         tempProgressMap[cid] = (tempProgressMap[cid] || 0) + 1;
+        if (isAbsent) tempAbsentMap[cid] = (tempAbsentMap[cid] || 0) + 1;
       } else {
         // Batch không tồn tại trong DB, thử map qua registration
         const cidFromReg = regBatchToCourse[b.batchId.toString()];
         if (cidFromReg) {
           tempProgressMap[cidFromReg] = (tempProgressMap[cidFromReg] || 0) + 1;
+          if (isAbsent) tempAbsentMap[cidFromReg] = (tempAbsentMap[cidFromReg] || 0) + 1;
         } else {
           countNoBatch++;
         }
@@ -499,6 +614,7 @@ export const getMyCoursesWithProgress = async (req, res) => {
     }
 
     // Các ca không có batch hoặc không map được: gán vào khóa đầu tiên có requiredPracticeHours > 0
+    // LƯU Ý: Vắng mặt chưa map được thì tạm thời bỏ qua không nhồi bừa, vì logic này chủ yếu do lỗi dữ liệu cũ.
     if (countNoBatch > 0) {
       const firstCourseWithRequired = registrations.find(
         (r) => r.courseId && (r.courseId.requiredPracticeHours || 0) > 0
@@ -510,9 +626,11 @@ export const getMyCoursesWithProgress = async (req, res) => {
     }
 
     const progressMapByCourseId = tempProgressMap;
+    const absentMapByCourseId = tempAbsentMap;
 
-    // Số giờ đã hoàn thành theo từng khóa (theo courseId) — mỗi khóa chỉ 1 giá trị, không cộng dồn theo số registration
+    // Số giờ đã hoàn thành theo từng khóa (theo courseId)
     const completedByCourseId = { ...progressMapByCourseId };
+    const absentByCourseId = { ...absentMapByCourseId };
 
     // [DEBUG] Log để fix tiến độ học tập - xóa sau khi ổn định
     console.log('[getMyCoursesWithProgress] learnerId:', learnerId);
@@ -538,7 +656,8 @@ export const getMyCoursesWithProgress = async (req, res) => {
       const cid = course._id.toString();
       if (courseMap.has(cid)) return;
       const requiredHours = course.requiredPracticeHours || 0;
-      const completedHours = completedByCourseId[cid] || 0;
+      const completedHours = completedByCourseId[cid] || 0; // Đã bao gồm cả Vắng
+      const absentHours = absentByCourseId[cid] || 0;
       const remainingHours = Math.max(0, requiredHours - completedHours);
       courseMap.set(cid, {
         _id: course._id,
@@ -546,9 +665,11 @@ export const getMyCoursesWithProgress = async (req, res) => {
         name: course.name,
         requiredPracticeHours: requiredHours,
         completedHours,
+        absentHours,
         remainingHours,
         isCompleted: requiredHours > 0 && remainingHours === 0,
         registrationStatus: reg.status,
+        batchName: reg.batchId?.name,
         batchLocation: reg.batchId?.location,
         startDate: reg.batchId?.startDate
       });
@@ -558,7 +679,7 @@ export const getMyCoursesWithProgress = async (req, res) => {
 
     console.log(
       '[getMyCoursesWithProgress] final courses (completedHours):',
-      courses.map((c) => ({ name: c.name, code: c.code, completedHours: c.completedHours, required: c.requiredPracticeHours }))
+      courses.map((c) => ({ name: c.name, code: c.code, completedHours: c.completedHours, absentHours: c.absentHours, required: c.requiredPracticeHours }))
     );
 
     const progress = {};
@@ -566,6 +687,7 @@ export const getMyCoursesWithProgress = async (req, res) => {
       progress[c._id] = {
         required: c.requiredPracticeHours,
         completed: c.completedHours,
+        absent: c.absentHours,
         remaining: c.remainingHours,
         isCompleted: c.isCompleted
       };
@@ -819,4 +941,4 @@ export const getFeeSubmissions = async (req, res) => {
     console.error('Error getFeeSubmissions:', error);
     res.status(500).json({ status: 'error', message: error.message });
   }
-};
+}; 

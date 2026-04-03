@@ -4,6 +4,9 @@ import Course from '../models/Course.js';
 import Registration from '../models/Registration.js';
 import Batch from '../models/Batch.js';
 import bcrypt from 'bcryptjs';
+import Booking from '../models/Booking.js';
+import { sendNotificationEmail } from '../services/email.service.js';
+import { emitScheduleUpdate } from '../services/socket.service.js';
 
 // Helper function to format user response (remove password)
 const formatUserResponse = (user) => {
@@ -181,7 +184,13 @@ export const updateUser = async (req, res) => {
     if (role) user.role = role;
     
     // Cập nhật workingLocation nếu có
-    if (workingLocation) {
+    let locationChanged = false;
+    const oldLocation = user.workingLocation;
+
+    if (workingLocation && workingLocation !== oldLocation) {
+      if (user.role === 'INSTRUCTOR') {
+        locationChanged = true;
+      }
       user.workingLocation = workingLocation;
     }
 
@@ -192,6 +201,58 @@ export const updateUser = async (req, res) => {
     }
 
     await user.save();
+
+    // [MỚI] Xử lý huỷ lịch nếu Giáo viên thay đổi khu vực công tác
+    if (locationChanged) {
+       (async () => {
+         try {
+           const now = new Date();
+           now.setDate(now.getDate() + 1);
+           now.setHours(0,0,0,0);
+           const affectedBookings = await Booking.find({
+              instructorId: user._id,
+              date: { $gte: now },
+              status: { $ne: 'CANCELLED' }
+           }).populate('learnerId', 'email fullName');
+
+           for (const b of affectedBookings) {
+              b.status = 'CANCELLED';
+              b.instructorNote = 'Hệ thống tự động huỷ lịch giao điểm do giáo viên điều chuyển khu vực công tác.';
+              await b.save();
+              
+              emitScheduleUpdate({
+                 instructorId: b.instructorId,
+                 learnerId: b.learnerId?._id,
+                 date: b.date,
+                 timeSlot: b.timeSlot,
+                 status: 'CANCELLED'
+              });
+
+              if (b.learnerId?.email) {
+                 const classStr = new Date(b.date).toLocaleDateString('vi-VN');
+                 const title = '⚠️ Thông báo huỷ lịch tập lái - Thay đổi khu vực giáo viên';
+                 const ms = `Kính gửi học viên ${b.learnerId.fullName},
+                 
+Hệ thống đã tự động huỷ ca học thực hành của bạn vào ngày ${classStr} (Ca ${b.timeSlot}) do giáo viên được điều chuyển khu vực công tác.
+Bạn vui lòng vào hệ thống để đặt lại lịch học với giáo viên khác tại khu vực của mình nhé.
+
+Trân trọng!`;
+                 await sendNotificationEmail(b.learnerId.email, title, ms).catch(() => {});
+              }
+           }
+           
+           if (affectedBookings.length > 0 && user.email) {
+              const ms = `Kính gửi Thầy/Cô ${user.fullName},
+
+Bạn đã được admin điều chuyển từ khu vực "${oldLocation || 'Không xác định'}" sang "${workingLocation}". 
+Hệ thống đã tự động huỷ ${affectedBookings.length} ca tập lái trong vòng tương lai của thầy/cô tại khu vực cũ.
+
+Trân trọng!`;
+              await sendNotificationEmail(user.email, 'Thông báo điều chuyển khu vực công tác', ms).catch(()=>{});
+           }
+         } catch(e) { console.error('Error auto canceling instructor location update:', e); }
+       })();
+    }
 
     res.json({
       status: 'success',
@@ -516,20 +577,32 @@ export const updateLearnerEnrolledCourses = async (req, res) => {
         const oldCourse = courseCodesMap.get(oldCode);
         const newCourse = courseCodesMap.get(newCode);
         if (oldCourse && newCourse) {
-          // Tìm registration cũ để cập nhật thành mới
-          const oldReg = await Registration.findOne({ 
-            learnerId: id, 
+          // Tìm registration cũ cùng nhóm (DRAFT hoặc đã đóng tiền)
+          const oldReg = await Registration.findOne({
+            learnerId: id,
             courseId: oldCourse._id,
             status: { $ne: 'CANCELLED' }
           });
-          
+
           if (oldReg) {
-            oldReg.courseId = newCourse._id;
-            // Rebuild fee plan based on new course
-            oldReg.feePlanSnapshot = buildFeePlanSnapshot(newCourse, oldReg.paymentPlanType);
-            await oldReg.save();
-          } else {
-            // Nếu không tìm thấy reg cũ (lỗi dữ liệu?), tạo cái mới
+            if (oldReg.firstPaymentDate) {
+              // Đã đóng tiền → cancel và tạo DRAFT mới
+              oldReg.status = 'CANCELLED';
+              await oldReg.save();
+            } else {
+              // Chưa đóng tiền (DRAFT) → xóa luôn
+              await Registration.findByIdAndDelete(oldReg._id);
+              console.log(`[updateEnrolledCourses] Đã xóa DRAFT cũ "${oldCourse.name}" khi đổi sang "${newCourse.name}"`);
+            }
+          }
+
+          // Tạo DRAFT mới cho khóa mới
+          const existingNew = await Registration.findOne({
+            learnerId: id,
+            courseId: newCourse._id,
+            status: { $ne: 'CANCELLED' }
+          });
+          if (!existingNew) {
             const registration = new Registration({
               learnerId: id,
               courseId: newCourse._id,
@@ -539,6 +612,7 @@ export const updateLearnerEnrolledCourses = async (req, res) => {
               feePlanSnapshot: buildFeePlanSnapshot(newCourse, 'INSTALLMENT'),
             });
             await registration.save();
+            console.log(`[updateEnrolledCourses] Đã tạo DRAFT mới "${newCourse.name}"`);
           }
         }
       }
@@ -566,6 +640,17 @@ export const updateLearnerEnrolledCourses = async (req, res) => {
         }
       }
     };
+
+    // Cleanup: Xóa tất cả DRAFT registrations cũ (chưa đóng tiền) trước khi sync mới
+    // Nếu đã đóng tiền → status đã là PROCESSING/STUDYING rồi, không bị ảnh hưởng
+    const deletedDrafts = await Registration.deleteMany({
+      learnerId: id,
+      status: 'DRAFT',
+      firstPaymentDate: null,
+    });
+    if (deletedDrafts.deletedCount > 0) {
+      console.log(`[updateEnrolledCourses] Đã xóa ${deletedDrafts.deletedCount} DRAFT cũ cho user ${id}`);
+    }
 
     await handleCategorySync(currentXeMay, requestedXeMay[0], XE_MAY_REGEX);
     await handleCategorySync(currentOTo, requestedOTo[0], O_TO_REGEX);

@@ -36,7 +36,20 @@ const bookingSchema = new mongoose.Schema({
   // --- PHẦN ĐÁNH GIÁ (UC26) ---
   rating: { type: Number, min: 1, max: 5 },
   learnerFeedback: { type: String, trim: true },
-  feedbackDate: { type: Date }
+  feedbackDate: { type: Date },
+  
+  // Các field mở rộng cho hệ thống khiếu nại
+  feedbackType: {
+    type: String,
+    enum: ['NORMAL', 'COMPLAINT'],
+    default: 'NORMAL'
+  },
+  feedbackStatus: {
+    type: String,
+    enum: ['READ', 'UNREAD'],
+    default: 'UNREAD'
+  },
+  feedbackUpdatedAt: { type: Date }
 }, {
   timestamps: true,
 });

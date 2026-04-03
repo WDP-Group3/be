@@ -240,7 +240,7 @@ export const createBooking = async (req, res) => {
 
     // D. CHECK LỊCH NGHỈ (toàn hệ thống hoặc theo khu vực của giáo viên)
     const bookingDateCheck = new Date(date);
-    bookingDateCheck.setUTCHours(0, 0, 0, 0);
+    bookingDateCheck.setHours(0, 0, 0, 0);
 
     // Lấy thông tin giáo viên để biết khu vực
     const instructor = await User.findById(instructorId).select('workingLocation').lean();
@@ -259,16 +259,26 @@ export const createBooking = async (req, res) => {
     const registration = await Registration.findOne({
       learnerId,
       status: { $in: ['STUDYING', 'PROCESSING', 'NEW'] } 
-    });
+    }).populate('batchId');
 
     if (!registration) return res.status(400).json({ status: 'error', message: 'Bạn chưa đăng ký khóa học!' });
+    if (!registration.batchId) return res.status(400).json({ status: 'error', message: 'Bạn chưa được xếp vào lớp học nào.' });
 
-    const batchId = registration.batchId;
+    // [MỚI] CHECK NGÀY KHAI GIẢNG LỚP HỌC
+    const batchStartDate = new Date(registration.batchId.startDate);
+    const bookingCheckDate = new Date(date);
+    batchStartDate.setHours(0,0,0,0);
+    bookingCheckDate.setHours(0,0,0,0);
+    if (bookingCheckDate < batchStartDate) {
+      return res.status(400).json({ status: 'error', message: `Không thể đăng ký lịch trước ngày khai giảng của lớp (${batchStartDate.toLocaleDateString('vi-VN')}).` });
+    }
+
+    const batchId = registration.batchId._id;
     const bookingDate = new Date(date);
-    bookingDate.setUTCHours(0, 0, 0, 0); 
+    bookingDate.setHours(0, 0, 0, 0); 
     const startOfDay = new Date(bookingDate);
     const endOfDay = new Date(bookingDate);
-    endOfDay.setUTCHours(23, 59, 59, 999);
+    endOfDay.setHours(23, 59, 59, 999);
 
     const isBusy = await Schedule.findOne({
       instructorId,
@@ -443,6 +453,15 @@ export const takeAttendance = async (req, res) => {
     
     await booking.save();
 
+    // Phát tín hiệu realtime cập nhật lịch học viên & giáo viên
+    emitScheduleUpdate({
+      instructorId: booking.instructorId._id,
+      learnerId: booking.learnerId._id,
+      date: booking.date,
+      timeSlot: booking.timeSlot,
+      status: status // 'COMPLETED' or 'ABSENT'
+    });
+
     // Gửi email thông báo cho học viên sau khi điểm danh
     await sendAttendanceNotificationEmail(booking);
 
@@ -532,7 +551,7 @@ Trân trọng!`;
 export const submitFeedback = async (req, res) => {
   try {
     const { id } = req.params;
-    const { rating, learnerFeedback } = req.body;
+    const { rating, learnerFeedback, feedbackType } = req.body;
 
     const booking = await Booking.findById(id);
     
@@ -552,18 +571,35 @@ export const submitFeedback = async (req, res) => {
       });
     }
 
-    // Kiểm tra đã đánh giá chưa
-    if (booking.rating) {
-      return res.status(400).json({ 
-        status: 'error', 
-        message: 'Bạn đã đánh giá buổi học này rồi.' 
-      });
-    }
+    // Kiểm tra đã đánh giá chưa (Xóa chặn đánh giá lại để hỗ trợ tính năng sửa đánh giá)
+    const isNewFeedback = !booking.rating;
+    const wasNormal = booking.feedbackType === 'NORMAL' || !booking.feedbackType;
+    const isNowComplaint = feedbackType === 'COMPLAINT';
 
     booking.rating = rating;
     booking.learnerFeedback = learnerFeedback;
-    booking.feedbackDate = new Date();
+    booking.feedbackDate = isNewFeedback ? new Date() : booking.feedbackDate;
+    booking.feedbackUpdatedAt = new Date();
+    booking.feedbackType = feedbackType || 'NORMAL';
+    booking.feedbackStatus = 'UNREAD'; // Cập nhật nội dung -> Đánh dấu chưa đọc
+    
     await booking.save();
+
+    // Gửi email cho Admin nếu chuyển thành Khiếu nại (hoặc là khiếu nại mới)
+    if (isNowComplaint && (wasNormal || isNewFeedback)) {
+       const userController = await import('../models/User.js');
+       const User = userController.default;
+       const adminUsers = await User.find({ role: 'ADMIN' });
+       for (const admin of adminUsers) {
+           if (admin.email) {
+               await sendNotificationEmail(
+                   admin.email, 
+                   '⚠️ Có 1 Đơn khiếu nại mới từ học viên', 
+                   `Hệ thống vừa nhận được 1 đơn khiếu nại chất lượng đào tạo (đánh giá ${rating} sao).\nNội dung: ${learnerFeedback || 'Không có bình luận'}\nVui lòng kiểm tra màn hình Quản lý Đánh Giá.`
+               ).catch(() => {});
+           }
+       }
+    }
 
     res.json({ status: 'success', message: 'Cảm ơn bạn đã đánh giá!' });
   } catch (error) {
@@ -763,13 +799,27 @@ Trân trọng!`;
 // 7. Admin xem tất cả feedback (View Feedback & Ratings)
 export const getAllFeedbacks = async (req, res) => {
   try {
-    const { instructorId, minRating, startDate, endDate } = req.query;
+    const { instructorId, minRating, startDate, endDate, feedbackStatus, feedbackType } = req.query;
     const filter = {};
 
     // Chỉ lấy các booking đã có feedback
     filter.rating = { $exists: true, $ne: null };
 
     if (instructorId) filter.instructorId = instructorId;
+    if (feedbackStatus && ['READ', 'UNREAD'].includes(feedbackStatus)) {
+      filter.feedbackStatus = feedbackStatus;
+    }
+    if (feedbackType && ['NORMAL', 'COMPLAINT'].includes(feedbackType)) {
+      if (feedbackType === 'NORMAL') {
+        filter.$or = [
+          { feedbackType: 'NORMAL' },
+          { feedbackType: { $exists: false } },
+          { feedbackType: null }
+        ];
+      } else {
+        filter.feedbackType = feedbackType;
+      }
+    }
     
     // Lọc theo rating (thấp hơn hoặc bằng)
     if (minRating) filter.rating = { $lte: parseInt(minRating) };
@@ -777,8 +827,16 @@ export const getAllFeedbacks = async (req, res) => {
     // Lọc theo ngày
     if (startDate || endDate) {
       filter.date = {};
-      if (startDate) filter.date.$gte = new Date(startDate);
-      if (endDate) filter.date.$lte = new Date(endDate);
+      if (startDate) {
+        const start = new Date(startDate);
+        start.setHours(0, 0, 0, 0);
+        filter.date.$gte = start;
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        filter.date.$lte = end;
+      }
     }
 
     const page = parseInt(req.query.page) || 1;
@@ -786,11 +844,11 @@ export const getAllFeedbacks = async (req, res) => {
     const skip = (page - 1) * limit;
 
     const feedbacks = await Booking.find(filter)
-      .select('rating learnerFeedback feedbackDate date timeSlot learnerId instructorId batchId')
+      .select('rating learnerFeedback feedbackDate feedbackType feedbackStatus feedbackUpdatedAt date timeSlot learnerId instructorId batchId')
       .populate('learnerId', 'fullName email phone')
       .populate('instructorId', 'fullName email phone avatar')
       .populate({ path: 'batchId', select: 'name location startDate', populate: { path: 'courseId', select: 'name code' } })
-      .sort({ feedbackDate: -1 })
+      .sort({ feedbackUpdatedAt: -1, feedbackDate: -1 })
       .skip(skip)
       .limit(limit);
 
@@ -829,6 +887,25 @@ export const getAllFeedbacks = async (req, res) => {
         ratingDistribution
       }
     });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// 8. Admin cập nhật trạng thái đọc của feedback
+export const updateFeedbackStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { feedbackStatus } = req.body;
+
+    if (!['READ', 'UNREAD'].includes(feedbackStatus)) {
+        return res.status(400).json({ status: 'error', message: 'Invalid status' });
+    }
+
+    const booking = await Booking.findByIdAndUpdate(id, { feedbackStatus }, { new: true });
+    if (!booking) return res.status(404).json({ status: 'error', message: 'Booking not found' });
+
+    res.json({ status: 'success', data: booking });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }

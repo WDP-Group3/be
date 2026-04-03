@@ -71,4 +71,11 @@ router.put('/leave-config', authenticate, requireRole('ADMIN'), salaryController
 // GET /salary/leave-usage - Xem usage nghỉ phép của instructors
 router.get('/leave-usage', authenticate, requireRole('ADMIN'), salaryController.getLeaveUsage);
 
+// ============================================
+// Routes cho nộp phạt (Admin)
+// ============================================
+router.get('/users/:id/penalties', authenticate, requireRole('ADMIN'), salaryController.getUserPenalties);
+router.post('/users/:id/penalties', authenticate, requireRole('ADMIN'), salaryController.addPenalty);
+router.delete('/penalties/:penaltyId', authenticate, requireRole('ADMIN'), salaryController.deletePenalty);
+
 export default router;

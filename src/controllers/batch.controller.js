@@ -165,6 +165,19 @@ export const updateBatch = async (req, res) => {
       return res.status(400).json({ status: 'error', message: 'Ngày kết thúc không được trước ngày bắt đầu' });
     }
 
+    // Sau khai giảng: vẫn cho sửa thông tin lớp, nhưng không cho đổi khóa học của lớp
+    // để tránh ảnh hưởng danh sách học viên đã chốt theo khóa.
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const startedDate = new Date(existingBatch.startDate);
+    startedDate.setHours(0, 0, 0, 0);
+    if (today >= startedDate && updates.courseId && String(updates.courseId) !== String(existingBatch.courseId)) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Lớp đã khai giảng, không thể đổi khóa học của lớp vì ảnh hưởng danh sách học viên.'
+      });
+    }
+
     const batch = await Batch.findByIdAndUpdate(id, updates, { new: true })
       .populate('courseId', 'code name')
       .populate('instructorIds', 'fullName phone email')
@@ -194,7 +207,7 @@ export const updateBatch = async (req, res) => {
 export const deleteBatch = async (req, res) => {
   try {
     const { id } = req.params;
-    const batch = await Batch.findByIdAndDelete(id);
+    const batch = await Batch.findById(id);
 
     if (!batch) {
       return res.status(404).json({
@@ -202,6 +215,19 @@ export const deleteBatch = async (req, res) => {
         message: 'Batch not found',
       });
     }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const startDate = new Date(batch.startDate);
+    startDate.setHours(0, 0, 0, 0);
+    if (today >= startDate) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Đã đến ngày khai giảng. Không thể xóa lớp vì danh sách đã chốt.'
+      });
+    }
+
+    await batch.deleteOne();
 
     // Hoàn tác: Reset tất cả học viên thuộc lớp này về trạng thái chờ
     await Registration.updateMany(
@@ -231,6 +257,16 @@ export const autoEnrollBatch = async (req, res) => {
 
     if (batch.status !== 'OPEN') {
       return res.status(400).json({ status: 'error', message: 'Lớp học không ở trạng thái MỞ' });
+    }
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const startDate = new Date(batch.startDate);
+    startDate.setHours(0, 0, 0, 0);
+    if (today >= startDate) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Đã đến ngày khai giảng. Danh sách lớp đã chốt, không thể xếp thêm học viên.'
+      });
     }
 
     const enrollResult = await autoEnrolllearners(batch.courseId, { batchId: batch._id });

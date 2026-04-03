@@ -2,8 +2,10 @@ import mongoose from 'mongoose';
 import Course from '../models/Course.js';
 import Registration from '../models/Registration.js';
 import Payment from '../models/Payment.js';
+import User from '../models/User.js';
 import { buildFeePlanSnapshot } from '../utils/feeHelper.js';
 import { autoEnrolllearners } from '../services/enrollment.service.js';
+import { sendNotificationEmail } from '../services/email.service.js';
 
 /**
  * @desc    Lấy danh sách courses (Hỗ trợ phân trang, tìm kiếm, lọc)
@@ -197,26 +199,59 @@ export const updateCourse = async (req, res) => {
       updates.estimatedCost = newEstimatedCost;
     }
 
-    // Cập nhật khoá học (Bỏ feeEffectiveDate logic)
+    // Cập nhật khoá học
     const course = await Course.findByIdAndUpdate(id, updates, { new: true });
 
-    // Khi giá hoặc các đợt đóng phí thay đổi, cập nhật ngay lập tức cho các registration chưa đóng đợt 1
-    if (updates.feePayments && (oldCourse.estimatedCost !== course.estimatedCost)) {
-      const registrations = await Registration.find({ courseId: id });
+    // Khi feePayments thay đổi, cập nhật cho các registration CHƯA nộp đợt 1
+    // (firstPaymentDate === null nghĩa là chưa nộp bất kỳ đợt nào)
+    const feePaymentsChanged = updates.feePayments != null;
+    if (feePaymentsChanged) {
+      const oldTotal = oldCourse.feePayments?.reduce((s, p) => s + (Number(p.amount) || 0), 0) || oldCourse.estimatedCost || 0;
+      const newTotal = course.feePayments?.reduce((s, p) => s + (Number(p.amount) || 0), 0) || course.estimatedCost || 0;
+      const hasPriceChange = oldTotal !== newTotal;
+      const hasScheduleChange = feePaymentsChanged &&
+        JSON.stringify(oldCourse.feePayments) !== JSON.stringify(course.feePayments);
 
-      for (const reg of registrations) {
-        // Kiểm tra xem đợt 1 đã đóng chưa
-        if (reg.feePlanSnapshot && reg.feePlanSnapshot.length > 0 && reg.feePlanSnapshot[0].paymented === false) {
-          // Cập nhật lại feePlanSnapshot theo giá mới/đợt mới
+      if (hasPriceChange || hasScheduleChange) {
+        // Lấy tất cả registration CHƯA nộp tiền đợt nào (firstPaymentDate === null)
+        const unpaidRegistrations = await Registration.find({
+          courseId: id,
+          firstPaymentDate: null,
+        }).populate('learnerId', 'fullName email phone');
+
+        for (const reg of unpaidRegistrations) {
+          // Cập nhật lại feePlanSnapshot
           reg.feePlanSnapshot = buildFeePlanSnapshot(course, reg.paymentPlanType);
           await reg.save();
 
-          // Cập nhật Payment liên quan
-          await Payment.updateMany(
-            { registrationId: reg._id },
-            { amount: course.estimatedCost }
-          );
+          // Gửi email thông báo cho học viên
+          if (reg.learnerId?.email) {
+            const learner = reg.learnerId;
+            let message = '';
+
+            if (hasPriceChange) {
+              const oldCost = oldTotal;
+              const newCost = newTotal;
+              const diff = newCost - oldCost;
+              message = `Học phí khóa học "${course.name}" đã được điều chỉnh.\n` +
+                `Học phí cũ: ${oldCost.toLocaleString('vi-VN')} VND\n` +
+                `Học phí mới: ${newCost.toLocaleString('vi-VN')} VND\n` +
+                `${diff > 0 ? 'Tăng' : 'Giảm'}: ${Math.abs(diff).toLocaleString('vi-VN')} VND\n\n` +
+                `Kế hoạch đóng phí đã được cập nhật. Vui lòng đăng nhập để xem chi tiết.`;
+            } else {
+              message = `Kế hoạch đóng phí khóa học "${course.name}" đã được cập nhật (thay đổi về số đợt hoặc ngày đóng tiền).\n` +
+                `Vui lòng đăng nhập để xem kế hoạch mới.`;
+            }
+
+            await sendNotificationEmail(
+              learner.email,
+              `Thông báo thay đổi học phí - ${course.name}`,
+              message
+            );
+          }
         }
+
+        console.log(`[COURSE UPDATE] Đã cập nhật và thông báo ${unpaidRegistrations.length} học viên chưa nộp tiền`);
       }
     }
 

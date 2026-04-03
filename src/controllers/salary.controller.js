@@ -5,6 +5,7 @@ import Course from '../models/Course.js';
 import User from '../models/User.js';
 import Booking from '../models/Booking.js';
 import Document from '../models/Document.js';
+import Penalty from '../models/Penalty.js';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
 import axios from 'axios';
@@ -200,10 +201,10 @@ const calculateSalary = async (userId, month, year, options = {}) => {
 
     const filteredDocs = applyCourseFilter
       ? docsInMonth.filter(doc => {
-          const reg = doc.registrationId;
-          const courseId = reg?.courseId?._id?.toString() || reg?.courseId?.toString();
-          return courseId && courseId === courseIdFilter.toString();
-        })
+        const reg = doc.registrationId;
+        const courseId = reg?.courseId?._id?.toString() || reg?.courseId?.toString();
+        return courseId && courseId === courseIdFilter.toString();
+      })
       : docsInMonth;
 
     filteredDocs.forEach(doc => {
@@ -352,22 +353,13 @@ export const createSalaryConfig = async (req, res) => {
 
     // Validate
     if (!instructorHourlyRate || instructorHourlyRate <= 0) {
-      console.warn('[Salary] 400 createSalaryConfig: invalid hourlyRate', { instructorHourlyRate });
       return res.status(400).json({ status: 'error', message: 'Lương theo giờ không hợp lệ' });
     }
 
     if (!effectiveFrom) {
-      console.warn('[Salary] 400 createSalaryConfig: missing effectiveFrom', { body: req.body });
       return res.status(400).json({ status: 'error', message: 'Ngày hiệu lực là bắt buộc' });
     }
 
-    const effectiveDate = new Date(effectiveFrom + 'T00:00:00');
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    if (effectiveDate < todayStart) {
-      console.warn('[Salary] 400 createSalaryConfig: past effectiveFrom', { effectiveFrom });
-      return res.status(400).json({ status: 'error', message: 'Ngày hiệu lực không được là ngày trong quá khứ' });
-    }
 
     const config = new SalaryConfig({
       courseCommissions: courseCommissions || [],
@@ -407,12 +399,6 @@ export const updateSalaryConfig = async (req, res) => {
     if (instructorHourlyRate) config.instructorHourlyRate = instructorHourlyRate;
     if (effectiveFrom) {
       const newEffDate = new Date(effectiveFrom + 'T00:00:00');
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-      if (newEffDate < todayStart) {
-        console.warn('[Salary] 400 updateSalaryConfig: past effectiveFrom', { effectiveFrom, id });
-        return res.status(400).json({ status: 'error', message: 'Ngày hiệu lực không được là ngày trong quá khứ' });
-      }
       config.effectiveFrom = newEffDate;
     }
     if (effectiveTo) config.effectiveTo = new Date(effectiveTo);
@@ -455,7 +441,6 @@ export const getAllSalaryConfigs = async (_req, res) => {
 export const getCoursesForSalary = async (_req, res) => {
   try {
     const courses = await Course.find({ status: 'Active' }).sort({ code: 1 }).lean();
-    console.log('[getCoursesForSalary] courses count:', courses.length, courses.map(c => c.code));
     res.json({
       status: 'success',
       data: courses
@@ -469,14 +454,13 @@ export const getCoursesForSalary = async (_req, res) => {
 // HELPER: Tính lương cho NHIỀU user cùng lúc với data đã pre-fetch
 // ============================================
 const calculateSalaryBatch = async (users, targetMonth, targetYear, options, sharedData) => {
-  const { allConfigs, courses, courseMap, bookingsByInstructor, docsByConsultant, config, courseIdFilter, leaveConfig } = sharedData;
+  const { allConfigs, courses, courseMap, bookingsByInstructor, docsByConsultant, config, courseIdFilter, leaveConfig, penaltiesByUserId } = sharedData;
   const results = [];
-
   for (const user of users) {
     const salaryData = calculateSalaryWithSharedData(
       user._id, targetMonth, targetYear, options,
       allConfigs, courses, courseMap, bookingsByInstructor, docsByConsultant, config,
-      user, leaveConfig
+      user, leaveConfig, penaltiesByUserId
     );
 
     if (salaryData) {
@@ -510,6 +494,7 @@ const calculateSalaryBatch = async (users, targetMonth, targetYear, options, sha
         totalCommission: salaryData.totalCommission,
         totalDocuments: salaryData.totalDocuments,
         leaveDeduction: salaryData.leaveDeduction || 0,
+        totalPenalty: salaryData.totalPenalty || 0,
         totalSalary: salaryData.totalSalary,
         courseCounts: courseCountMap,
         courseCountDetails: salaryData.courseCounts,
@@ -529,7 +514,7 @@ const calculateSalaryBatch = async (users, targetMonth, targetYear, options, sha
 const calculateSalaryWithSharedData = (
   userId, targetMonth, targetYear, options,
   allConfigs, courses, courseMap, bookingsByInstructor, docsByConsultant, config,
-  userObj, leaveConfig
+  userObj, leaveConfig, penaltiesByUserId
 ) => {
   const user = userObj;
   if (!user || !['INSTRUCTOR', 'CONSULTANT'].includes(user.role)) {
@@ -589,7 +574,6 @@ const calculateSalaryWithSharedData = (
   // === CONSULTANT ===
   if (user.role === 'CONSULTANT') {
     const rawDocs = docsByConsultant[userId.toString()] || [];
-    console.log(`[Salary] CONSULTANT ${user.fullName}: raw docs=${rawDocs.length}`);
     const docs = rawDocs.filter(doc => {
       const docDate = doc.createdAt ? new Date(doc.createdAt) : null;
       const regDate = doc.registrationId?.createdAt ? new Date(doc.registrationId.createdAt) : null;
@@ -599,13 +583,11 @@ const calculateSalaryWithSharedData = (
       const courseId = doc.registrationId.courseId._id?.toString() || doc.registrationId.courseId.toString();
       if (applyCourseFilter && courseId !== courseIdFilter.toString()) return false;
       return true;
-    });
-    console.log(`[Salary] CONSULTANT filtered docs=${docs.length} courseMap keys=${Object.keys(courseMap)}`);
+    });;
 
     docs.forEach(doc => {
       const reg = doc.registrationId;
       const courseId = reg.courseId._id?.toString() || reg.courseId.toString();
-      console.log(`[Salary] doc courseId=${courseId} inMap=${!!courseMap[courseId]}`);
       const docDate = doc.createdAt ? new Date(doc.createdAt) : null;
       const regDate = reg.createdAt ? new Date(reg.createdAt) : null;
       const recordDate = docDate || regDate;
@@ -642,9 +624,18 @@ const calculateSalaryWithSharedData = (
   const teachingSalary = totalTeachingHours * hourlyRate;
   const totalSalaryBeforeDeduction = teachingSalary + totalCommission;
 
+  let totalPenalty = 0;
+  const exists = penaltiesByUserId.some(item => item.user.equals(userId));
+  if (penaltiesByUserId && exists) {
+    const arr = penaltiesByUserId.filter(item =>
+      item.user.equals(userId)
+    );
+    totalPenalty = arr.reduce((sum, p) => sum + (p.amount || 0), 0);
+  }
+
   // Compute leave deduction for INSTRUCTOR only
   const leaveDeduction = computeLeaveDeduction(user, leaveConfig, targetMonth, targetYear);
-  const totalSalary = Math.max(0, totalSalaryBeforeDeduction - leaveDeduction);
+  const totalSalary = totalSalaryBeforeDeduction - leaveDeduction - totalPenalty;
 
   return {
     userId,
@@ -656,6 +647,7 @@ const calculateSalaryWithSharedData = (
     totalTeachingSessions,
     totalCommission,
     leaveDeduction,
+    totalPenalty,
     totalSalary,
     totalSalaryBeforeDeduction,
     totalDocuments,
@@ -670,11 +662,8 @@ const calculateSalaryWithSharedData = (
 // API: Lấy tổng lương tháng (Admin) - GET
 // ============================================
 export const getMonthlySummary = async (req, res) => {
-  console.log('[Salary] getMonthlySummary called', req.query);
   try {
     const { month, year, role, search, courseId, page = 1, limit = 10 } = req.query;
-    console.log(`[Salary] monthly-summary month=${month} year=${year} role=${role} courseId=${courseId} page=${page}`);
-
     const now = new Date();
     const currentMonth = now.getMonth() + 1;
     const currentYear = now.getFullYear();
@@ -709,9 +698,7 @@ export const getMonthlySummary = async (req, res) => {
       getLeaveConfigForYear(targetYear),
     ]);
 
-    console.log('[Salary DEBUG] config:', !!config, 'courses:', courses.length);
     if (!config) {
-      console.warn('[Salary] 400 monthly-summary: no salary config', { query: req.query });
       return res.status(400).json({
         status: 'error',
         message: 'Chưa có cấu hình lương. Vui lòng cấu hình trước.'
@@ -730,23 +717,29 @@ export const getMonthlySummary = async (req, res) => {
     const allInstructorIds = allUsers.filter(u => u.role === 'INSTRUCTOR').map(u => u._id);
     const allConsultantIds = allUsers.filter(u => u.role === 'CONSULTANT').map(u => u._id);
 
-    const [allBookings, allDocs] = await Promise.all([
+    const [allBookings, allDocs, allPenalties] = await Promise.all([
       allInstructorIds.length > 0
         ? Booking.find({
-            instructorId: { $in: allInstructorIds },
-            date: { $gte: startDate, $lte: endDate }
-          }).populate('learnerId', 'fullName').populate('batchId', 'courseId').lean()
+          instructorId: { $in: allInstructorIds },
+          date: { $gte: startDate, $lte: endDate }
+        }).populate('learnerId', 'fullName').populate('batchId', 'courseId').lean()
         : Promise.resolve([]),
       allConsultantIds.length > 0
         ? Document.find({
-            consultantId: { $in: allConsultantIds },
-            isDeleted: false,
-            createdAt: { $gte: startDate, $lte: endDate }
-          }).populate({
-            path: 'registrationId',
-            populate: { path: 'courseId learnerId' }
-          }).lean()
+          consultantId: { $in: allConsultantIds },
+          isDeleted: false,
+          createdAt: { $gte: startDate, $lte: endDate }
+        }).populate({
+          path: 'registrationId',
+          populate: { path: 'courseId learnerId' }
+        }).lean()
         : Promise.resolve([]),
+      allUsers.length > 0
+        ? Penalty.find({
+          user: { $in: allUsers.map(u => u._id) },
+          date: { $gte: startDate, $lte: endDate }
+        }).lean()
+        : Promise.resolve([])
     ]);
 
     // Group bookings by instructor
@@ -764,8 +757,8 @@ export const getMonthlySummary = async (req, res) => {
       if (!docsByConsultant[cid]) docsByConsultant[cid] = [];
       docsByConsultant[cid].push(doc);
     });
-
     // Tính stats trên TẤT CẢ users
+
     const sharedDataAll = {
       allConfigs,
       courses,
@@ -775,12 +768,14 @@ export const getMonthlySummary = async (req, res) => {
       config,
       courseIdFilter: courseId,
       leaveConfig,
+      penaltiesByUserId: allPenalties
     };
     const allResults = await calculateSalaryBatch(allUsers, targetMonth, targetYear, { courseIdFilter: courseId }, sharedDataAll);
     const totalStats = {
       totalSalary: allResults.reduce((s, u) => s + (u.totalSalary || 0), 0),
       totalHours: allResults.reduce((s, u) => s + (u.totalTeachingHours || 0), 0),
       totalCommission: allResults.reduce((s, u) => s + (u.totalCommission || 0), 0),
+      totalPenalty: allResults.reduce((s, u) => s + (u.totalPenalty || 0), 0),
       totalDocuments: allResults.reduce((s, u) => s + (u.totalDocuments || 0), 0),
       instructorCount: allResults.filter(u => u.role === 'INSTRUCTOR').length,
       consultantCount: allResults.filter(u => u.role === 'CONSULTANT').length,
@@ -788,9 +783,8 @@ export const getMonthlySummary = async (req, res) => {
 
     // Tính results cho paginated users (dùng lại data đã pre-fetch ở trên)
     const paginatedIds = paginatedUsers.map(u => u._id.toString());
-    const paginatedResults = allResults.filter(u => paginatedIds.includes(u.userId.toString()));
 
-    console.log(`[Salary] total=${total} results=${paginatedResults.length}`);
+    const paginatedResults = allResults.filter(u => paginatedIds.includes(u.userId.toString()));
 
     res.json({
       status: 'success',
@@ -826,7 +820,6 @@ export const getSalaryDetail = async (req, res) => {
     const { userId, month, year, courseId } = req.query;
 
     if (!userId) {
-      console.warn('[Salary] 400: missing userId', { query: req.query });
       return res.status(400).json({ status: 'error', message: 'userId là bắt buộc' });
     }
 
@@ -850,7 +843,6 @@ export const getSalaryDetail = async (req, res) => {
     ]);
 
     if (!config) {
-      console.warn('[Salary] 400 getSalaryDetail: no config', { query: req.query });
       return res.status(400).json({ status: 'error', message: 'Chưa có cấu hình lương' });
     }
 
@@ -864,13 +856,11 @@ export const getSalaryDetail = async (req, res) => {
     const startDate = new Date(targetYear, targetMonth - 1, 1);
     const endDate = new Date(targetYear, targetMonth, 0, 23, 59, 59);
 
-    const [allBookings, allDocs] = await Promise.all([
-      Booking.find({ instructorId: userId, date: { $gte: startDate, $lte: endDate } })
-        .populate('learnerId', 'fullName').populate('batchId', 'courseId').lean(),
-      Document.find({ consultantId: userId, isDeleted: false })
-        .populate({ path: 'registrationId', populate: { path: 'courseId learnerId' } }).lean(),
+    const [allBookings, allDocs, allPenalties] = await Promise.all([
+      Booking.find({ instructorId: userId, date: { $gte: startDate, $lte: endDate } }).populate('learnerId', 'fullName').populate('batchId', 'courseId').lean(),
+      Document.find({ consultantId: userId, isDeleted: false }).populate({ path: 'registrationId', populate: { path: 'courseId learnerId' } }).lean(),
+      Penalty.find({ user: userId, date: { $gte: startDate, $lte: endDate } }).lean(),
     ]);
-
     const salaryData = calculateSalaryWithSharedData(
       userId, targetMonth, targetYear, { courseIdFilter: courseId },
       allConfigs, courses, courseMap,
@@ -878,7 +868,8 @@ export const getSalaryDetail = async (req, res) => {
       { [userId]: allDocs },
       config,
       user,
-      leaveConfig
+      leaveConfig,
+      { [userId]: allPenalties }
     );
 
     if (!salaryData) {
@@ -956,11 +947,10 @@ export const getMySalary = async (req, res) => {
     const startDate = new Date(targetYear, targetMonth - 1, 1);
     const endDate = new Date(targetYear, targetMonth, 0, 23, 59, 59);
 
-    const [allBookings, allDocs] = await Promise.all([
-      Booking.find({ instructorId: userId, date: { $gte: startDate, $lte: endDate } })
-        .populate('learnerId', 'fullName').populate('batchId', 'courseId').lean(),
-      Document.find({ consultantId: userId, isDeleted: false })
-        .populate({ path: 'registrationId', populate: { path: 'courseId learnerId' } }).lean(),
+    const [allBookings, allDocs, allPenalties] = await Promise.all([
+      Booking.find({ instructorId: userId, date: { $gte: startDate, $lte: endDate } }).populate('learnerId', 'fullName').populate('batchId', 'courseId').lean(),
+      Document.find({ consultantId: userId, isDeleted: false }).populate({ path: 'registrationId', populate: { path: 'courseId learnerId' } }).lean(),
+      Penalty.find({ user: userId, date: { $gte: startDate, $lte: endDate } }).lean(),
     ]);
 
     const salaryData = calculateSalaryWithSharedData(
@@ -970,7 +960,8 @@ export const getMySalary = async (req, res) => {
       { [userId]: allDocs },
       config,
       user,
-      leaveConfig
+      leaveConfig,
+      { [userId]: allPenalties }
     );
 
     await SalaryReport.findOneAndUpdate(
@@ -1048,11 +1039,10 @@ export const exportMySalaryCSV = async (req, res) => {
     const startDate = new Date(targetYear, targetMonth - 1, 1);
     const endDate = new Date(targetYear, targetMonth, 0, 23, 59, 59);
 
-    const [allBookings, allDocs] = await Promise.all([
-      Booking.find({ instructorId: userId, date: { $gte: startDate, $lte: endDate } })
-        .populate('learnerId', 'fullName').populate('batchId', 'courseId').lean(),
-      Document.find({ consultantId: userId, isDeleted: false })
-        .populate({ path: 'registrationId', populate: { path: 'courseId learnerId' } }).lean(),
+    const [allBookings, allDocs, allPenalties] = await Promise.all([
+      Booking.find({ instructorId: userId, date: { $gte: startDate, $lte: endDate } }).populate('learnerId', 'fullName').populate('batchId', 'courseId').lean(),
+      Document.find({ consultantId: userId, isDeleted: false }).populate({ path: 'registrationId', populate: { path: 'courseId learnerId' } }).lean(),
+      Penalty.find({ user: userId, date: { $gte: startDate, $lte: endDate } }).lean(),
     ]);
 
     const leaveConfig = await getLeaveConfigForYear(targetYear);
@@ -1063,7 +1053,8 @@ export const exportMySalaryCSV = async (req, res) => {
       { [userId]: allDocs },
       config,
       user,
-      leaveConfig
+      leaveConfig,
+      { [userId]: allPenalties }
     );
 
     if (!salaryData) {
@@ -1093,7 +1084,6 @@ export const getUserSalaryOverride = async (req, res) => {
     }
 
     if (!['INSTRUCTOR', 'CONSULTANT'].includes(user.role)) {
-      console.warn('[Salary] 400: invalid user role', { userId: id, role: user?.role });
       return res.status(400).json({ status: 'error', message: 'User không phải Instructor/Consultant' });
     }
 
@@ -1120,7 +1110,6 @@ export const updateUserSalaryOverride = async (req, res) => {
     }
 
     if (!['INSTRUCTOR', 'CONSULTANT'].includes(user.role)) {
-      console.warn('[Salary] 400: invalid user role', { userId: id, role: user?.role });
       return res.status(400).json({ status: 'error', message: 'User không phải Instructor/Consultant' });
     }
 
@@ -1175,11 +1164,9 @@ export const updateLeaveConfig = async (req, res) => {
     const targetYear = year || new Date().getFullYear();
 
     if (paidLeaveDaysPerYear !== undefined && (paidLeaveDaysPerYear < 0 || !Number.isFinite(paidLeaveDaysPerYear))) {
-      console.warn('[Salary] 400 updateLeaveConfig: invalid paidLeaveDaysPerYear', { paidLeaveDaysPerYear });
       return res.status(400).json({ status: 'error', message: 'Số ngày nghỉ phép không hợp lệ' });
     }
     if (leaveDeductionPerDay !== undefined && (leaveDeductionPerDay < 0 || !Number.isFinite(leaveDeductionPerDay))) {
-      console.warn('[Salary] 400 updateLeaveConfig: invalid leaveDeductionPerDay', { leaveDeductionPerDay });
       return res.status(400).json({ status: 'error', message: 'Số tiền khấu trừ không hợp lệ' });
     }
 
@@ -1620,7 +1607,6 @@ export const exportAllSalaryExcel = async (req, res) => {
     ]);
 
     if (!config) {
-      console.warn('[Salary] 400 exportAllSalaryExcel: no config', { query: req.query });
       return res.status(400).json({ status: 'error', message: 'Chưa có cấu hình lương' });
     }
 
@@ -1630,7 +1616,7 @@ export const exportAllSalaryExcel = async (req, res) => {
     const startDate = new Date(targetYear, targetMonth - 1, 1);
     const endDate = new Date(targetYear, targetMonth, 0, 23, 59, 59);
 
-    const [allBookings, allDocs] = await Promise.all([
+    const [allBookings, allDocs, allPenalties] = await Promise.all([
       Booking.find({
         instructorId: { $in: users.map(u => u._id) },
         date: { $gte: startDate, $lte: endDate },
@@ -1700,7 +1686,6 @@ export const exportSalaryCSV = async (req, res) => {
     const { userId, month, year, courseId } = req.query;
 
     if (!userId) {
-      console.warn('[Salary] 400: missing userId', { query: req.query });
       return res.status(400).json({ status: 'error', message: 'userId là bắt buộc' });
     }
 
@@ -1725,7 +1710,6 @@ export const exportSalaryCSV = async (req, res) => {
     ]);
 
     if (!config) {
-      console.warn('[Salary] 400 exportSalaryCSV: no config', { query: req.query });
       return res.status(400).json({ status: 'error', message: 'Chưa có cấu hình lương' });
     }
 
@@ -1740,11 +1724,10 @@ export const exportSalaryCSV = async (req, res) => {
     const endDate = new Date(targetYear, targetMonth, 0, 23, 59, 59);
 
     // Pre-fetch bookings & documents
-    const [allBookings, allDocs] = await Promise.all([
-      Booking.find({ instructorId: userId, date: { $gte: startDate, $lte: endDate } })
-        .populate('learnerId', 'fullName').populate('batchId', 'courseId').lean(),
-      Document.find({ consultantId: userId, isDeleted: false })
-        .populate({ path: 'registrationId', populate: { path: 'courseId learnerId' } }).lean(),
+    const [allBookings, allDocs, allPenalties] = await Promise.all([
+      Booking.find({ instructorId: userId, date: { $gte: startDate, $lte: endDate } }).populate('learnerId', 'fullName').populate('batchId', 'courseId').lean(),
+      Document.find({ consultantId: userId, isDeleted: false }).populate({ path: 'registrationId', populate: { path: 'courseId learnerId' } }).lean(),
+      Penalty.find({ user: userId, date: { $gte: startDate, $lte: endDate } }).lean(),
     ]);
 
     const salaryData = calculateSalaryWithSharedData(
@@ -1790,6 +1773,73 @@ export const exportSalaryCSV = async (req, res) => {
     res.send(excelBuffer);
   } catch (error) {
     console.error('[Salary] Export Excel ERROR:', error);
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+
+// ============================================
+// API: PENALTIES
+// ============================================
+export const getUserPenalties = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { month, year } = req.query;
+
+    let filter = { user: id };
+
+    if (month && year) {
+      const tMonth = parseInt(month);
+      const tYear = parseInt(year);
+      const startDate = new Date(tYear, tMonth - 1, 1);
+      const endDate = new Date(tYear, tMonth, 0, 23, 59, 59);
+      filter.date = { $gte: startDate, $lte: endDate };
+    }
+
+    const penalties = await Penalty.find(filter).sort({ date: -1 }).lean();
+    res.json({ status: 'success', data: penalties });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+export const addPenalty = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { amount, reason, date } = req.body;
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ status: 'error', message: 'Số tiền phạt không hợp lệ' });
+    }
+    if (!reason || !reason.trim()) {
+      return res.status(400).json({ status: 'error', message: 'Lý do nộp phạt là bắt buộc' });
+    }
+
+    const penalty = new Penalty({
+      user: id,
+      amount,
+      reason,
+      date: date ? new Date(date) : new Date(),
+      createdBy: req.user?.id || req.userId
+    });
+
+    await penalty.save();
+
+    res.json({ status: 'success', message: 'Thêm nộp phạt thành công', data: penalty });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+export const deletePenalty = async (req, res) => {
+  try {
+    const { penaltyId } = req.params;
+    const penalty = await Penalty.findByIdAndDelete(penaltyId);
+    if (!penalty) {
+      return res.status(404).json({ status: 'error', message: 'Không tìm thấy nộp phạt' });
+    }
+    res.json({ status: 'success', message: 'Đã hủy nộp phạt' });
+  } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
 };

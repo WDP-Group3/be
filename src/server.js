@@ -14,6 +14,7 @@ import {
   startAttendanceReminderCron,
   sendInstructorBusyScheduleReminder,
   startPendingRequestsReminderCron,
+  startDueDateReminderCron,
   startNotificationExpirationCron
 } from "./services/cron.job.js";
 import { initSocket } from "./services/socket.service.js";
@@ -46,7 +47,10 @@ app.use(
 // Quan trọng: Phải đặt app.use(express.json()) ở phía dưới CORS
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
+app.use((req, res, next) => {
+  console.log(`${req.method} ${req.url}`);
+  next();
+});
 // Kết nối MongoDB
 connectDB();
 
@@ -66,6 +70,9 @@ startAttendanceReminderCron();
 
 // Khởi động cron job nhắc Admin xử lý đơn từ
 startPendingRequestsReminderCron();
+
+// Khởi động cron job nhắc học viên hạn đóng phí (09:00 mỗi ngày)
+startDueDateReminderCron();
 
 // Khởi động cron job nhắc Admin thông báo sắp hết hạn
 startNotificationExpirationCron();
@@ -157,17 +164,17 @@ app.get("/test-email-attendance", async (req, res) => {
         hour: 17,
         minute: 0,
       };
-      
+
       const vietnamDate = new Date(booking.date.toLocaleString("en-US", { timeZone: "Asia/Ho_Chi_Minh" }));
       const classYear = vietnamDate.getFullYear();
       const classMonth = String(vietnamDate.getMonth() + 1).padStart(2, '0');
       const classDateStr = String(vietnamDate.getDate()).padStart(2, '0');
       const classHrStr = String(hour).padStart(2, '0');
       const classMnStr = String(minute).padStart(2, '0');
-      
+
       const absoluteEndTimeStr = `${classYear}-${classMonth}-${classDateStr}T${classHrStr}:${classMnStr}:00+07:00`;
       const classEndTime = new Date(absoluteEndTimeStr);
-      
+
       const reminderTime = new Date(classEndTime.getTime() + 5 * 60 * 1000);
       const now = new Date();
 
