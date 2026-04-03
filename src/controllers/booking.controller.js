@@ -810,7 +810,15 @@ export const getAllFeedbacks = async (req, res) => {
       filter.feedbackStatus = feedbackStatus;
     }
     if (feedbackType && ['NORMAL', 'COMPLAINT'].includes(feedbackType)) {
-      filter.feedbackType = feedbackType;
+      if (feedbackType === 'NORMAL') {
+        filter.$or = [
+          { feedbackType: 'NORMAL' },
+          { feedbackType: { $exists: false } },
+          { feedbackType: null }
+        ];
+      } else {
+        filter.feedbackType = feedbackType;
+      }
     }
     
     // Lọc theo rating (thấp hơn hoặc bằng)
