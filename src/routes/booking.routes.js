@@ -8,7 +8,8 @@ import {
   submitFeedback,
   getBookingStatus,
   testSendAttendanceReminder,
-  getAllFeedbacks
+  getAllFeedbacks,
+  updateFeedbackStatus
 } from '../controllers/booking.controller.js';
 import { authenticate } from '../middleware/auth.middleware.js';
 
@@ -23,6 +24,7 @@ router.get('/status', authenticate, getBookingStatus);
 
 // [ADMIN] Lấy tất cả feedback (View Feedback & Ratings)
 router.get('/feedbacks', authenticate, getAllFeedbacks);
+router.patch('/feedbacks/:id/status', authenticate, updateFeedbackStatus);
 
 // [TEST] Endpoint gửi mail nhắc điểm danh (chỉ dùng khi dev)
 router.post('/test-attendance-reminder', testSendAttendanceReminder);

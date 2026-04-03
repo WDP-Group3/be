@@ -25,7 +25,17 @@ const feedbackSchema = new mongoose.Schema({
         type: Date,
         default: Date.now,
     },
-});
+    type: {
+        type: String,
+        enum: ['NORMAL', 'COMPLAINT'],
+        default: 'NORMAL',
+    },
+    status: {
+        type: String,
+        enum: ['UNREAD', 'READ'],
+        default: 'UNREAD',
+    }
+}, { timestamps: true });
 
 const Feedback = mongoose.model('Feedback', feedbackSchema);
 

@@ -1,6 +1,65 @@
 import LearningLocation from '../models/LearningLocation.js';
 import User from '../models/User.js';
 import mongoose from 'mongoose';
+import Booking from '../models/Booking.js';
+import { sendNotificationEmail } from '../services/email.service.js';
+import { emitScheduleUpdate } from '../services/socket.service.js';
+
+const getTomorrowStart = () => {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  d.setHours(0, 0, 0, 0);
+  return d;
+};
+
+const cancelFutureBookingsForInstructorLocationMove = async (instructor, oldLocation, newLocation) => {
+  if (!instructor?._id) return 0;
+
+  const effectiveFrom = getTomorrowStart();
+  const affectedBookings = await Booking.find({
+    instructorId: instructor._id,
+    date: { $gte: effectiveFrom },
+    status: { $ne: 'CANCELLED' }
+  }).populate('learnerId', 'email fullName');
+
+  for (const b of affectedBookings) {
+    b.status = 'CANCELLED';
+    b.instructorNote = 'Hệ thống tự động huỷ lịch do giáo viên điều chuyển khu vực công tác.';
+    await b.save();
+
+    emitScheduleUpdate({
+      instructorId: b.instructorId,
+      learnerId: b.learnerId?._id,
+      date: b.date,
+      timeSlot: b.timeSlot,
+      status: 'CANCELLED'
+    });
+
+    if (b.learnerId?.email) {
+      const classStr = new Date(b.date).toLocaleDateString('vi-VN');
+      const title = '⚠️ Thông báo huỷ lịch tập lái - Thay đổi khu vực giáo viên';
+      const msg = `Kính gửi học viên ${b.learnerId.fullName},
+
+Lịch học của bạn vào ngày ${classStr} (Ca ${b.timeSlot}) đã được huỷ do giáo viên được điều chuyển khu vực công tác.
+Vui lòng vào hệ thống để đăng ký lại lịch học phù hợp.
+
+Trân trọng!`;
+      await sendNotificationEmail(b.learnerId.email, title, msg).catch(() => {});
+    }
+  }
+
+  if (affectedBookings.length > 0 && instructor.email) {
+    const teacherMsg = `Kính gửi Thầy/Cô ${instructor.fullName},
+
+Bạn đã được điều chuyển từ khu vực "${oldLocation || 'Không xác định'}" sang "${newLocation}".
+Hệ thống đã tự động huỷ ${affectedBookings.length} ca học từ ngày ${effectiveFrom.toLocaleDateString('vi-VN')} trở đi tại khu vực cũ.
+
+Trân trọng!`;
+    await sendNotificationEmail(instructor.email, 'Thông báo điều chuyển khu vực công tác', teacherMsg).catch(() => {});
+  }
+
+  return affectedBookings.length;
+};
 
 // Lấy danh sách địa điểm học (cho dropdown / Schedule)
 export const getLocations = async (req, res) => {
@@ -73,7 +132,9 @@ export const create = async (req, res) => {
       googleMapAddress: (googleMapAddress || '').trim(),
       instructors: Array.isArray(instructors) 
         ? instructors.reduce((acc, curr) => {
-            if (curr.instructorId && curr.courseId && !acc.find(i => String(i.instructorId) === String(curr.instructorId))) {
+            const key = `${String(curr.instructorId)}::${String(curr.courseId)}`;
+            const exists = acc.some(i => `${String(i.instructorId)}::${String(i.courseId)}` === key);
+            if (curr.instructorId && curr.courseId && !exists) {
               acc.push(curr);
             }
             return acc;
@@ -83,6 +144,7 @@ export const create = async (req, res) => {
     const doc = await LearningLocation.create(normalized);
     if (doc.instructors && doc.instructors.length > 0) {
       const instructorIds = doc.instructors.map((i) => i.instructorId);
+      const usersBeforeMove = await User.find({ _id: { $in: instructorIds } }).select('_id fullName email workingLocation').lean();
       await LearningLocation.updateMany(
         { _id: { $ne: doc._id }, 'instructors.instructorId': { $in: instructorIds } },
         { $pull: { instructors: { instructorId: { $in: instructorIds } } } }
@@ -91,6 +153,10 @@ export const create = async (req, res) => {
         { _id: { $in: instructorIds } },
         { $set: { workingLocation: doc.areaName } }
       );
+      const movedUsers = usersBeforeMove.filter((u) => String(u.workingLocation || '') !== String(doc.areaName));
+      for (const u of movedUsers) {
+        await cancelFutureBookingsForInstructorLocationMove(u, u.workingLocation, doc.areaName);
+      }
     }
     const populated = await LearningLocation.findById(doc._id)
       .populate('instructors.instructorId', 'fullName email phone')
@@ -115,14 +181,14 @@ export const update = async (req, res) => {
 
     if (Array.isArray(instructors)) {
       const validInstructors = [];
-      const seenInstIds = new Set();
+      const seenPairs = new Set();
       instructors.forEach((i) => {
         const instId = i.instructorId?._id || i.instructorId;
         const courseId = i.courseId?._id || i.courseId;
         if (instId && courseId) {
-          const idStr = String(instId);
-          if (!seenInstIds.has(idStr)) {
-            seenInstIds.add(idStr);
+          const pairKey = `${String(instId)}::${String(courseId)}`;
+          if (!seenPairs.has(pairKey)) {
+            seenPairs.add(pairKey);
             validInstructors.push({ instructorId: instId, courseId });
           }
         }
@@ -133,6 +199,7 @@ export const update = async (req, res) => {
 
       // Gỡ thầy khỏi địa điểm khác nếu thầy chuyển sang đây
       if (newInstructorIds.length > 0) {
+        const usersBeforeMove = await User.find({ _id: { $in: newInstructorIds } }).select('_id fullName email workingLocation').lean();
         await LearningLocation.updateMany(
           { _id: { $ne: id }, 'instructors.instructorId': { $in: newInstructorIds } },
           { $pull: { instructors: { instructorId: { $in: newInstructorIds } } } }
@@ -141,6 +208,10 @@ export const update = async (req, res) => {
           { _id: { $in: newInstructorIds } },
           { $set: { workingLocation: doc.areaName } }
         );
+        const movedUsers = usersBeforeMove.filter((u) => String(u.workingLocation || '') !== String(doc.areaName));
+        for (const u of movedUsers) {
+          await cancelFutureBookingsForInstructorLocationMove(u, u.workingLocation, doc.areaName);
+        }
       }
 
       // Cập nhật workingLocation cho thầy bị gỡ (nếu còn ở nơi khác thì giữ, không thì null)
@@ -234,13 +305,21 @@ export const addInstructor = async (req, res) => {
       );
     }
 
-    loc.instructors = loc.instructors.filter((i) => i.instructorId.toString() !== instructorId);
-    loc.instructors.push({ instructorId: instructorObjId, courseId: courseObjId });
+    const existsInLocation = loc.instructors.some(
+      (i) => String(i.instructorId) === String(instructorObjId) && String(i.courseId) === String(courseObjId)
+    );
+    if (!existsInLocation) {
+      loc.instructors.push({ instructorId: instructorObjId, courseId: courseObjId });
+    }
     await loc.save();
 
+    const userBefore = await User.findById(instructorObjId).select('_id fullName email workingLocation').lean();
     await User.findByIdAndUpdate(instructorObjId, {
       workingLocation: loc.areaName,
     });
+    if (userBefore && String(userBefore.workingLocation || '') !== String(loc.areaName)) {
+      await cancelFutureBookingsForInstructorLocationMove(userBefore, userBefore.workingLocation, loc.areaName);
+    }
 
     const populated = await LearningLocation.findById(loc._id)
       .populate('instructors.instructorId', 'fullName email phone')
