@@ -33,7 +33,7 @@ const incrementEmergencyLeave = async (instructorId) => {
 // Create a new request
 export const createRequest = async (req, res) => {
     try {
-        const { type, reason, expectedPayDate, paymentBatch, batchCourse, registrationId, metadata } = req.body;
+        const { type, reason, expectedPayDate, paymentBatch, batchCourse, registrationId, metadata, evidenceImage } = req.body;
         const userId = req.userId;
 
         if (!type || !reason) {
@@ -102,7 +102,8 @@ export const createRequest = async (req, res) => {
             batchCourse,
             registrationId,
             status: user.role === 'ADMIN' ? 'APPROVED' : 'PENDING',
-            metadata
+            metadata,
+            evidenceImage
         });
 
         await newRequest.save();
@@ -143,7 +144,13 @@ export const getAllRequests = async (req, res) => {
         const skip = (page - 1) * limit;
 
         const filter = {};
-        if (type) filter.type = type;
+        if (type) {
+            if (type.includes(',')) {
+                filter.type = { $in: type.split(',') };
+            } else {
+                filter.type = type;
+            }
+        }
         if (status) filter.status = status;
 
         const requests = await Request.find(filter)
@@ -485,6 +492,81 @@ Trân trọng!`
                     }
                 } catch (err) {
                     console.error('Lỗi khi gửi email ngầm (REJECTED):', err);
+                }
+            })();
+        }
+
+        // =========================================================================================
+        // [BLOCK 1] Gửi email cho sinh viên khi đơn LATE_PAYMENT (Xin nộp muộn) thay đổi trạng thái
+        // =========================================================================================
+        if (request.type === 'LATE_PAYMENT' && requestToUpdate.status !== status) {
+            (async () => {
+                try {
+                    const learnerInfo = await User.findById(request.user);
+                    if (learnerInfo?.email) {
+                        const emailTitle = status === 'APPROVED' 
+                            ? '✅ Thông báo: Đơn xin nộp muộn học phí đã được duyệt'
+                            : '❌ Thông báo: Đơn xin nộp muộn học phí đã bị từ chối';
+                        
+                        const expectedDateStr = request.expectedPayDate ? new Date(request.expectedPayDate).toLocaleDateString('vi-VN') : 'N/A';
+                        
+                        const emailBody = `Kính gửi Học viên ${learnerInfo.fullName},
+
+Đơn xin nộp muộn học phí của bạn ${status === 'APPROVED' ? 'đã được admin duyệt.' : 'RẤT TIẾC đã bị từ chối.'}
+
+Thông tin đơn:
+- Lớp/Khóa: ${request.batchCourse || 'N/A'}
+- Đợt nộp: ${request.paymentBatch || 'N/A'}
+- Thời gian dự kiến nộp: ${expectedDateStr}
+- Lý do: ${request.reason}
+
+${status === 'APPROVED' ? 'Vui lòng hoàn thành học phí đúng thời hạn đã cam kết.' : 'Vui lòng nộp học phí theo đúng quy định để không ảnh hưởng đến việc học.'}
+
+Nếu có bất kỳ thắc mắc nào, vui lòng liên hệ bộ phận hỗ trợ:
+- Link Facebook: https://www.facebook.com/minhhoa.ngotran/
+- SĐT/Zalo: 09668881862
+
+Trân trọng!`;
+
+                        await sendNotificationEmail(learnerInfo.email, emailTitle, emailBody);
+                    }
+                } catch (err) {
+                    console.error('Lỗi khi gửi email ngầm (LATE_PAYMENT):', err);
+                }
+            })();
+        }
+
+        // =========================================================================================
+        // [BLOCK 2] Gửi email cho sinh viên khi đơn SUPPORT (Hỗ trợ) thay đổi trạng thái
+        // =========================================================================================
+        if (request.type === 'SUPPORT' && requestToUpdate.status !== status) {
+            (async () => {
+                try {
+                    const learnerInfo = await User.findById(request.user);
+                    if (learnerInfo?.email) {
+                        const emailTitle = status === 'APPROVED' 
+                            ? '✅ Thông báo: Yêu cầu hỗ trợ đã được admin xử lý'
+                            : '❌ Thông báo: Yêu cầu hỗ trợ đã bị từ chối';
+                        
+                        const emailBody = `Kính gửi Học viên ${learnerInfo.fullName},
+
+Yêu cầu hỗ trợ của bạn ${status === 'APPROVED' ? 'đã được admin xử lý.' : 'RẤT TIẾC đã bị từ chối.'}
+
+Nội dung yêu cầu của bạn:
+- Lý do / Nội dung: ${request.reason}
+
+${status === 'APPROVED' ? 'Mong rằng sự hỗ trợ này đã giải quyết được vấn đề của bạn.' : 'Vui lòng liên hệ trực tiếp bộ phận hỗ trợ nếu bạn cần giải đáp thêm.'}
+
+Thông tin bộ phận hỗ trợ:
+- Link Facebook: https://www.facebook.com/minhhoa.ngotran/
+- SĐT/Zalo: 09668881862
+
+Trân trọng!`;
+
+                        await sendNotificationEmail(learnerInfo.email, emailTitle, emailBody);
+                    }
+                } catch (err) {
+                    console.error('Lỗi khi gửi email ngầm (SUPPORT):', err);
                 }
             })();
         }
