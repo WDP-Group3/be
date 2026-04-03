@@ -6,6 +6,7 @@ import User from '../models/User.js';
 import Transaction from '../models/Transaction.js';
 import { enrollSinglelearner } from '../services/enrollment.service.js';
 import { buildFeePlanSnapshot } from '../utils/feeHelper.js';
+import { addDays } from '../utils/dateHelper.js';
 
 const getFeePlanFromRegistration = (registration) => {
   const course = registration?.batchId?.courseId;
@@ -76,12 +77,6 @@ export const recalculateUpcomingDueDates = async (registrationId, lastPaidAt) =>
   const reg = await Registration.findById(registrationId)
     .select('+firstPaymentDate');
   if (!reg || !Array.isArray(reg.feePlanSnapshot) || reg.feePlanSnapshot.length === 0) return;
-
-  const addDays = (date, days) => {
-    const result = new Date(date);
-    result.setDate(result.getDate() + (Number(days) || 0));
-    return result;
-  };
 
   // Bước 1: Tìm ngày đóng của từng đợt từ bảng Payment
   const payments = await Payment.find({ registrationId })

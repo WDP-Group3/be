@@ -15,7 +15,8 @@ import {
   sendInstructorBusyScheduleReminder,
   startPendingRequestsReminderCron,
   startDueDateReminderCron,
-  startNotificationExpirationCron
+  startNotificationExpirationCron,
+  startDraftCleanupCron,
 } from "./services/cron.job.js";
 import { initSocket } from "./services/socket.service.js";
 import Booking from "./models/Booking.js";
@@ -76,6 +77,8 @@ startDueDateReminderCron();
 
 // Khởi động cron job nhắc Admin thông báo sắp hết hạn
 startNotificationExpirationCron();
+// Khởi động cron job dọn DRAFT quá hạn (01:00 mỗi ngày)
+startDraftCleanupCron();
 
 // Routes
 app.get("/", (req, res) => {
@@ -253,6 +256,21 @@ Trân trọng!`;
       emailsSent: reminderCount,
       instructorEmails,
       learnerEmails,
+    });
+  } catch (error) {
+    res.status(500).json({ status: "error", message: error.message });
+  }
+});
+
+// [TEST] Route chạy thủ công draft cleanup — gọi bằng trình duyệt
+app.get("/test-draft-cleanup", async (_req, res) => {
+  try {
+    // Import động để tránh circular dependency lúc startup
+    const { processDraftRegistrations } = await import("./services/cron.job.js");
+    await processDraftRegistrations();
+    res.json({
+      status: "success",
+      message: "✅ Test draft cleanup hoàn tất! Xem log backend để chi tiết.",
     });
   } catch (error) {
     res.status(500).json({ status: "error", message: error.message });
