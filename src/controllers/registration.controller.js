@@ -423,7 +423,11 @@ export const unassignRegistration = async (req, res) => {
     }
 
     if (registration.batchId && new Date(registration.batchId.startDate).setHours(0,0,0,0) <= new Date().setHours(0,0,0,0)) {
-      return res.status(400).json({ status: 'error', message: 'Không thể xóa học viên khỏi lớp đã hoặc đang khai giảng.' });
+      const batchStartDate = new Date(registration.batchId.startDate).toLocaleDateString('vi-VN');
+      return res.status(400).json({
+        status: 'error',
+        message: `Không thể xóa học viên khỏi lớp này vì lớp đã khai giảng từ ngày ${batchStartDate}. Nếu cần xử lý đặc biệt, vui lòng liên hệ admin hệ thống.`
+      });
     }
 
     const originalBatchId = registration.batchId._id;
@@ -553,7 +557,7 @@ export const getMyCoursesWithProgress = async (req, res) => {
       status: { $in: ['NEW', 'PROCESSING', 'STUDYING', 'COMPLETED'] }
     })
       .populate('courseId', 'code name requiredPracticeHours')
-      .populate('batchId', 'location startDate courseId')
+      .populate('batchId', 'name location startDate courseId')
       .lean();
 
     // Map batchId từ registration -> courseId (dùng để map khi batch trong booking không tồn tại)
@@ -665,6 +669,7 @@ export const getMyCoursesWithProgress = async (req, res) => {
         remainingHours,
         isCompleted: requiredHours > 0 && remainingHours === 0,
         registrationStatus: reg.status,
+        batchName: reg.batchId?.name,
         batchLocation: reg.batchId?.location,
         startDate: reg.batchId?.startDate
       });
