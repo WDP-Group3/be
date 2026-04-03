@@ -46,6 +46,9 @@ const requestSchema = new mongoose.Schema(
         // For extensibility
         metadata: {
             type: mongoose.Schema.Types.Mixed,
+        },
+        evidenceImage: {
+            type: String,
         }
     },
     {
