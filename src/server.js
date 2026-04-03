@@ -66,6 +66,9 @@ startAttendanceReminderCron();
 // Khởi động cron job nhắc Admin xử lý đơn từ
 startPendingRequestsReminderCron();
 
+// Khởi động cron job nhắc Admin thông báo sắp hết hạn
+startNotificationExpirationCron();
+
 // Routes
 app.get("/", (req, res) => {
   res.json({

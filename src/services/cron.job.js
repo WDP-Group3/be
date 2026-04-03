@@ -97,6 +97,67 @@ Trân trọng!`
   });
 };
 
+// [CRON JOB] Nhắc nhở Admin về các thông báo sắp hết hạn (còn 2 ngày)
+export const startNotificationExpirationCron = () => {
+  console.log('⏰ Cron job "Notification Expiration Reminder" đã khởi động - Chạy lúc 07:00 mỗi ngày');
+  
+  // Chạy lúc 07:00 sáng mỗi ngày
+  cron.schedule('0 7 * * *', async () => {
+    console.log('🔔 [CRON NOTIF] Đang kiểm tra các thông báo sắp hết hạn...');
+    try {
+      const now = new Date();
+      const warningThreshold = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000); // 2 ngày từ bây giờ
+      
+      // Tìm các thông báo sẽ hết hạn trong vòng 2 ngày tới
+      // và chưa gửi cảnh báo
+      const expiringNotifs = await Notification.find({
+        expireAt: { $lte: warningThreshold, $gt: now },
+        expirationWarningSent: { $ne: true }
+      });
+
+      if (expiringNotifs.length > 0) {
+        const admins = await User.find({ role: 'ADMIN' });
+        
+        for (const notif of expiringNotifs) {
+          const remainingTime = Math.ceil((notif.expireAt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
+          
+          for (const admin of admins) {
+            if (admin.email) {
+              await sendNotificationEmail(
+                admin.email,
+                `📢 [CẢNH BÁO] Thông báo sắp hết hạn: ${notif.title}`,
+                `Kính gửi Admin ${admin.fullName},
+                
+Hệ thống xin thông báo một thông báo quan trọng sắp hết hiệu lực và sẽ tự động bị xóa sau ${remainingTime} ngày nữa.
+
+THÔNG TIN CHI TIẾT:
+- Tiêu đề: ${notif.title}
+- Nội dung: ${notif.message.substring(0, 100)}${notif.message.length > 100 ? '...' : ''}
+- Ngày hết hạn: ${notif.expireAt.toLocaleString('vi-VN')}
+- Thời gian còn lại: ${remainingTime} ngày
+
+Hệ thống sẽ TỰ ĐỘNG XÓA bỏ thông báo này khi đến thời gian hết hạn để đảm bảo dữ liệu luôn mới.
+
+Nếu bạn muốn tiếp tục duy trì thông báo này, vui lòng truy cập Hệ thống Quản trị -> Quản lý thông báo và chọn "Sửa" để gia hạn thêm "Thời gian hết hạn".
+
+Trân trọng,
+Hệ thống Drivecenter!`
+              ).catch(e => console.error('Lỗi khi gửi email nhắc hết hạn thông báo:', e));
+            }
+          }
+          
+          // Đánh dấu đã gửi cảnh báo để không gửi lặp lại
+          notif.expirationWarningSent = true;
+          await notif.save();
+        }
+        console.log(`✅ [CRON NOTIF] Đã gửi thông báo nhắc ${expiringNotifs.length} thông báo sắp hết hạn.`);
+      }
+    } catch (error) {
+      console.error('❌ [CRON NOTIF] Lỗi khi kiểm tra thông báo hết hạn:', error);
+    }
+  });
+};
+
 // Thời gian kết thúc các ca học (theo frontend: 10 ca)
 const SLOT_END_TIMES = {
   "1": { hour: 8, minute: 0 },    // Ca 1: 07:00-08:00
@@ -390,4 +451,9 @@ Trân trọng!`;
   console.log(`🔔 [CRON] Hoàn tất gửi thông báo cho ${instructorsWithoutSchedule.length} giáo viên`);
 };
 
-export default { startFridayReminderCron, startAttendanceReminderCron };
+export default { 
+  startFridayReminderCron, 
+  startAttendanceReminderCron, 
+  startPendingRequestsReminderCron,
+  startNotificationExpirationCron 
+};
