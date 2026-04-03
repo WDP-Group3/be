@@ -698,14 +698,58 @@ export const getMySchedule = async (req, res) => {
       date: filterDate 
     }).lean();
 
-    // 3. Lấy lịch dạy (Teaching) từ bảng Booking
     const bookingList = await Booking.find({ 
       instructorId, 
       date: filterDate,
       status: { $ne: 'CANCELLED' } // Không lấy lịch đã hủy
     })
-    .populate('learnerId', 'fullName phone')
+    .populate('learnerId', 'fullName phone email')
     .lean();
+
+    // Lấy thông tin sequence, buổi nghỉ, buổi vắng của từng học viên
+    const enrichedBookingList = await Promise.all(bookingList.map(async (b) => {
+      if (!b.learnerId) return b;
+      
+      const learnerBookings = await Booking.find({
+        learnerId: b.learnerId._id,
+        batchId: b.batchId,
+        status: { $ne: 'CANCELLED' }
+      }).lean();
+
+      let absentCount = 0;
+      let completedCount = 0;
+      const validForSequence = [];
+
+      learnerBookings.forEach(lb => {
+        if (lb.attendance === 'ABSENT') absentCount++;
+        else if (lb.attendance === 'PRESENT' || (lb.status === 'COMPLETED' && !lb.attendance)) completedCount++;
+
+        // Những buổi KHÔNG Vắng sẽ được xếp vào Curriculum sequence
+        if (lb.attendance !== 'ABSENT') {
+           validForSequence.push(lb);
+        }
+      });
+
+      // Sắp xếp theo tgian thực tế
+      validForSequence.sort((x, y) => {
+         const d1 = new Date(x.date).getTime();
+         const d2 = new Date(y.date).getTime();
+         if (d1 !== d2) return d1 - d2;
+         return Number(x.timeSlot) - Number(y.timeSlot);
+      });
+
+      const sequenceIndex = validForSequence.findIndex(lb => lb._id.toString() === b._id.toString());
+      const sequenceNumber = sequenceIndex !== -1 ? sequenceIndex + 1 : 1;
+
+      return {
+        ...b,
+        learnerStats: {
+           absentCount,
+           completedCount,
+           sequenceNumber
+        }
+      };
+    }));
 
     // 4. Gộp dữ liệu trả về
     const result = [
@@ -718,7 +762,7 @@ export const getMySchedule = async (req, res) => {
         category: 'BUSY',
         timeSlot: Number(s.timeSlot) 
       })),
-      ...bookingList.map(b => ({ 
+      ...enrichedBookingList.map(b => ({ 
         ...b, 
         category: 'TEACHING', 
         timeSlot: Number(b.timeSlot) // Ép kiểu về số để Frontend dễ so sánh
