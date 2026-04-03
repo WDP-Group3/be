@@ -7,12 +7,15 @@ import Request from '../models/Request.js';
 import Registration from '../models/Registration.js';
 import Payment from '../models/Payment.js';
 import FeeReminderLog from '../models/FeeReminderLog.js';
+import DraftCleanupLog from '../models/DraftCleanupLog.js';
+import { getDaysDiff } from '../utils/dateHelper.js';
 import {
   sendNotificationEmail,
   sendFeeReminderBeforeEmail,
   sendFeeReminderDueTodayEmail,
   sendFeeReminderOverdueEmail,
   sendFeeOverdueAdminEmail,
+  sendDraftCleanupReminderEmail,
 } from './email.service.js';
 
 // [CRON JOB] Gửi thông báo nhắc nhở giáo viên đăng ký lịch bận
@@ -418,15 +421,6 @@ export const startDueDateReminderCron = () => {
   });
 };
 
-// ─── Helper: timezone-safe date diff ───────────────────────────────────────────
-const getDaysDiff = (dateA, dateB) => {
-  const a = new Date(dateA);
-  a.setHours(0, 0, 0, 0);
-  const b = new Date(dateB);
-  b.setHours(0, 0, 0, 0);
-  return Math.round((a - b) / (1000 * 60 * 60 * 24));
-};
-
 // ─── Helper: lấy cấu hình từ env ─────────────────────────────────────────────
 const getFeeReminderConfig = () => {
   const parseList = (val) =>
@@ -454,73 +448,44 @@ const checkAndSendDueDateReminders = async () => {
     .populate('courseId', 'name code')
     .populate({ path: 'batchId', populate: { path: 'courseId', select: 'name code' } });
 
-  if (registrations.length === 0) {
-    console.log('💰 [CRON DUE DATE] Không có registration nào có đợt chưa đóng');
-    return;
-  }
-
-  console.log(`💰 [CRON DUE DATE] Kiểm tra ${registrations.length} registration(s)...`);
-
-  // 2. Lấy payments cho tất cả registrations (batch)
-  const regIds = registrations.map((r) => r._id);
-  const payments = await Payment.find({ registrationId: { $in: regIds } }).sort({ paidAt: 1 });
-
-  // Group payments by registration
-  const paymentsByReg = {};
-  for (const p of payments) {
-    const key = String(p.registrationId);
-    if (!paymentsByReg[key]) paymentsByReg[key] = [];
-    paymentsByReg[key].push(p);
-  }
-
-  // 3. Lấy danh sách admin để gửi báo quá hạn
-  const admins = await User.find({
-    role: { $in: ['ADMIN', 'CONSULTANT'] },
-    email: { $exists: true, $ne: '' },
-  }).select('email');
+  // 2. Lấy danh sách admin để gửi thông báo quá hạn
+  const admins = await User.find({ role: 'ADMIN', status: 'ACTIVE' }).select('email').lean();
 
   const learnerSent = { learner: 0, admin: 0 };
 
   for (const reg of registrations) {
-    if (!reg.learnerId?.email || !reg.feePlanSnapshot?.length) continue;
-
     const learner = reg.learnerId;
-    const course = reg.batchId?.courseId || reg.courseId;
-    const courseName = course?.name || 'Khóa học';
-    const regPayments = paymentsByReg[String(reg._id)] || [];
+    if (!learner?.email) continue;
 
-    // 3a. Skip nếu đã đóng đủ (phòng bug data)
-    const totalPaid = regPayments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
-    const totalFee = reg.feePlanSnapshot.reduce((sum, f) => sum + (Number(f.amount) || 0), 0);
-    if (totalPaid >= totalFee) continue;
+    const courseName = reg.courseId?.name || 'Khóa học';
+    const courseCode = reg.courseId?.code || '';
+    const batchName = reg.batchId?.name || '';
 
-    // 3b. Duyệt từng đợt chưa đóng
+    // 3. Duyệt từng đợt chưa đóng (chỉ xử lý đợt ĐẦU TIÊN chưa đóng)
     for (let i = 0; i < reg.feePlanSnapshot.length; i++) {
       const fee = reg.feePlanSnapshot[i];
-      if (fee.paymented) continue;
-
-      // Lấy dueDate đã được tính + lưu bởi recalculateUpcomingDueDates
-      // Hoặc bởi buildFeePlanSnapshot khi tạo Registration
-      if (!fee.dueDate) continue;
+      if (fee.paymented) continue; // bỏ qua đợt đã đóng
 
       const dueDate = new Date(fee.dueDate);
       const now = new Date();
-      const diffDays = getDaysDiff(dueDate, now); // âm = quá hạn
+      const diffDays = getDaysDiff(dueDate, now);
 
-      const data = {
+      const emailData = {
         learnerName: learner.fullName,
+        learnerEmail: learner.email,
         courseName,
+        courseCode,
+        batchName,
         installmentName: fee.name || `Đợt ${i + 1}`,
         amount: fee.amount,
-        dueDate,
-        learnerEmail: learner.email,
+        dueDate: dueDate.toLocaleDateString('vi-VN'),
+        remainingDays: diffDays,
       };
 
-      // ── Nhắc trước hạn ────────────────────────────────────────────────────
-      if (daysBefore.includes(diffDays)) {
-        const reminderType = diffDays === 0 ? 'DUE_TODAY' : 'BEFORE';
-
-        // Check anti-spam
+      // ── CASE 1: CÒN HẠN (BEFORE) ────────────────────────────────────────
+      if (diffDays > 0 && daysBefore.includes(diffDays)) {
+        const reminderType = 'BEFORE';
+        // Anti-spam: chỉ gửi 1 lần cho mỗi (registrationId, scheduleIndex, reminderType, daysOffset)
         const exists = await FeeReminderLog.findOne({
           registrationId: reg._id,
           scheduleIndex: i,
@@ -530,11 +495,7 @@ const checkAndSendDueDateReminders = async () => {
         if (exists) continue;
 
         try {
-          if (reminderType === 'DUE_TODAY') {
-            await sendFeeReminderDueTodayEmail(learner.email, data);
-          } else {
-            await sendFeeReminderBeforeEmail(learner.email, { ...data, daysLeft: diffDays });
-          }
+          await sendFeeReminderBeforeEmail(learner.email, { ...emailData, remainingDays: diffDays });
           await FeeReminderLog.create({
             registrationId: reg._id,
             scheduleIndex: i,
@@ -547,12 +508,42 @@ const checkAndSendDueDateReminders = async () => {
           });
           learnerSent.learner++;
         } catch (e) {
-          console.error(`❌ [CRON DUE DATE] Lỗi gửi nhắc trước hạn cho ${learner.email}:`, e.message);
+          console.error(`❌ [CRON DUE DATE] Lỗi gửi nhắc trước cho ${learner.email}:`, e.message);
         }
-        break; // Mỗi registration chỉ gửi 1 email/lần chạy
+        break; // chỉ gửi cho đợt ĐẦU TIÊN chưa đóng
       }
 
-      // ── Nhắc quá hạn ──────────────────────────────────────────────────────
+      // ── CASE 2: ĐẾN HẠN HÔM NAY ───────────────────────────────────────────
+      if (diffDays === 0) {
+        const reminderType = 'DUE_TODAY';
+        const exists = await FeeReminderLog.findOne({
+          registrationId: reg._id,
+          scheduleIndex: i,
+          reminderType,
+          daysOffset: 0,
+        });
+        if (exists) continue;
+
+        try {
+          await sendFeeReminderDueTodayEmail(learner.email, emailData);
+          await FeeReminderLog.create({
+            registrationId: reg._id,
+            scheduleIndex: i,
+            reminderType,
+            daysOffset: 0,
+            learnerEmail: learner.email,
+            learnerName: learner.fullName,
+            courseName,
+            installmentName: fee.name || `Đợt ${i + 1}`,
+          });
+          learnerSent.learner++;
+        } catch (e) {
+          console.error(`❌ [CRON DUE DATE] Lỗi gửi nhắc đến hạn cho ${learner.email}:`, e.message);
+        }
+        break;
+      }
+
+      // ── CASE 3: QUÁ HẠN ───────────────────────────────────────────────────
       if (diffDays < 0 && daysOverdue.includes(Math.abs(diffDays))) {
         const daysOver = Math.abs(diffDays);
         const reminderType = 'OVERDUE';
@@ -567,7 +558,7 @@ const checkAndSendDueDateReminders = async () => {
         if (exists) continue;
 
         try {
-          await sendFeeReminderOverdueEmail(learner.email, { ...data, daysOverdue: daysOver });
+          await sendFeeReminderOverdueEmail(learner.email, { ...emailData, daysOverdue: daysOver });
           await FeeReminderLog.create({
             registrationId: reg._id,
             scheduleIndex: i,
@@ -580,11 +571,11 @@ const checkAndSendDueDateReminders = async () => {
           });
           learnerSent.learner++;
 
-          // ── Gửi email ADMIN khi đúng mốc threshold (không phải >=) ──────
+          // ── Gửi email ADMIN khi đúng mốc threshold ─────────────────────
           if (daysOver === adminThreshold && admins.length > 0) {
             for (const admin of admins) {
               try {
-                await sendFeeOverdueAdminEmail(admin.email, { ...data, daysOverdue: daysOver });
+                await sendFeeOverdueAdminEmail(admin.email, { ...emailData, daysOverdue: daysOver });
                 learnerSent.admin++;
               } catch (e) {
                 console.error(`❌ [CRON DUE DATE] Lỗi gửi admin notification cho ${admin.email}:`, e.message);
@@ -604,4 +595,127 @@ const checkAndSendDueDateReminders = async () => {
   );
 };
 
+// ─── Cấu hình cleanup ───────────────────────────────────────────────────────
+const DRAFT_DAYS_BEFORE_REMINDER = parseInt(process.env.DRAFT_REMINDER_DAYS || '5', 10);
+const DRAFT_DAYS_BEFORE_DELETE   = parseInt(process.env.DRAFT_DELETE_DAYS  || '7', 10);
+
+// ─── Hàm chính: xử lý DRAFT quá hạn ─────────────────────────────────────
+const processDraftRegistrations = async () => {
+  const enabled = process.env.DRAFT_CLEANUP_ENABLED !== 'false';
+  if (!enabled) {
+    console.log('🗑️ [CRON DRAFT CLEANUP] Bị tắt qua DRAFT_CLEANUP_ENABLED=false');
+    return;
+  }
+
+  console.log('🗑️ [CRON DRAFT CLEANUP] Bắt đầu kiểm tra DRAFT registrations...');
+
+  // Tìm DRAFT chưa đóng tiền, populate learner + course
+  const drafts = await Registration.find({
+    status: 'DRAFT',
+    firstPaymentDate: null,
+  })
+    .populate('learnerId', 'fullName email')
+    .populate({ path: 'batchId', populate: { path: 'courseId', select: 'name' } })
+    .populate('courseId', 'name');
+
+  if (drafts.length === 0) {
+    console.log('🗑️ [CRON DRAFT CLEANUP] Không có DRAFT nào để xử lý');
+    return;
+  }
+
+  const now = new Date();
+  const stats = { reminder: 0, deleted: 0, skipped: 0 };
+
+  for (const reg of drafts) {
+    const learner = reg.learnerId;
+    if (!learner?.email) { stats.skipped++; continue; }
+
+    const course = reg.batchId?.courseId || reg.courseId;
+    const courseName = course?.name || 'Khóa học';
+    const daysOld = getDaysDiff(now, reg.createdAt);
+
+    const emailData = {
+      learnerName: learner.fullName,
+      courseName,
+      learnerEmail: learner.email,
+    };
+
+    // ── Xóa nếu quá hạn (>= DRAFT_DELETE_DAYS) ───────────────────────────
+    if (daysOld >= DRAFT_DAYS_BEFORE_DELETE) {
+      // Anti-spam: đã xóa chưa?
+      const deletedLog = await DraftCleanupLog.findOne({
+        registrationId: reg._id,
+        action: 'DELETED',
+      });
+      if (deletedLog) { stats.skipped++; continue; }
+
+      try {
+        await Registration.findByIdAndDelete(reg._id);
+        await DraftCleanupLog.create({
+          registrationId: reg._id,
+          learnerId: learner._id,
+          learnerEmail: learner.email,
+          learnerName: learner.fullName,
+          courseName,
+          createdAt: reg.createdAt,
+          daysOld,
+          action: 'DELETED',
+        });
+        console.log(`🗑️ [DRAFT CLEANUP] Đã xóa DRAFT registration ${reg._id} (${learner.email}) — tồn tại ${daysOld} ngày`);
+        stats.deleted++;
+      } catch (e) {
+        console.error(`❌ [DRAFT CLEANUP] Lỗi khi xóa registration ${reg._id}:`, e.message);
+      }
+      continue;
+    }
+
+    // ── Nhắc nếu đúng ngày thứ DRAFT_REMINDER_DAYS ──────────────────────
+    if (daysOld === DRAFT_DAYS_BEFORE_REMINDER) {
+      const reminderLog = await DraftCleanupLog.findOne({
+        registrationId: reg._id,
+        action: 'REMINDER',
+      });
+      if (reminderLog) { stats.skipped++; continue; }
+
+      const daysLeft = DRAFT_DAYS_BEFORE_DELETE - daysOld;
+      try {
+        await sendDraftCleanupReminderEmail(learner.email, {
+          ...emailData,
+          daysLeft,
+        });
+        await DraftCleanupLog.create({
+          registrationId: reg._id,
+          learnerId: learner._id,
+          learnerEmail: learner.email,
+          learnerName: learner.fullName,
+          courseName,
+          createdAt: reg.createdAt,
+          daysOld,
+          action: 'REMINDER',
+        });
+        console.log(`✅ [DRAFT CLEANUP] Đã gửi email nhắc cho ${learner.email} (còn ${daysLeft} ngày)`);
+        stats.reminder++;
+      } catch (e) {
+        console.error(`❌ [DRAFT CLEANUP] Lỗi gửi email cho ${learner.email}:`, e.message);
+      }
+    }
+  }
+
+  console.log(`✅ [CRON DRAFT CLEANUP] Hoàn tất: nhắc ${stats.reminder}, xóa ${stats.deleted}, bỏ qua ${stats.skipped}`);
+};
+
+// ─── Cron job: chạy lúc 01:00 mỗi ngày ───────────────────────────────────
+export const startDraftCleanupCron = () => {
+  console.log(`🗑️ Cron job "Draft Cleanup" khởi động — nhắc ngày ${DRAFT_DAYS_BEFORE_REMINDER}, xóa ngày ${DRAFT_DAYS_BEFORE_DELETE} — chạy lúc 01:00`);
+
+  cron.schedule('0 1 * * *', async () => {
+    try {
+      await processDraftRegistrations();
+    } catch (error) {
+      console.error('❌ [CRON DRAFT CLEANUP] Lỗi:', error);
+    }
+  });
+};
+
+export { processDraftRegistrations };
 export { checkAndSendDueDateReminders };

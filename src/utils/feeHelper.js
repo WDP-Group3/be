@@ -1,13 +1,14 @@
-// Helper: cộng ngày vào Date
-const addDays = (date, days) => {
-  const result = new Date(date);
-  result.setDate(result.getDate() + (Number(days) || 0));
-  return result;
-};
+import { addDays } from './dateHelper.js';
 
 /**
  * Tạo snapshot đợt đóng tiền cho Registration.
  * Tự tính dueDate dựa trên afterPreviousPaidDays nếu Course không có sẵn dueDate.
+ *
+ * Logic ưu tiên:
+ *   1. feePayments[i].dueDate  → dùng trực tiếp
+ *   2. prevDueDate + (afterPreviousPaidDays || 7)
+ *   3. Đợt 1: baseDate
+ *
  * @param {object} course - Course document
  * @param {string} paymentPlanType - 'INSTALLMENT' | 'FULL'
  * @param {Date|string} baseDate - Ngày gốc để tính hạn (thường là createdAt của Registration)
@@ -23,7 +24,7 @@ export const buildFeePlanSnapshot = (course, paymentPlanType = 'INSTALLMENT', ba
       {
         name: 'Đóng 1 lần',
         amount: totalFee,
-        dueDate: addDays(baseDate, 7), // Mặc định 7 ngày sau đăng ký
+        dueDate: addDays(baseDate, 7),
         note: 'Thanh toán toàn bộ học phí 1 lần',
         paymented: false,
       },
@@ -33,12 +34,13 @@ export const buildFeePlanSnapshot = (course, paymentPlanType = 'INSTALLMENT', ba
   if (feePayments.length > 0) {
     let prevDueDate = baseDate;
     return feePayments.map((item, idx) => {
-      // Ưu tiên dueDate từ Course, không có thì tính từ đợt trước
       let dueDate;
       if (item.dueDate) {
+        // Ưu tiên: dùng dueDate từ Course
         dueDate = new Date(item.dueDate);
       } else {
-        const daysToAdd = Number(item.afterPreviousPaidDays) || 0;
+        // Không có: dueDate = prevDueDate + (afterPreviousPaidDays || 7)
+        const daysToAdd = Number(item.afterPreviousPaidDays) || 7;
         dueDate = addDays(prevDueDate, daysToAdd);
       }
       prevDueDate = dueDate;
@@ -54,11 +56,12 @@ export const buildFeePlanSnapshot = (course, paymentPlanType = 'INSTALLMENT', ba
     });
   }
 
+  // Fallback: không có feePayments → 1 đợt, hạn = baseDate + 7
   return [
     {
       name: 'Đợt 1',
       amount: totalFee,
-      dueDate: addDays(baseDate, 7), // Mặc định 7 ngày sau đăng ký
+      dueDate: addDays(baseDate, 7),
       note: 'Mặc định do khóa học chưa cấu hình đợt phí',
       paymented: false,
     },

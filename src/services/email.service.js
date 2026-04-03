@@ -659,3 +659,96 @@ Vui lòng kiểm tra và liên hệ học viên để xử lý.
   console.log(`✅ [FeeReminder] Email báo admin đã gửi tới ${email}`);
   return { success: true, messageId: info.messageId };
 };
+
+/**
+ * Gửi email nhắc DRAFT sắp bị xóa (ngày thứ 5)
+ * @param {string} email
+ * @param {object} data - { learnerName, courseName, daysLeft, registrationId }
+ */
+export const sendDraftCleanupReminderEmail = async (email, data) => {
+  const { learnerName, courseName, daysLeft } = data;
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; }
+    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+    .header { background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: white; padding: 30px; text-align: center; border-radius: 12px 12px 0 0; }
+    .content { background: #ffffff; padding: 40px 30px; border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 12px 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+    .alert-banner { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px 20px; margin: 20px 0; border-radius: 4px; }
+    .alert-text { color: #92400e; font-size: 16px; font-weight: bold; margin: 0; }
+    .detail-table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+    .detail-table td { padding: 10px 0; border-bottom: 1px solid #f0f0f0; }
+    .detail-table td:first-child { color: #666; width: 40%; }
+    .detail-table td:last-child { font-weight: 600; }
+    .cta-button { display: inline-block; background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: white; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: bold; margin: 20px 0; }
+    .footer { text-align: center; margin-top: 25px; color: #888; font-size: 13px; }
+    h1 { margin: 0; font-size: 24px; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Drive Center</h1>
+      <p style="margin: 10px 0 0; opacity: 0.9;">Nhắc nhở đăng ký khóa học</p>
+    </div>
+    <div class="content">
+      <p>Xin chào <strong>${learnerName}</strong>,</p>
+
+      <div class="alert-banner">
+        <p class="alert-text">⚠️ Đăng ký khóa học sẽ bị HỦY sau <strong>${daysLeft === 1 ? 'NGÀY MAI' : daysLeft + ' ngày'}</strong> nếu bạn không hoàn tất thanh toán!</p>
+      </div>
+
+      <table class="detail-table">
+        <tr><td>Khóa học</td><td>${courseName}</td></tr>
+        <tr><td>Ngày đăng ký</td><td>Hôm nay</td></tr>
+        <tr><td>Hạn thanh toán</td><td style="color:#dc2626;">${daysLeft === 1 ? 'Ngày mai' : daysLeft + ' ngày tới'}</td></tr>
+      </table>
+
+      <p>Vui lòng hoàn tất thanh toán học phí để giữ chỗ khóa học của bạn. Sau thời hạn, đăng ký sẽ tự động bị hủy.</p>
+
+      <center>
+        <a href="https://drivecenter.com/portal/payments" class="cta-button">Thanh toán ngay</a>
+      </center>
+
+      <p>Nếu bạn đã thanh toán, vui lòng bỏ qua email này.</p>
+    </div>
+    <div class="footer">
+      <p>© ${new Date().getFullYear()} Drive Center. All rights reserved.</p>
+      <p>Đây là email tự động, vui lòng không phản hồi email này.</p>
+    </div>
+  </div>
+</body>
+</html>`;
+
+  const text = `
+⚠️ NHẮC NHỞ: Đăng ký khóa học sẽ bị HỦY sau ${daysLeft} ngày! — Drive Center
+
+Kính gửi ${learnerName},
+
+Đăng ký khóa học "${courseName}" sẽ bị hủy sau ${daysLeft === 1 ? 'NGÀY MAI' : daysLeft + ' ngày'} nếu bạn không hoàn tất thanh toán!
+
+Vui lòng thanh toán ngay tại: https://drivecenter.com/portal/payments
+
+© ${new Date().getFullYear()} Drive Center.`;
+
+  const transporter = createTransporter();
+  const mailOptions = {
+    from: process.env.SMTP_FROM || '"Drive Center" <noreply@drivecenter.com>',
+    to: email,
+    subject: `⚠️ Nhắc nhở: Đăng ký khóa học sẽ bị hủy sau ${daysLeft} ngày! — Drive Center`,
+    html,
+    text,
+  };
+
+  const info = await transporter.sendMail(mailOptions);
+  if (info.messageId && info.messageId.startsWith('mock-')) {
+    console.log(`✅ [DraftCleanup] Email nhắc cleanup đã xử lý cho ${email} (mock mode)`);
+  } else {
+    console.log(`✅ [DraftCleanup] Email nhắc cleanup đã gửi tới ${email}`);
+  }
+  return { success: true, messageId: info.messageId };
+};

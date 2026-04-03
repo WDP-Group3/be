@@ -11,7 +11,7 @@
     "test-fee": "node src/scripts/test-fee-sync.js",
     "test-fee-reminder": "node src/scripts/test-fee-reminder.js",
     "migrate-fee-dates": "node src/scripts/migrate-fee-due-dates.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "vitest run"
   },
   "keywords": [
     "nodejs",
@@ -39,6 +39,9 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "nodemon": "^3.0.2"
+    "@shelf/jest-mongodb": "^6.0.2",
+    "jest": "^30.3.0",
+    "nodemon": "^3.0.2",
+    "supertest": "^7.2.2"
   }
 }
