@@ -109,19 +109,19 @@ Trân trọng!`
   });
 };
 
-// [CRON JOB] Nhắc nhở Admin về các thông báo sắp hết hạn (còn 2 ngày)
+// [CRON JOB] Nhắc nhở Admin về các thông báo sắp hết hạn (còn 1 ngày)
 export const startNotificationExpirationCron = () => {
-  console.log('⏰ Cron job "Notification Expiration Reminder" đã khởi động - Chạy lúc 07:00 mỗi ngày');
+  // Thay đổi log để khớp với giờ chạy thực tế
+  console.log('⏰ Cron job "Notification Expiration Reminder" đã khởi động - Chạy lúc 08:00 mỗi ngày');
   
-  // Chạy lúc 07:00 sáng mỗi ngày
-  cron.schedule('0 7 * * *', async () => {
+  // Chạy lúc 08:00 sáng mỗi ngày
+  cron.schedule('0 8 * * *', async () => {
     console.log('🔔 [CRON NOTIF] Đang kiểm tra các thông báo sắp hết hạn...');
     try {
       const now = new Date();
-      const warningThreshold = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000); // 2 ngày từ bây giờ
+      // Ngưỡng 1.5 ngày để đảm bảo quét được các thông báo hết hạn trong ngày mai
+      const warningThreshold = new Date(now.getTime() + 1.5 * 24 * 60 * 60 * 1000); 
       
-      // Tìm các thông báo sẽ hết hạn trong vòng 2 ngày tới
-      // và chưa gửi cảnh báo
       const expiringNotifs = await Notification.find({
         expireAt: { $lte: warningThreshold, $gt: now },
         expirationWarningSent: { $ne: true }
@@ -131,38 +131,47 @@ export const startNotificationExpirationCron = () => {
         const admins = await User.find({ role: 'ADMIN' });
         
         for (const notif of expiringNotifs) {
-          const remainingTime = Math.ceil((notif.expireAt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
-          
+          // Định dạng ngày giờ hết hạn thân thiện
+          const expireDateStr = notif.expireAt.toLocaleString('vi-VN', {
+            hour: '2-digit',
+            minute: '2-digit',
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric'
+          });
+
           for (const admin of admins) {
             if (admin.email) {
               await sendNotificationEmail(
                 admin.email,
                 `📢 [CẢNH BÁO] Thông báo sắp hết hạn: ${notif.title}`,
                 `Kính gửi Admin ${admin.fullName},
-                
-Hệ thống xin thông báo một thông báo quan trọng sắp hết hiệu lực và sẽ tự động bị xóa sau ${remainingTime} ngày nữa.
+
+Hệ thống Drivecenter xin thông báo có một thông báo quan trọng sắp hết hiệu lực.
 
 THÔNG TIN CHI TIẾT:
-- Tiêu đề: ${notif.title}
-- Nội dung: ${notif.message.substring(0, 100)}${notif.message.length > 100 ? '...' : ''}
-- Ngày hết hạn: ${notif.expireAt.toLocaleString('vi-VN')}
-- Thời gian còn lại: ${remainingTime} ngày
+- 📌 Tiêu đề: ${notif.title}
+- 📝 Nội dung trích đoạn: "${notif.message.substring(0, 150)}${notif.message.length > 150 ? '...' : ''}"
+- ⏰ Thời gian hết hạn: ${expireDateStr}
 
-Hệ thống sẽ TỰ ĐỘNG XÓA bỏ thông báo này khi đến thời gian hết hạn để đảm bảo dữ liệu luôn mới.
+⚠️ LƯU Ý: 
+Thông báo này sẽ được hệ thống TỰ ĐỘNG XÓA VĨNH VIỄN vào lúc ${expireDateStr} để đảm bảo dữ liệu hệ thống luôn mới.
 
-Nếu bạn muốn tiếp tục duy trì thông báo này, vui lòng truy cập Hệ thống Quản trị -> Quản lý thông báo và chọn "Sửa" để gia hạn thêm "Thời gian hết hạn".
+Nếu bạn muốn tiếp tục duy trì thông báo này trên ứng dụng, vui lòng thực hiện:
+1. Truy cập Hệ thống Quản trị.
+2. Vào mục Quản lý thông báo.
+3. Chọn "Sửa" tại thông báo tương ứng và gia hạn thêm "Thời gian hết hạn".
 
 Trân trọng,
-Hệ thống Drivecenter!`
+Đội ngũ kỹ thuật Drivecenter!`
               ).catch(e => console.error('Lỗi khi gửi email nhắc hết hạn thông báo:', e));
             }
           }
           
-          // Đánh dấu đã gửi cảnh báo để không gửi lặp lại
           notif.expirationWarningSent = true;
           await notif.save();
         }
-        console.log(`✅ [CRON NOTIF] Đã gửi thông báo nhắc ${expiringNotifs.length} thông báo sắp hết hạn.`);
+        console.log(`✅ [CRON NOTIF] Đã gửi nhắc nhở cho ${expiringNotifs.length} thông báo.`);
       }
     } catch (error) {
       console.error('❌ [CRON NOTIF] Lỗi khi kiểm tra thông báo hết hạn:', error);
