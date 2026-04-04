@@ -19,7 +19,7 @@ const formatUserResponse = (user) => {
   }
   // Check if user is null/undefined
   if (!user) return null;
-  
+
   const userObj = user.toObject ? user.toObject() : user;
   const { password, ...userWithoutPassword } = userObj;
   return userWithoutPassword;
@@ -55,7 +55,7 @@ export const getAllUsers = async (req, res) => {
 
     if (role) filter.role = role;
     if (status) filter.status = status;
-    
+
     // Thêm tính năng tìm kiếm (Search)
     if (search) {
       filter.$or = [
@@ -163,17 +163,18 @@ import { buildFeePlanSnapshot } from '../utils/feeHelper.js';
 export const updateUser = async (req, res) => {
   try {
     const { id } = req.params;
-    const { fullName, name, phone, address, gender, dateOfBirth, avatar, workingLocation, role, email, password } = req.body;
+    const { fullName, name, phone, address, gender, dateOfBirth, avatar, workingLocation, role, email, password, userId } = req.body;
 
     const user = await User.findById(id);
+    const userAdmin = await User.findById(req.userId);
     if (!user) {
       return res.status(404).json({ status: 'error', message: 'User not found' });
     }
 
     // Ownership check: nguoi dung thuong chi sua duoc chinh minh
-    const upperRole = req.user?.role ? String(req.user.role).toUpperCase().trim() : '';
+    const upperRole = userAdmin.role ? String(userAdmin.role).toUpperCase().trim() : '';
     const isPrivileged = ['ADMIN'].includes(upperRole);
-    const isSelf = req.userId === id;
+    const isSelf = userId === id;
 
     // - Admin: sua bat ky user nao
     // - Nguoi dung thuong: chi sua chinh minh (nhung khong duoc doi role)
@@ -226,54 +227,54 @@ export const updateUser = async (req, res) => {
 
     // Xử lý huỷ lịch nếu Giáo viên thay đổi khu vực công tác
     if (locationChanged) {
-       (async () => {
-         try {
-           const now = new Date();
-           now.setDate(now.getDate() + 1);
-           now.setHours(0,0,0,0);
-           const affectedBookings = await Booking.find({
-              instructorId: user._id,
-              date: { $gte: now },
-              status: { $ne: 'CANCELLED' }
-           }).populate('learnerId', 'email fullName');
+      (async () => {
+        try {
+          const now = new Date();
+          now.setDate(now.getDate() + 1);
+          now.setHours(0, 0, 0, 0);
+          const affectedBookings = await Booking.find({
+            instructorId: user._id,
+            date: { $gte: now },
+            status: { $ne: 'CANCELLED' }
+          }).populate('learnerId', 'email fullName');
 
-           for (const b of affectedBookings) {
-              b.status = 'CANCELLED';
-              b.instructorNote = 'Hệ thống tự động huỷ lịch giao điểm do giáo viên điều chuyển khu vực công tác.';
-              await b.save();
+          for (const b of affectedBookings) {
+            b.status = 'CANCELLED';
+            b.instructorNote = 'Hệ thống tự động huỷ lịch giao điểm do giáo viên điều chuyển khu vực công tác.';
+            await b.save();
 
-              emitScheduleUpdate({
-                 instructorId: b.instructorId,
-                 learnerId: b.learnerId?._id,
-                 date: b.date,
-                 timeSlot: b.timeSlot,
-                 status: 'CANCELLED'
-              });
+            emitScheduleUpdate({
+              instructorId: b.instructorId,
+              learnerId: b.learnerId?._id,
+              date: b.date,
+              timeSlot: b.timeSlot,
+              status: 'CANCELLED'
+            });
 
-              if (b.learnerId?.email) {
-                 const classStr = new Date(b.date).toLocaleDateString('vi-VN');
-                 const title = '⚠️ Thông báo huỷ lịch tập lái - Thay đổi khu vực giáo viên';
-                 const ms = `Kính gửi học viên ${b.learnerId.fullName},
+            if (b.learnerId?.email) {
+              const classStr = new Date(b.date).toLocaleDateString('vi-VN');
+              const title = '⚠️ Thông báo huỷ lịch tập lái - Thay đổi khu vực giáo viên';
+              const ms = `Kính gửi học viên ${b.learnerId.fullName},
 
 Hệ thống đã tự động huỷ ca học thực hành của bạn vào ngày ${classStr} (Ca ${b.timeSlot}) do giáo viên được điều chuyển khu vực công tác.
 Bạn vui lòng vào hệ thống để đặt lại lịch học với giáo viên khác tại khu vực của mình nhé.
 
 Trân trọng!`;
-                 await sendNotificationEmail(b.learnerId.email, title, ms).catch(() => {});
-              }
-           }
+              await sendNotificationEmail(b.learnerId.email, title, ms).catch(() => { });
+            }
+          }
 
-           if (affectedBookings.length > 0 && user.email) {
-              const ms = `Kính gửi Thầy/Cô ${user.fullName},
+          if (affectedBookings.length > 0 && user.email) {
+            const ms = `Kính gửi Thầy/Cô ${user.fullName},
 
 Bạn đã được admin điều chuyển từ khu vực "${oldLocation || 'Không xác định'}" sang "${workingLocation}".
 Hệ thống đã tự động huỷ ${affectedBookings.length} ca tập lái trong vòng tương lai của thầy/cô tại khu vực cũ.
 
 Trân trọng!`;
-              await sendNotificationEmail(user.email, 'Thông báo điều chuyển khu vực công tác', ms).catch(()=>{});
-           }
-         } catch(e) { console.error('Error auto canceling instructor location update:', e); }
-       })();
+            await sendNotificationEmail(user.email, 'Thông báo điều chuyển khu vực công tác', ms).catch(() => { });
+          }
+        } catch (e) { console.error('Error auto canceling instructor location update:', e); }
+      })();
     }
 
     res.json({
@@ -359,11 +360,11 @@ export const changeUserRole = async (req, res) => {
       data: formatUserResponse(user),
       message: `Đã thay đổi quyền thành ${upperRole}`
     });
-    } catch (error) {
+  } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
-  
+
 
 // 7. Lấy Giáo viên theo Khu vực và Khóa học (từ Địa điểm học - LearningLocation)
 // Luồng: học viên chọn khu vực → chọn khóa đã đăng ký → lọc giáo viên dạy khóa đó tại khu vực đó
@@ -541,7 +542,7 @@ export const updateLearnerEnrolledCourses = async (req, res) => {
     // Kiểm tra trạng thái hiện tại của user để xác định cái gì đang bị "khóa" (đã vào lớp)
     const currentEnrolledCodes = user.enrolledCourseCodes || [];
     const lockedCodes = [];
-    
+
     for (const code of currentEnrolledCodes) {
       const course = courseCodesMap.get(code);
       if (!course) continue;
@@ -569,16 +570,16 @@ export const updateLearnerEnrolledCourses = async (req, res) => {
     const isOToLocked = lockedCodes.some(c => O_TO_REGEX.test(c));
 
     if (isXeMayLocked && requestedXeMay[0] !== currentXeMay) {
-      return res.status(400).json({ 
-        status: 'error', 
-        message: `Không thể thay đổi hạng Xe máy (${currentXeMay}) vì học viên đã được xếp lớp.` 
+      return res.status(400).json({
+        status: 'error',
+        message: `Không thể thay đổi hạng Xe máy (${currentXeMay}) vì học viên đã được xếp lớp.`
       });
     }
 
     if (isOToLocked && requestedOTo[0] !== currentOTo) {
-      return res.status(400).json({ 
-        status: 'error', 
-        message: `Không thể thay đổi hạng Ô tô (${currentOTo}) vì học viên đã được xếp lớp.` 
+      return res.status(400).json({
+        status: 'error',
+        message: `Không thể thay đổi hạng Ô tô (${currentOTo}) vì học viên đã được xếp lớp.`
       });
     }
 
@@ -644,8 +645,8 @@ export const updateLearnerEnrolledCourses = async (req, res) => {
         const newCourse = courseCodesMap.get(newCode);
         if (newCourse) {
           // Kiểm tra xem đã có reg cho cái này chưa
-          const existing = await Registration.findOne({ 
-            learnerId: id, 
+          const existing = await Registration.findOne({
+            learnerId: id,
             courseId: newCourse._id,
             status: { $ne: 'CANCELLED' }
           });
