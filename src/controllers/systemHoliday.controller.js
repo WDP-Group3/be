@@ -1,6 +1,7 @@
 import SystemHoliday from '../models/SystemHoliday.js';
 import User from '../models/User.js';
 import Booking from '../models/Booking.js';
+import Schedule from '../models/Schedule.js';
 import { sendNotificationEmail } from '../services/email.service.js';
 import { emitScheduleUpdate } from '../services/socket.service.js';
 
@@ -218,8 +219,7 @@ export const createHoliday = async (req, res) => {
     // 2. Tìm tất cả booking trong khoảng thời gian đó của các giáo viên trên
     const affectedBookings = await Booking.find({
       date: { $gte: startObj, $lte: endObj },
-      instructorId: { $in: affectedInstructorIds },
-      status: { $nin: ['CANCELLED', 'REJECTED'] }
+      instructorId: { $in: affectedInstructorIds }
     }).populate('learnerId', 'email fullName').populate('instructorId', 'email fullName');
 
     const cancelledLearners = new Map(); // Dùng Map để tránh gửi 2 email cho 1 học viên bị huỷ 2 ca
@@ -238,6 +238,12 @@ export const createHoliday = async (req, res) => {
         cancelledInstructors.set(booking.instructorId.email, booking.instructorId.fullName);
       }
     }
+
+    // [MỚI] Xoá lịch báo bận của giáo viên trong khu vực / khoảng thời gian này
+    await Schedule.deleteMany({
+      date: { $gte: startObj, $lte: endObj },
+      instructorId: { $in: affectedInstructorIds }
+    });
 
     // [MỚI] Kích hoạt Realtime cập nhật lịch nghỉ lễ cho toàn bộ phía học viên & giáo viên
     emitScheduleUpdate({ status: 'HOLIDAY_CREATED', location: holiday.location });
@@ -350,6 +356,46 @@ export const updateHoliday = async (req, res) => {
       { new: true, runValidators: true }
     );
 
+    // =============== [MỚI] HUỶ CÁC CA HỌC BỊ TRÙNG KHI UPDATE LỊCH NGHỈ ===============
+    let affectedInstructorIds = [];
+    if (!loc) {
+      const allInst = await User.find({ role: 'INSTRUCTOR' }).select('_id');
+      affectedInstructorIds = allInst.map(u => u._id);
+    } else {
+      const areaInst = await User.find({ 
+        role: 'INSTRUCTOR',
+        workingLocation: { $regex: new RegExp(`^${loc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
+      }).select('_id');
+      affectedInstructorIds = areaInst.map(u => u._id);
+    }
+
+    const affectedBookings = await Booking.find({
+      date: { $gte: startObj, $lte: endObj },
+      instructorId: { $in: affectedInstructorIds }
+    }).populate('learnerId', 'email fullName').populate('instructorId', 'email fullName');
+
+    const cancelledLearners = new Map();
+    const cancelledInstructors = new Map();
+
+    for (const booking of affectedBookings) {
+      booking.status = 'CANCELLED';
+      booking.instructorNote = `Huỷ do dời mốc lịch nghỉ lễ: ${title}`;
+      await booking.save();
+
+      if (booking.learnerId?.email) {
+        cancelledLearners.set(booking.learnerId.email, booking.learnerId.fullName);
+      }
+      if (booking.instructorId?.email) {
+        cancelledInstructors.set(booking.instructorId.email, booking.instructorId.fullName);
+      }
+    }
+
+    // Xoá lịch báo bận của giáo viên
+    await Schedule.deleteMany({
+      date: { $gte: startObj, $lte: endObj },
+      instructorId: { $in: affectedInstructorIds }
+    });
+
     // Kích hoạt Realtime
     emitScheduleUpdate({ status: 'HOLIDAY_UPDATED', location: holiday.location });
 
@@ -357,7 +403,28 @@ export const updateHoliday = async (req, res) => {
 
     // Gửi email thông báo cập nhật CHẠY NGẦM BACKGROUND
     (async () => {
-      await sendHolidayNotification(holiday, 'UPDATE').catch(e => console.error('BG Email Warning:', e));
+      try {
+        for (const [email, name] of cancelledLearners.entries()) {
+          await sendNotificationEmail(
+            email,
+            `🔔 Thông báo: Huỷ lịch học do thay đổi ngày lịch nghỉ lễ - ${title}`,
+            `Kính gửi Học viên ${name},\n\nLịch học của bạn trong khoảng thời gian từ ${startObj.toLocaleDateString('vi-VN')} đến ${endObj.toLocaleDateString('vi-VN')} đã bị huỷ tự động do thay đổi mốc lịch nghỉ lễ: ${title}.\n\nVui lòng truy cập hệ thống để đăng ký lại lịch học vào ngày khác.\n\nTrân trọng!`
+          ).catch(e => console.error(e));
+        }
+
+        for (const [email, name] of cancelledInstructors.entries()) {
+          await sendNotificationEmail(
+            email,
+            `🔔 Thông báo: Huỷ lịch dạy do dời lịch nghỉ - ${title}`,
+            `Kính gửi Thầy/Cô ${name},\n\nCác lịch dạy của Thầy/Cô trong khoảng thời gian từ ${startObj.toLocaleDateString('vi-VN')} đến ${endObj.toLocaleDateString('vi-VN')} đã bị huỷ do hệ thống thay đổi lịch nghỉ: ${title}.\n\nTrân trọng!`
+          ).catch(e => console.error(e));
+        }
+
+        const excludeEmails = [...cancelledLearners.keys(), ...cancelledInstructors.keys()];
+        await sendHolidayNotification(holiday, 'UPDATE', excludeEmails);
+      } catch (e) {
+        console.error('BG Email Warning:', e);
+      }
     })();
 
   } catch (error) {
