@@ -29,7 +29,7 @@ const formatUserResponse = (user) => {
 export const getUserStats = async (req, res) => {
   try {
     const totalUsers = await User.countDocuments({
-      role: { $in: ['learner', 'INSTRUCTOR', 'CONSULTANT'] }
+      role: { $in: ['LEARNER', 'INSTRUCTOR', 'CONSULTANT'] }
     });
 
     res.json({
@@ -87,7 +87,7 @@ export const getAllUsers = async (req, res) => {
   }
 };
 
-// 2. Lấy user theo ID
+// 2. Lấy user theo ID — có ownership check
 export const getUserById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -95,6 +95,13 @@ export const getUserById = async (req, res) => {
 
     if (!user) {
       return res.status(404).json({ status: 'error', message: 'User not found' });
+    }
+
+    // Ownership check: nguoi dung thuong chi xem duoc chinh minh, ADMIN/CONSULTANT xem duoc bat ky
+    const upperRole = req.user?.role ? String(req.user.role).toUpperCase().trim() : '';
+    const isPrivileged = ['ADMIN', 'CONSULTANT'].includes(upperRole);
+    if (!isPrivileged && req.userId !== id) {
+      return res.status(403).json({ status: 'error', message: 'Bạn không có quyền xem thông tin này' });
     }
 
     res.json({
@@ -152,16 +159,31 @@ export const createUser = async (req, res) => {
 
 import { buildFeePlanSnapshot } from '../utils/feeHelper.js';
 
-// 4. Update User (Admin) - Cập nhật để sửa email, password, role, name...
+// 4. Update User — có ownership check + role change guard
 export const updateUser = async (req, res) => {
   try {
     const { id } = req.params;
     const { fullName, name, phone, address, gender, dateOfBirth, avatar, workingLocation, role, email, password } = req.body;
-    
-    // Tìm user trước để kiểm tra tồn tại
+
     const user = await User.findById(id);
     if (!user) {
       return res.status(404).json({ status: 'error', message: 'User not found' });
+    }
+
+    // Ownership check: nguoi dung thuong chi sua duoc chinh minh
+    const upperRole = req.user?.role ? String(req.user.role).toUpperCase().trim() : '';
+    const isPrivileged = ['ADMIN'].includes(upperRole);
+    const isSelf = req.userId === id;
+
+    // - Admin: sua bat ky user nao
+    // - Nguoi dung thuong: chi sua chinh minh (nhung khong duoc doi role)
+    if (!isPrivileged && !isSelf) {
+      return res.status(403).json({ status: 'error', message: 'Bạn không có quyền cập nhật thông tin này' });
+    }
+
+    // Chi admin moi duoc doi role
+    if (role && !isPrivileged) {
+      return res.status(403).json({ status: 'error', message: 'Bạn không có quyền thay đổi quyền người dùng' });
     }
 
     // Nếu cập nhật email, kiểm tra xem email mới có bị trùng không
@@ -175,14 +197,14 @@ export const updateUser = async (req, res) => {
 
     // Cập nhật các trường thông tin cơ bản
     if (fullName) user.fullName = fullName;
-    if (name) user.fullName = name; // Map từ 'name' của frontend sang 'fullName'
+    if (name) user.fullName = name;
     if (phone) user.phone = phone;
     if (address) user.address = address;
     if (gender) user.gender = gender;
     if (dateOfBirth) user.dateOfBirth = dateOfBirth;
     if (avatar) user.avatar = avatar;
-    if (role) user.role = role;
-    
+    if (role && isPrivileged) user.role = role;
+
     // Cập nhật workingLocation nếu có
     let locationChanged = false;
     const oldLocation = user.workingLocation;
@@ -202,7 +224,7 @@ export const updateUser = async (req, res) => {
 
     await user.save();
 
-    // [MỚI] Xử lý huỷ lịch nếu Giáo viên thay đổi khu vực công tác
+    // Xử lý huỷ lịch nếu Giáo viên thay đổi khu vực công tác
     if (locationChanged) {
        (async () => {
          try {
@@ -219,7 +241,7 @@ export const updateUser = async (req, res) => {
               b.status = 'CANCELLED';
               b.instructorNote = 'Hệ thống tự động huỷ lịch giao điểm do giáo viên điều chuyển khu vực công tác.';
               await b.save();
-              
+
               emitScheduleUpdate({
                  instructorId: b.instructorId,
                  learnerId: b.learnerId?._id,
@@ -232,7 +254,7 @@ export const updateUser = async (req, res) => {
                  const classStr = new Date(b.date).toLocaleDateString('vi-VN');
                  const title = '⚠️ Thông báo huỷ lịch tập lái - Thay đổi khu vực giáo viên';
                  const ms = `Kính gửi học viên ${b.learnerId.fullName},
-                 
+
 Hệ thống đã tự động huỷ ca học thực hành của bạn vào ngày ${classStr} (Ca ${b.timeSlot}) do giáo viên được điều chuyển khu vực công tác.
 Bạn vui lòng vào hệ thống để đặt lại lịch học với giáo viên khác tại khu vực của mình nhé.
 
@@ -240,11 +262,11 @@ Trân trọng!`;
                  await sendNotificationEmail(b.learnerId.email, title, ms).catch(() => {});
               }
            }
-           
+
            if (affectedBookings.length > 0 && user.email) {
               const ms = `Kính gửi Thầy/Cô ${user.fullName},
 
-Bạn đã được admin điều chuyển từ khu vực "${oldLocation || 'Không xác định'}" sang "${workingLocation}". 
+Bạn đã được admin điều chuyển từ khu vực "${oldLocation || 'Không xác định'}" sang "${workingLocation}".
 Hệ thống đã tự động huỷ ${affectedBookings.length} ca tập lái trong vòng tương lai của thầy/cô tại khu vực cũ.
 
 Trân trọng!`;
@@ -296,7 +318,7 @@ export const getLocations = async (req, res) => {
       return res.json({ status: 'success', data: fromLearning });
     }
     const locations = await User.find({
-      role: 'INSTRUCTOR',
+      role: { $in: ['INSTRUCTOR', 'instructor'] },
       status: 'ACTIVE',
       workingLocation: { $ne: null },
     }).distinct('workingLocation');
@@ -315,15 +337,16 @@ export const changeUserRole = async (req, res) => {
       return res.status(400).json({ status: 'error', message: 'Role is required' });
     }
 
-    // Validate role
-    const validRoles = ['ADMIN', 'learner', 'INSTRUCTOR', 'CONSULTANT'];
-    if (!validRoles.includes(role)) {
+    // Validate role — dùng uppercase để khớp với role middleware
+    const validRoles = ['ADMIN', 'LEARNER', 'INSTRUCTOR', 'CONSULTANT'];
+    const upperRole = String(role).toUpperCase().trim();
+    if (!validRoles.includes(upperRole)) {
       return res.status(400).json({ status: 'error', message: 'Invalid role' });
     }
 
     const user = await User.findByIdAndUpdate(
       id,
-      { role },
+      { role: upperRole },
       { new: true }
     );
 
@@ -334,7 +357,7 @@ export const changeUserRole = async (req, res) => {
     res.json({
       status: 'success',
       data: formatUserResponse(user),
-      message: `Đã thay đổi quyền thành ${role}`
+      message: `Đã thay đổi quyền thành ${upperRole}`
     });
     } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
@@ -363,13 +386,13 @@ export const getInstructorsByLocation = async (req, res) => {
         }
       }
       if (allInstructorIds.size > 0) {
-        const users = await User.find({ _id: { $in: [...allInstructorIds] }, role: 'INSTRUCTOR', status: 'ACTIVE' });
+        const users = await User.find({ _id: { $in: [...allInstructorIds] }, role: { $in: ['INSTRUCTOR', 'instructor'] }, status: 'ACTIVE' });
         return res.json({ status: 'success', data: formatUserResponse(users) });
       }
     }
 
     // Fallback: lọc User theo workingLocation + taughtCourses
-    let filter = { role: 'INSTRUCTOR', status: 'ACTIVE' };
+    let filter = { role: { $in: ['INSTRUCTOR', 'instructor'] }, status: 'ACTIVE' };
     if (location && location.trim()) {
       filter.workingLocation = { $regex: new RegExp(`^${String(location).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') };
     }

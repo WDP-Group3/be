@@ -85,7 +85,9 @@ export const getCommissionForCourse = (courseId, docDate, configs, userOverrideM
     const entryEffDate = entry.effectiveFrom ? new Date(entry.effectiveFrom) : null;
     const cfgEffDate = cfg.effectiveFrom ? new Date(cfg.effectiveFrom) : null;
     const effectiveDate = entryEffDate || cfgEffDate;
-    if (!effectiveDate || effectiveDate <= docDate) {
+    // Skip if effectiveDate is null (no date at all) — null means "applies always" which is wrong for time-based configs
+    if (effectiveDate === null) continue;
+    if (effectiveDate <= docDate) {
       if (!bestEntry || (effectiveDate && (!bestEffDate || effectiveDate > bestEffDate))) {
         bestEntry = entry;
         bestEffDate = effectiveDate;
@@ -583,7 +585,7 @@ const calculateSalaryWithSharedData = (
       const courseId = doc.registrationId.courseId._id?.toString() || doc.registrationId.courseId.toString();
       if (applyCourseFilter && courseId !== courseIdFilter.toString()) return false;
       return true;
-    });;
+    });
 
     docs.forEach(doc => {
       const reg = doc.registrationId;
@@ -625,12 +627,13 @@ const calculateSalaryWithSharedData = (
   const totalSalaryBeforeDeduction = teachingSalary + totalCommission;
 
   let totalPenalty = 0;
-  const exists = penaltiesByUserId.some(item => item.user.equals(userId));
-  if (penaltiesByUserId && exists) {
-    const arr = penaltiesByUserId.filter(item =>
-      item.user.equals(userId)
-    );
-    totalPenalty = arr.reduce((sum, p) => sum + (p.amount || 0), 0);
+  const penaltiesArr = (typeof penaltiesByUserId === 'object' && penaltiesByUserId !== null)
+    ? (Array.isArray(penaltiesByUserId)
+        ? penaltiesByUserId
+        : (penaltiesByUserId[userId] || []))
+    : [];
+  if (penaltiesArr.length > 0) {
+    totalPenalty = penaltiesArr.reduce((sum, p) => sum + (p.amount || 0), 0);
   }
 
   // Compute leave deduction for INSTRUCTOR only
@@ -807,7 +810,6 @@ export const getMonthlySummary = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('[Salary] monthly-summary ERROR:', error);
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
@@ -931,7 +933,6 @@ export const getMySalary = async (req, res) => {
 
     const config = await getConfigForMonth(targetYear, targetMonth);
     if (!config) {
-      console.warn('[Salary] 400 getMySalary: no config', { userId, query: req.query });
       return res.status(400).json({ status: 'error', message: 'Chưa có cấu hình lương' });
     }
 
@@ -1029,7 +1030,6 @@ export const exportMySalaryCSV = async (req, res) => {
     ]);
 
     if (!config) {
-      console.warn('[Salary] 400 exportMySalaryCSV: no config', { userId, query: req.query });
       return res.status(400).json({ status: 'error', message: 'Chưa có cấu hình lương' });
     }
 
@@ -1066,7 +1066,6 @@ export const exportMySalaryCSV = async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`luong_${salaryData.userName}_${targetMonth}_${targetYear}.xlsx`)}`);
     res.send(excelBuffer);
   } catch (error) {
-    console.error('[Salary] exportMySalaryCSV ERROR:', error);
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
@@ -1661,7 +1660,8 @@ export const exportAllSalaryExcel = async (req, res) => {
         docsByConsultant,
         config,
         user,
-        leaveConfig
+        leaveConfig,
+        undefined // penaltiesByUserId (not pre-fetched for this export)
       );
       if (salaryData) {
         allSalaryData.push(salaryData);
@@ -1673,7 +1673,6 @@ export const exportAllSalaryExcel = async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`luong_tong_hop_${targetMonth}_${targetYear}.xlsx`)}`);
     res.send(excelBuffer);
   } catch (error) {
-    console.error('[Salary] exportAllSalaryExcel ERROR:', error);
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
@@ -1738,7 +1737,8 @@ export const exportSalaryCSV = async (req, res) => {
       { [userId]: allDocs },
       config,
       user,
-      leaveConfig
+      leaveConfig,
+      { [userId]: allPenalties }
     );
 
     if (!salaryData) {
@@ -1772,7 +1772,6 @@ export const exportSalaryCSV = async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`luong_${salaryData.userName}_${targetMonth}_${targetYear}.xlsx`)}`);
     res.send(excelBuffer);
   } catch (error) {
-    console.error('[Salary] Export Excel ERROR:', error);
     res.status(500).json({ status: 'error', message: error.message });
   }
 };

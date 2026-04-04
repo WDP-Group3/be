@@ -2,6 +2,8 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { createServer } from "http";
+import fs from "fs";
+import path from "path";
 import { connectDB } from "./config/db.js";
 import apiRoutes from "./routes/index.js";
 import {
@@ -24,6 +26,12 @@ import { sendNotificationEmail } from "./services/email.service.js";
 
 // Load environment variables
 dotenv.config({ path: new URL("../.env", import.meta.url).pathname });
+
+// Ensure uploads directory exists
+const uploadsDir = path.join(process.cwd(), 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -51,6 +59,17 @@ app.use(express.urlencoded({ extended: true }));
 app.use((req, res, next) => {
   console.log(`${req.method} ${req.url}`);
   next();
+});
+
+// Multer error handler
+app.use((err, req, res, next) => {
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(400).json({ status: 'error', message: 'File quá lớn. Kích thước tối đa là 5MB.' });
+  }
+  if (err.message && err.message.includes('Chỉ chấp nhận file')) {
+    return res.status(400).json({ status: 'error', message: err.message });
+  }
+  next(err);
 });
 // Kết nối MongoDB
 connectDB();
