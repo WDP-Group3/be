@@ -11,9 +11,14 @@ import ExcelJS from 'exceljs';
 import axios from 'axios';
 
 // ============================================
+// CONSTANTS
+// ============================================
+const DEFAULT_HOURLY_RATE = 80000;
+
+// ============================================
 // HELPER: Lấy cấu hình lương hiện tại (so với ngày hiện tại)
 // ============================================
-const getActiveConfig = async () => {
+export const getActiveConfig = async () => {
   const config = await SalaryConfig.findOne({
     effectiveFrom: { $lte: new Date() },
     $or: [
@@ -28,7 +33,7 @@ const getActiveConfig = async () => {
 // ============================================
 // HELPER: Lấy cấu hình lương áp dụng cho một tháng cụ thể
 // ============================================
-const getConfigForMonth = async (year, month) => {
+export const getConfigForMonth = async (year, month) => {
   // Lấy ngày giữa tháng để xác định config nào đang active
   const targetDate = new Date(year, month - 1, 15);
   const config = await SalaryConfig.findOne({
@@ -52,7 +57,7 @@ export const getAllConfigs = async () => {
 // ============================================
 // HELPER: Lấy cấu hình nghỉ phép cho một năm
 // ============================================
-const getLeaveConfigForYear = async (year) => {
+export const getLeaveConfigForYear = async (year) => {
   let cfg = await LeaveConfig.findOne({ year }).lean();
   if (!cfg) {
     // Auto-create with defaults
@@ -85,12 +90,20 @@ export const getCommissionForCourse = (courseId, docDate, configs, userOverrideM
     const entryEffDate = entry.effectiveFrom ? new Date(entry.effectiveFrom) : null;
     const cfgEffDate = cfg.effectiveFrom ? new Date(cfg.effectiveFrom) : null;
     const effectiveDate = entryEffDate || cfgEffDate;
-    // Skip if effectiveDate is null (no date at all) — null means "applies always" which is wrong for time-based configs
-    if (effectiveDate === null) continue;
-    if (effectiveDate <= docDate) {
-      if (!bestEntry || (effectiveDate && (!bestEffDate || effectiveDate > bestEffDate))) {
+    // Skip only if effectiveDate is in the future — null means "applies always" from this config
+    if (effectiveDate && effectiveDate > docDate) continue;
+    if (!effectiveDate || effectiveDate <= docDate) {
+      // Null effectiveDate = applies always from this config (lowest priority)
+      // Valid effectiveDate = applies from that date (higher priority)
+      if (!bestEntry) {
         bestEntry = entry;
         bestEffDate = effectiveDate;
+      } else if (effectiveDate !== null) {
+        // Only override if this entry has a more recent effectiveDate than current best
+        if (!bestEffDate || effectiveDate > bestEffDate) {
+          bestEntry = entry;
+          bestEffDate = effectiveDate;
+        }
       }
     }
   }
@@ -140,7 +153,7 @@ const calculateSalary = async (userId, month, year, options = {}) => {
 
   const hourlyRate = Number.isFinite(user.salaryHourlyRate)
     ? user.salaryHourlyRate
-    : (config?.instructorHourlyRate || 80000);
+    : (config?.instructorHourlyRate || DEFAULT_HOURLY_RATE);
 
   const { courseIdFilter } = options;
   const applyCourseFilter = Boolean(courseIdFilter);
@@ -253,7 +266,8 @@ const calculateSalary = async (userId, month, year, options = {}) => {
   }
 
   const teachingSalary = totalTeachingHours * hourlyRate;
-  const totalSalary = teachingSalary + totalCommission;
+  const totalSalaryBeforeDeduction = teachingSalary + totalCommission;
+  const totalSalary = Math.max(0, totalSalaryBeforeDeduction);
 
   return {
     userId,
@@ -315,7 +329,7 @@ export const getSalaryConfig = async (_req, res) => {
             courseId: { _id: c._id, code: c.code, name: c.name },
             commissionAmount: 0
           })),
-          instructorHourlyRate: 80000,
+          instructorHourlyRate: DEFAULT_HOURLY_RATE,
           effectiveFrom: new Date(),
           isNew: true
         }
@@ -362,6 +376,33 @@ export const createSalaryConfig = async (req, res) => {
       return res.status(400).json({ status: 'error', message: 'Ngày hiệu lực là bắt buộc' });
     }
 
+    const effDate = new Date(effectiveFrom + 'T00:00:00');
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (effDate < today) {
+      return res.status(400).json({ status: 'error', message: 'Ngày hiệu lực không được là ngày trong quá khứ' });
+    }
+
+    // Validate course commission dates
+    if (courseCommissions && Array.isArray(courseCommissions)) {
+      for (const cc of courseCommissions) {
+        if (cc.effectiveFrom) {
+          const ccEffDate = new Date(cc.effectiveFrom + 'T00:00:00');
+          if (ccEffDate < today) {
+            return res.status(400).json({ status: 'error', message: `Ngày hiệu lực hoa hồng của khóa học không được là ngày trong quá khứ` });
+          }
+        }
+      }
+    }
+
+    // Validate effectiveTo > effectiveFrom
+    if (effectiveTo) {
+      const toDate = new Date(effectiveTo + 'T00:00:00');
+      if (toDate <= effDate) {
+        return res.status(400).json({ status: 'error', message: 'Ngày kết thúc phải sau ngày hiệu lực' });
+      }
+    }
+
 
     const config = new SalaryConfig({
       courseCommissions: courseCommissions || [],
@@ -397,13 +438,38 @@ export const updateSalaryConfig = async (req, res) => {
       return res.status(404).json({ status: 'error', message: 'Cấu hình không tồn tại' });
     }
 
-    if (courseCommissions) config.courseCommissions = courseCommissions;
-    if (instructorHourlyRate) config.instructorHourlyRate = instructorHourlyRate;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
     if (effectiveFrom) {
       const newEffDate = new Date(effectiveFrom + 'T00:00:00');
+      if (newEffDate < today) {
+        return res.status(400).json({ status: 'error', message: 'Ngày hiệu lực không được là ngày trong quá khứ' });
+      }
       config.effectiveFrom = newEffDate;
     }
-    if (effectiveTo) config.effectiveTo = new Date(effectiveTo);
+    if (courseCommissions) {
+      for (const cc of courseCommissions) {
+        if (cc.effectiveFrom) {
+          const ccEffDate = new Date(cc.effectiveFrom + 'T00:00:00');
+          if (ccEffDate < today) {
+            return res.status(400).json({ status: 'error', message: `Ngày hiệu lực hoa hồng của khóa học không được là ngày trong quá khứ` });
+          }
+        }
+      }
+      config.courseCommissions = courseCommissions;
+    }
+    if (effectiveTo) {
+      const toDate = new Date(effectiveTo + 'T00:00:00');
+      const fromDate = effectiveFrom
+        ? new Date(effectiveFrom + 'T00:00:00')
+        : new Date(config.effectiveFrom);
+      if (toDate <= fromDate) {
+        return res.status(400).json({ status: 'error', message: 'Ngày kết thúc phải sau ngày hiệu lực' });
+      }
+      config.effectiveTo = toDate;
+    }
+    if (instructorHourlyRate) config.instructorHourlyRate = instructorHourlyRate;
     if (note !== undefined) config.note = note;
 
     await config.save();
@@ -525,7 +591,7 @@ const calculateSalaryWithSharedData = (
 
   const hourlyRate = Number.isFinite(user.salaryHourlyRate)
     ? user.salaryHourlyRate
-    : (config?.instructorHourlyRate || 80000);
+    : (config?.instructorHourlyRate || DEFAULT_HOURLY_RATE);
 
   const { courseIdFilter } = options;
   const applyCourseFilter = Boolean(courseIdFilter);
@@ -638,7 +704,8 @@ const calculateSalaryWithSharedData = (
 
   // Compute leave deduction for INSTRUCTOR only
   const leaveDeduction = computeLeaveDeduction(user, leaveConfig, targetMonth, targetYear);
-  const totalSalary = totalSalaryBeforeDeduction - leaveDeduction - totalPenalty;
+  const effectivePenalty = Math.min(totalPenalty, totalSalaryBeforeDeduction);
+  const totalSalary = Math.max(0, totalSalaryBeforeDeduction - leaveDeduction - effectivePenalty);
 
   return {
     userId,
@@ -878,25 +945,6 @@ export const getSalaryDetail = async (req, res) => {
       return res.status(404).json({ status: 'error', message: 'Không tìm thấy dữ liệu lương' });
     }
 
-    await SalaryReport.findOneAndUpdate(
-      { month: targetMonth, year: targetYear, userId },
-      {
-        month: targetMonth, year: targetYear, userId,
-        role: salaryData.role,
-        totalTeachingHours: salaryData.totalTeachingHours,
-        totalTeachingSessions: salaryData.totalTeachingSessions,
-        totalCommission: salaryData.totalCommission,
-        totalSalary: salaryData.totalSalary,
-        courseCounts: salaryData.courseCounts,
-        teachingDetails: salaryData.teachingDetails,
-        commissionDetails: salaryData.commissionDetails,
-        configId: config._id,
-        status: 'DRAFT',
-        createdBy: req.userId
-      },
-      { upsert: true, new: true }
-    );
-
     res.json({ status: 'success', data: salaryData });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
@@ -963,25 +1011,6 @@ export const getMySalary = async (req, res) => {
       user,
       leaveConfig,
       { [userId]: allPenalties }
-    );
-
-    await SalaryReport.findOneAndUpdate(
-      { month: targetMonth, year: targetYear, userId },
-      {
-        month: targetMonth, year: targetYear, userId,
-        role: salaryData.role,
-        totalTeachingHours: salaryData.totalTeachingHours,
-        totalTeachingSessions: salaryData.totalTeachingSessions,
-        totalCommission: salaryData.totalCommission,
-        totalSalary: salaryData.totalSalary,
-        courseCounts: salaryData.courseCounts,
-        teachingDetails: salaryData.teachingDetails,
-        commissionDetails: salaryData.commissionDetails,
-        configId: config._id,
-        status: 'DRAFT',
-        createdBy: req.userId
-      },
-      { upsert: true, new: true }
     );
 
     res.json({
@@ -1615,7 +1644,7 @@ export const exportAllSalaryExcel = async (req, res) => {
     const startDate = new Date(targetYear, targetMonth - 1, 1);
     const endDate = new Date(targetYear, targetMonth, 0, 23, 59, 59);
 
-    const [allBookings, allDocs, allPenalties] = await Promise.all([
+    const [allBookings, allDocs, penaltiesFromDb] = await Promise.all([
       Booking.find({
         instructorId: { $in: users.map(u => u._id) },
         date: { $gte: startDate, $lte: endDate },
@@ -1623,7 +1652,12 @@ export const exportAllSalaryExcel = async (req, res) => {
       Document.find({
         consultantId: { $in: users.map(u => u._id) },
         isDeleted: false,
+        createdAt: { $gte: startDate, $lte: endDate },
       }).populate({ path: 'registrationId', populate: { path: 'courseId learnerId' } }).lean(),
+      Penalty.find({
+        user: { $in: users.map(u => u._id) },
+        date: { $gte: startDate, $lte: endDate },
+      }).lean(),
     ]);
 
     // Group by user
@@ -1641,6 +1675,15 @@ export const exportAllSalaryExcel = async (req, res) => {
       if (!uid) return;
       if (!docsByConsultant[uid]) docsByConsultant[uid] = [];
       docsByConsultant[uid].push(d);
+    });
+
+    // Group penalties by userId for salary calculation
+    const penaltiesByUserId = {};
+    penaltiesFromDb.forEach(p => {
+      const uid = p.user?.toString();
+      if (!uid) return;
+      if (!penaltiesByUserId[uid]) penaltiesByUserId[uid] = [];
+      penaltiesByUserId[uid].push(p);
     });
 
     // Apply role filter
@@ -1661,7 +1704,7 @@ export const exportAllSalaryExcel = async (req, res) => {
         config,
         user,
         leaveConfig,
-        undefined // penaltiesByUserId (not pre-fetched for this export)
+        penaltiesByUserId
       );
       if (salaryData) {
         allSalaryData.push(salaryData);
@@ -1745,28 +1788,6 @@ export const exportSalaryCSV = async (req, res) => {
       return res.status(404).json({ status: 'error', message: 'Không tìm thấy dữ liệu lương' });
     }
 
-    // Upsert SalaryReport
-    await SalaryReport.findOneAndUpdate(
-      { month: targetMonth, year: targetYear, userId },
-      {
-        month: targetMonth,
-        year: targetYear,
-        userId,
-        role: salaryData.role,
-        totalTeachingHours: salaryData.totalTeachingHours,
-        totalTeachingSessions: salaryData.totalTeachingSessions,
-        totalCommission: salaryData.totalCommission,
-        totalSalary: salaryData.totalSalary,
-        courseCounts: salaryData.courseCounts,
-        teachingDetails: salaryData.teachingDetails,
-        commissionDetails: salaryData.commissionDetails,
-        configId: config._id,
-        status: 'DRAFT',
-        createdBy: req.userId
-      },
-      { upsert: true, new: true }
-    );
-
     const excelBuffer = await buildSalaryExcel(salaryData, targetMonth, targetYear);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`luong_${salaryData.userName}_${targetMonth}_${targetYear}.xlsx`)}`);
@@ -1810,15 +1831,27 @@ export const addPenalty = async (req, res) => {
     if (!amount || amount <= 0) {
       return res.status(400).json({ status: 'error', message: 'Số tiền phạt không hợp lệ' });
     }
+    if (amount > 10000000) {
+      return res.status(400).json({ status: 'error', message: 'Số tiền phạt không được vượt quá 10.000.000 đ' });
+    }
     if (!reason || !reason.trim()) {
       return res.status(400).json({ status: 'error', message: 'Lý do nộp phạt là bắt buộc' });
+    }
+
+    // Validate penalty date: must be within past 30 days or current/next month
+    const penaltyDate = date ? new Date(date) : new Date();
+    const now = new Date();
+    const maxFutureDate = new Date(now);
+    maxFutureDate.setDate(maxFutureDate.getDate() + 30);
+    if (penaltyDate < new Date(now.getFullYear() - 1, 0, 1)) {
+      return res.status(400).json({ status: 'error', message: 'Ngày phạt không hợp lệ' });
     }
 
     const penalty = new Penalty({
       user: id,
       amount,
       reason,
-      date: date ? new Date(date) : new Date(),
+      date: penaltyDate,
       createdBy: req.user?.id || req.userId
     });
 
