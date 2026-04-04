@@ -574,13 +574,9 @@ export const getMyCoursesWithProgress = async (req, res) => {
     // Với mỗi booking, ưu tiên lấy courseId từ batch, nếu batch không tồn tại thì map qua registration
     const completedBookingsWithBatch = await Booking.find({
       learnerId: learnerObjId,
-      $or: [
-        { attendance: 'PRESENT' },
-        { attendance: 'ABSENT' },
-        { status: 'COMPLETED', attendance: { $exists: false } }
-      ]
+      status: { $in: ['COMPLETED', 'ABSENT'] }
     })
-      .select('batchId attendance status')
+      .select('batchId status')
       .lean();
 
     const tempProgressMap = {};
@@ -592,7 +588,7 @@ export const getMyCoursesWithProgress = async (req, res) => {
         continue;
       }
       
-      const isAbsent = b.attendance === 'ABSENT';
+      const isAbsent = b.status === 'ABSENT';
       
       // Lookup batch để lấy courseId (batch phải tồn tại trong DB)
       const Batch = mongoose.model('Batch');
