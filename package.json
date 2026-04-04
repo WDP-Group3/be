@@ -11,6 +11,7 @@
     "test-fee": "node src/scripts/test-fee-sync.js",
     "test-fee-reminder": "node src/scripts/test-fee-reminder.js",
     "migrate-fee-dates": "node src/scripts/migrate-fee-due-dates.js",
+    "delete-paid-tuition": "node scripts/delete-paid-tuition.js",
     "test": "vitest run"
   },
   "keywords": [

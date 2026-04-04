@@ -45,7 +45,19 @@ const salaryReportSchema = new mongoose.Schema({
     default: 0,
   },
 
-  // Tổng lương = lương theo giờ + hoa hồng
+  // Khấu trừ nghỉ phép (INSTRUCTOR)
+  leaveDeduction: {
+    type: Number,
+    default: 0,
+  },
+
+  // Tổng tiền phạt
+  totalPenalty: {
+    type: Number,
+    default: 0,
+  },
+
+  // Tổng lương = lương theo giờ + hoa hồng - khấu trừ
   totalSalary: {
     type: Number,
     default: 0,
