@@ -30,3 +30,6 @@ Thumbs.db
 dist/
 build/
 
+# Temp uploads (cleared after Cloudinary upload)
+uploads/
+

@@ -1,6 +1,12 @@
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET && process.env.NODE_ENV === 'production') {
+  throw new Error('FATAL: JWT_SECRET environment variable is required. Server will not start in production without it.');
+}
+if (!JWT_SECRET) {
+  console.warn('⚠️  WARNING: JWT_SECRET is not set. Using insecure default for development only. Set JWT_SECRET in .env for production.');
+}
 
 // Middleware to verify JWT token
 export const authenticate = (req, res, next) => {
