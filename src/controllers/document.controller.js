@@ -1,6 +1,8 @@
+import fs from 'fs';
 import Document from '../models/Document.js';
 import Registration from '../models/Registration.js';
 import User from '../models/User.js';
+import { uploadFile } from '../services/cloudinary.service.js';
 
 const documentPopulate = [
   { path: 'learnerId', select: 'fullName phone email role status' },
@@ -116,11 +118,15 @@ export const lookupConsultantByEmail = async (req, res) => {
 export const updateDocumentStatus = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status } = req.body;
+    const { status, rejectionReason } = req.body;
 
     const allowed = ['PENDING', 'APPROVED', 'REJECTED'];
     if (!allowed.includes(status)) {
       return res.status(400).json({ status: 'error', message: 'Trạng thái không hợp lệ' });
+    }
+
+    if (status === 'REJECTED' && !rejectionReason?.trim()) {
+      return res.status(400).json({ status: 'error', message: 'Vui lòng nhập lý do từ chối' });
     }
 
     const document = await Document.findById(id).populate({
@@ -144,6 +150,11 @@ export const updateDocumentStatus = async (req, res) => {
     }
 
     document.status = status;
+    if (status === 'REJECTED') {
+      document.rejectionReason = rejectionReason.trim();
+    } else {
+      document.rejectionReason = null;
+    }
     await document.save();
 
     if (status === 'APPROVED') {
@@ -156,6 +167,24 @@ export const updateDocumentStatus = async (req, res) => {
         if (document.photo) user.photo = document.photo;
         await user.save();
       }
+    }
+
+    // Auto-notify learner on rejection
+    if (status === 'REJECTED') {
+      (async () => {
+        try {
+          const Notification = (await import('../models/Notification.js')).default;
+          await Notification.create({
+            userId: document.learnerId,
+            type: 'OTHER',
+            title: 'Hồ sơ bị từ chối',
+            message: `Hồ sơ của bạn đã bị từ chối. Lý do: ${rejectionReason.trim()}. Vui lòng đăng nhập để xem chi tiết và bổ sung.`,
+            expirationDays: 7,
+          });
+        } catch (notifErr) {
+          console.error('Failed to create rejection notification:', notifErr);
+        }
+      })();
     }
 
     const result = await Document.findById(document._id).populate(documentPopulate);
@@ -247,9 +276,9 @@ export const uploadDocuments = async (req, res) => {
     if (cccdNumber) document.cccdNumber = cccdNumber;
 
     if (consultantEmail) {
-      const consultant = await User.findOne({ 
-        role: { $in: ['CONSULTANT', 'INSTRUCTOR'] }, 
-        email: consultantEmail.trim().toLowerCase() 
+      const consultant = await User.findOne({
+        role: { $in: ['CONSULTANT', 'INSTRUCTOR'] },
+        email: consultantEmail.trim().toLowerCase()
       });
       if (!consultant) {
         return res.status(400).json({ status: 'error', message: 'Không tìm thấy tư vấn viên theo email đã nhập' });
@@ -271,6 +300,104 @@ export const uploadDocuments = async (req, res) => {
     });
   } catch (error) {
     console.error('Upload documents error:', error);
+    return res.status(500).json({ status: 'error', message: error.message });
+  }
+};
+
+// Upload documents via multipart/form-data — BE uploads files to Cloudinary
+export const uploadDocumentsMultipart = async (req, res) => {
+  try {
+    const { cccdNumber, consultantEmail } = req.body;
+    const learnerId = req.userId;
+
+    // Validate CCCD format
+    if (cccdNumber) {
+      const cccdClean = cccdNumber.replace(/\s/g, '');
+      if (!/^[0-9]{9}$|^[0-9]{12}$/.test(cccdClean)) {
+        return res.status(400).json({ status: 'error', message: 'Số CMND/CCCD phải là 9 hoặc 12 chữ số' });
+      }
+      const existing = await Document.findOne({ cccdNumber: cccdClean, learnerId: { $ne: learnerId }, isDeleted: { $ne: true } });
+      if (existing) {
+        return res.status(400).json({ status: 'error', message: 'Số CMND/CCCD đã được sử dụng bởi người khác' });
+      }
+    }
+
+    // Helper: upload a single file field to Cloudinary, then clean up temp file
+    const uploadField = async (files, fieldName) => {
+      const file = files?.[fieldName]?.[0];
+      if (!file) return null;
+
+      try {
+        const filePath = file.path;
+        const result = await uploadFile(filePath, { folder: 'documents' });
+        return result.secure_url;
+      } catch (err) {
+        throw new Error(`Upload ${fieldName} thất bại: ${err.message}`);
+      } finally {
+        // Always clean up temp file
+        try { fs.unlinkSync(file.path); } catch { /* ignore */ }
+      }
+    };
+
+    // Upload all files to Cloudinary server-side
+    const uploaded = {
+      cccdImageFront: await uploadField(req.files, 'cccdImageFront'),
+      cccdImageBack: await uploadField(req.files, 'cccdImageBack'),
+      healthCertificate: await uploadField(req.files, 'healthCertificate'),
+      photo: await uploadField(req.files, 'photo'),
+    };
+
+    // Resolve consultant
+    let consultantId = null;
+    let consultantEmailResolved = null;
+    if (consultantEmail) {
+      const consultant = await User.findOne({
+        role: { $in: ['CONSULTANT', 'INSTRUCTOR'] },
+        email: consultantEmail.trim().toLowerCase()
+      });
+      if (!consultant) {
+        return res.status(400).json({ status: 'error', message: 'Không tìm thấy tư vấn viên theo email đã nhập' });
+      }
+      consultantId = consultant._id;
+      consultantEmailResolved = consultant.email;
+    }
+
+    // Upsert document
+    let document = await Document.findOne({ learnerId, isDeleted: { $ne: true } });
+    if (!document) document = new Document({ learnerId, status: 'DRAFT' });
+
+    // Only update fields that were uploaded (don't overwrite with null)
+    if (uploaded.cccdImageFront) document.cccdImageFront = uploaded.cccdImageFront;
+    if (uploaded.cccdImageBack) document.cccdImageBack = uploaded.cccdImageBack;
+    if (uploaded.healthCertificate) document.healthCertificate = uploaded.healthCertificate;
+    if (uploaded.photo) document.photo = uploaded.photo;
+    if (cccdNumber) document.cccdNumber = cccdNumber;
+    if (consultantId) {
+      document.consultantId = consultantId;
+      document.consultantEmail = consultantEmailResolved;
+    }
+
+    // Clear rejection reason on resubmit
+    if (document.status === 'REJECTED') {
+      document.rejectionReason = null;
+    }
+
+    // Set to PENDING if any field was submitted
+    if (uploaded.cccdImageFront || uploaded.cccdImageBack || uploaded.photo || cccdNumber || consultantEmail) {
+      document.status = 'PENDING';
+    }
+
+    await document.save();
+
+    const result = await Document.findById(document._id).populate(documentPopulate);
+    return res.json({
+      status: 'success',
+      data: result,
+      isComplete: isDocumentComplete(result),
+      message: 'Upload hồ sơ thành công',
+    });
+  } catch (error) {
+    console.error('Upload documents multipart error:', error);
     return res.status(500).json({ status: 'error', message: error.message });
   }
 };

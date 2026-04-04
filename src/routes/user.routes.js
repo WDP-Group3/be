@@ -14,35 +14,45 @@ import {
   updateLearnerEnrolledCourses,
 } from '../controllers/user.controller.js';
 import { authenticate } from '../middleware/auth.middleware.js';
+import { requireRole } from '../middleware/role.middleware.js';
 
 const router = express.Router();
 
-// --- KHU VỰC 1: CÁC ROUTE CỤ THỂ (STATIC ROUTES) ---
-// Phải đặt những route này LÊN TRÊN route /:id
-// Nếu không Express sẽ hiểu nhầm "locations" là một cái "id"
+// ============================================================
+// RULES:
+// - authenticate: moi route deu phai co
+// - requireRole: chi khi can kiem tra role cu the
+// - Ownership check: trong controller (users co the truy cap chinh minh)
+// ============================================================
 
-router.get('/stats', getUserStats);
-router.get('/', getAllUsers);
+// --- STATIC ROUTES (dat TRUOC /:id) ---
 
-// API lấy danh sách khu vực (cho dropdown filter)
-router.get('/locations', getLocations);
+// Chi ADMIN moi xem duoc stats
+router.get('/stats', authenticate, requireRole('ADMIN'), getUserStats);
 
-// API lọc giáo viên theo khu vực
-router.get('/instructors', getInstructorsByLocation);
+// Chi ADMIN + CONSULTANT moi xem duoc danh sach user
+router.get('/', authenticate, requireRole('ADMIN', 'CONSULTANT'), getAllUsers);
 
-router.post('/', createUser);
+// Ai cung truy cap duoc (dropdown locations, instructors) — da authenticate
+router.get('/locations', authenticate, getLocations);
+router.get('/instructors', authenticate, getInstructorsByLocation);
 
-// --- KHU VỰC 2: CÁC ROUTE ĐỘNG (DYNAMIC ROUTES) ---
-// Các route có tham số :id phải đặt dưới cùng
+// Chi ADMIN + CONSULTANT moi tao duoc user
+router.post('/', authenticate, requireRole('ADMIN', 'CONSULTANT'), createUser);
 
-router.get('/:id', getUserById);
-router.patch('/:id', updateUser);
-router.patch('/:id/deactivate', deactivateUser);
-router.patch('/:id/restore', restoreUser);
-router.patch('/:id/change-role', changeUserRole);
+// --- DYNAMIC ROUTES (dat SAU /:id) ---
 
-// [MỚI] Quản lý hạng học viên
-router.get('/:id/enrolled-courses', getLearnerEnrolledCourses);
-router.patch('/:id/enrolled-courses', updateLearnerEnrolledCourses);
+// Lay / cap nhat user theo ID — authenticate, ownership check trong controller
+router.get('/:id', authenticate, getUserById);
+router.patch('/:id', authenticate, updateUser);
+
+// Admin-only actions
+router.patch('/:id/deactivate', authenticate, requireRole('ADMIN'), deactivateUser);
+router.patch('/:id/restore', authenticate, requireRole('ADMIN'), restoreUser);
+router.patch('/:id/change-role', authenticate, requireRole('ADMIN'), changeUserRole);
+
+// Enrolled courses — authenticate, ownership check trong controller
+router.get('/:id/enrolled-courses', authenticate, getLearnerEnrolledCourses);
+router.patch('/:id/enrolled-courses', authenticate, updateLearnerEnrolledCourses);
 
 export default router;

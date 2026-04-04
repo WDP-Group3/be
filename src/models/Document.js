@@ -49,6 +49,11 @@ const documentSchema = new mongoose.Schema({
     enum: ['DRAFT', 'PENDING', 'APPROVED', 'REJECTED'],
     default: 'DRAFT',
   },
+  rejectionReason: {
+    type: String,
+    trim: true,
+    default: null,
+  },
   isDeleted: {
     type: Boolean,
     default: false,
