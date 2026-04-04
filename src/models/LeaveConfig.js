@@ -1,8 +1,8 @@
 import mongoose from 'mongoose';
 
 const leaveConfigSchema = new mongoose.Schema({
-  paidLeaveDaysPerYear: { type: Number, default: 12 },
-  leaveDeductionPerDay: { type: Number, default: 0 },
+  paidLeaveDaysPerYear: { type: Number, default: 12, min: 0, max: 100 },
+  leaveDeductionPerDay: { type: Number, default: 0, min: 0 },
   applyToRole: { type: String, enum: ['INSTRUCTOR', 'ALL'], default: 'INSTRUCTOR' },
   year: { type: Number, required: true },
 }, { timestamps: true });
